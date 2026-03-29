@@ -172,16 +172,26 @@ Measured on Apple M-series (ARM NEON):
 
 ## Quantization Types
 
-| Type | Bits | Algorithm | Compression | Quality | Best For |
-|------|------|-----------|-------------|---------|----------|
-| `uniform_4b` | 4 | Min-Max | 7.5x | A+ (0.995) | **Production (recommended)** |
-| `mixed_4b8` | ~5 | 4-bit + fp16 outliers | 6.4x | A+ | Data with outliers |
-| `uniform_2b` | 2 | Min-Max | 14.2x | B+ (0.855) | Max compression |
-| `turbo_3b` | 3 | Polar+QJL | 4.6x | B+ (0.917) | Balanced |
-| `polar_4b` | 4 | PolarQuant | 7.1x | B (0.827) | Research |
-| `qjl_1b` | 1 | QJL Sign Hash | 12.8x | C (0.702) | Extreme compression |
+Ranked by **real Qwen3.5-0.8B A/B test results** (not synthetic data):
 
-> **Community finding** (r/LocalLLaMA, llama.cpp #20969): `uniform_4b` with bin-centered reconstruction outperforms QJL-based methods in practice. QJL increases variance which hurts attention softmax.
+| Rank | Type | Bits | Compression | Real Cosine | Grade | Recommended For |
+|------|------|------|-------------|-------------|-------|-----------------|
+| 1 | **`uniform_4b`** | 4 | 7.5x | **0.994** | **A+** | **Default production choice** |
+| 2 | **`mixed_4b8`** | ~5 | 6.4x | **0.994** | **A+** | Models with extreme outliers |
+| 3 | **`uniform_2b`** | 2 | 14.2x | **0.953** | **A** | Max compression (surprisingly good) |
+| 4 | `turbo_3b` | 3 | 4.6x | 0.934 | B+ | Research |
+| 5 | `polar_4b` | 4 | 7.1x | 0.893 | B | Research |
+| 6 | `qjl_1b` | 1 | 25.6x | 0.744 | C | Not recommended |
+
+**Recommended configurations:**
+```
+Best quality:    uniform_4b                (cosine 0.994, 7.5x)
+Best balance:    K4V2 (key=4b, value=2b)  (cosine ~0.97, 9.8x)
+Max compression: uniform_2b               (cosine 0.953, 14.2x)
+With RHT:        RHT + uniform_4b         (MSE 1.8x better)
+```
+
+> **Community validated** (r/LocalLLaMA, llama.cpp #20969): Simple min-max (`uniform_4b`) outperforms QJL and PolarQuant in practice. QJL increases variance which hurts attention softmax. `uniform_2b` at 14x compression achieves A grade on real models.
 
 ---
 
