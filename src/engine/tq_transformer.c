@@ -514,7 +514,7 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
     /* Multi-head attention */
     int seq_len = pos + 1;
     /* Use integer attention when enough cached keys to amortize overhead */
-    int int_attn_threshold = 32;
+    int int_attn_threshold = 128; /* only use integer attention for long contexts */
 
     for (int h = 0; h < n_heads; h++) {
         float* qh = s->q + h * head_dim;
