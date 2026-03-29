@@ -4,6 +4,17 @@
 
 ### Highlights
 
+- **Self-contained inference engine** — loads Qwen3.5-0.8B, generates text at 14 tok/s on CPU
+- **17x faster than PyTorch CPU**, 1.4x faster than PyTorch on Apple GPU
+- **Q8 weight quantization** — 4x memory reduction (2.1 GB → 533 MB), `-q` flag
+- **Streaming BF16** — embed/lm_head kept as mmap'd BF16, saves ~1 GB
+- **Multi-threaded matmul** — 4-thread pthread, 1.56x speedup
+- **DeltaNet + Self-Attention** — full Qwen3.5 hybrid architecture in C
+- **HuggingFace BPE tokenizer** — 248K vocab, encode/decode
+- **KV cache quantized in inference** — Q4 keys, integer Q4×Q8 attention
+
+### v0.8 Inference Engine
+
 - **Integer-domain attention**: 2.9-4.8x faster than FP32 on Apple Silicon (ARM NEON `vdotq_s32`)
 - **Real model validated**: Qwen3.5-0.8B KV cache, cosine 0.994 (A+)
 - **8 quantization types** including mixed precision outlier and RHT pre-rotation
