@@ -182,27 +182,34 @@ void tq_uniform_4b_attention_int_ref(const float* query, const void* kv,
     float q_scale, q_sum;
     tq_quantize_query_q8(query, q8, &q_scale, &q_sum, head_dim);
 
-    const block_tq_uniform_4b* blocks = (const block_tq_uniform_4b*)kv;
+    int blocks_per_key = (head_dim + TQ_BK - 1) / TQ_BK;
+    const block_tq_uniform_4b* all_blocks = (const block_tq_uniform_4b*)kv;
 
     for (int s = 0; s < seq_len; s++) {
-        float k_scale = uni_fp16_to_fp32(blocks[s].scale);
-        float k_zp    = uni_fp16_to_fp32(blocks[s].zero_point);
-        float k_offset = k_zp + 0.5f * k_scale; /* bin centering */
+        float score = 0;
+        for (int b = 0; b < blocks_per_key; b++) {
+            int offset = b * TQ_BK;
+            int chunk = (head_dim - offset > TQ_BK) ? TQ_BK : (head_dim - offset);
+            const block_tq_uniform_4b* block = &all_blocks[s * blocks_per_key + b];
 
-        /* Step 2: Integer dot product (no dequantize!) */
-        int32_t isum = 0;
-        for (int i = 0; i < head_dim / 2; i++) {
-            uint8_t packed = blocks[s].qs[i];
-            int32_t q4_lo = (int32_t)(packed & 0x0F);  /* low nibble [0,15] */
-            int32_t q4_hi = (int32_t)(packed >> 4);     /* high nibble [0,15] */
+            float k_scale = uni_fp16_to_fp32(block->scale);
+            float k_zp    = uni_fp16_to_fp32(block->zero_point);
 
-            isum += q4_lo * (int32_t)q8[2*i];
-            isum += q4_hi * (int32_t)q8[2*i + 1];
+            /* Integer dot product (no dequantize!) */
+            int32_t isum = 0;
+            for (int i = 0; i < chunk / 2; i++) {
+                uint8_t packed = block->qs[i];
+                isum += (int32_t)(packed & 0x0F) * (int32_t)q8[offset + 2*i];
+                isum += (int32_t)(packed >> 4)   * (int32_t)q8[offset + 2*i + 1];
+            }
+
+            /* Partial query sum for this block's zero-point correction */
+            float block_q_sum = 0;
+            for (int d = 0; d < chunk; d++) block_q_sum += query[offset + d];
+
+            score += (float)isum * k_scale * q_scale + (k_zp + 0.5f * k_scale) * block_q_sum;
         }
-
-        /* Step 3: Convert to float ONCE with combined scale
-         * dot ~ k_scale * q_scale * isum + k_offset * q_sum */
-        scores[s] = (float)isum * k_scale * q_scale + k_offset * q_sum;
+        scores[s] = score;
     }
 }
 
@@ -210,12 +217,21 @@ void tq_uniform_4b_attention_int_ref(const float* query, const void* kv,
 
 void tq_uniform_4b_attention_ref(const float* query, const void* kv,
                                   float* scores, int seq_len, int head_dim) {
-    const block_tq_uniform_4b* blocks = (const block_tq_uniform_4b*)kv;
+    int blocks_per_key = (head_dim + TQ_BK - 1) / TQ_BK;
+    const block_tq_uniform_4b* all_blocks = (const block_tq_uniform_4b*)kv;
+
     for (int s = 0; s < seq_len; s++) {
-        float deq[256]; /* max head_dim */
-        tq_uniform_4b_dequantize_ref(&blocks[s], deq, head_dim);
         float dot = 0;
-        for (int d = 0; d < head_dim; d++) dot += query[d] * deq[d];
+        for (int b = 0; b < blocks_per_key; b++) {
+            int offset = b * TQ_BK;
+            int chunk = (head_dim - offset > TQ_BK) ? TQ_BK : (head_dim - offset);
+
+            float deq[TQ_BK];
+            tq_uniform_4b_dequantize_ref(&all_blocks[s * blocks_per_key + b], deq, chunk);
+
+            for (int d = 0; d < chunk; d++)
+                dot += query[offset + d] * deq[d];
+        }
         scores[s] = dot;
     }
 }
@@ -224,12 +240,21 @@ void tq_uniform_4b_attention_ref(const float* query, const void* kv,
 
 void tq_uniform_2b_attention_ref(const float* query, const void* kv,
                                   float* scores, int seq_len, int head_dim) {
-    const block_tq_uniform_2b* blocks = (const block_tq_uniform_2b*)kv;
+    int blocks_per_key = (head_dim + TQ_BK - 1) / TQ_BK;
+    const block_tq_uniform_2b* all_blocks = (const block_tq_uniform_2b*)kv;
+
     for (int s = 0; s < seq_len; s++) {
-        float deq[256]; /* max head_dim */
-        tq_uniform_2b_dequantize_ref(&blocks[s], deq, head_dim);
         float dot = 0;
-        for (int d = 0; d < head_dim; d++) dot += query[d] * deq[d];
+        for (int b = 0; b < blocks_per_key; b++) {
+            int offset = b * TQ_BK;
+            int chunk = (head_dim - offset > TQ_BK) ? TQ_BK : (head_dim - offset);
+
+            float deq[TQ_BK];
+            tq_uniform_2b_dequantize_ref(&all_blocks[s * blocks_per_key + b], deq, chunk);
+
+            for (int d = 0; d < chunk; d++)
+                dot += query[offset + d] * deq[d];
+        }
         scores[s] = dot;
     }
 }

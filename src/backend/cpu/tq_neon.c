@@ -732,133 +732,118 @@ void tq_polar_attention_neon(const float* query, const void* kv_cache,
 
 void tq_uniform_4b_attention_neon(const float* query, const void* kv_cache,
                                    float* scores, int seq_len, int head_dim) {
-    const block_tq_uniform_4b* blocks = (const block_tq_uniform_4b*)kv_cache;
-    int count = head_dim;
-    if (count > TQ_BK) count = TQ_BK;
+    int blocks_per_key = (head_dim + TQ_BK - 1) / TQ_BK;
+    const block_tq_uniform_4b* all_blocks = (const block_tq_uniform_4b*)kv_cache;
 
     /* Nibble mask for extracting low 4 bits */
     const uint8x16_t mask_0f = vdupq_n_u8(0x0F);
 
     for (int s = 0; s < seq_len; s++) {
-        const block_tq_uniform_4b* block = &blocks[s];
+        float total_dot = 0.0f;
 
-        float scale = neon_fp16_to_fp32(block->scale);
-        float mn    = neon_fp16_to_fp32(block->zero_point);
+        for (int blk = 0; blk < blocks_per_key; blk++) {
+            int offset = blk * TQ_BK;
+            int count = (head_dim - offset > TQ_BK) ? TQ_BK : (head_dim - offset);
+            const block_tq_uniform_4b* block = &all_blocks[s * blocks_per_key + blk];
 
-        float32x4_t v_scale = vdupq_n_f32(scale);
-        float32x4_t v_mn    = vdupq_n_f32(mn + 0.5f * scale); /* bin centering */
-        float32x4_t dot_acc0 = vdupq_n_f32(0.0f);
-        float32x4_t dot_acc1 = vdupq_n_f32(0.0f);
+            float scale = neon_fp16_to_fp32(block->scale);
+            float mn    = neon_fp16_to_fp32(block->zero_point);
 
-        int i = 0;
-        /* Process 32 elements at a time (16 bytes of packed data) */
-        for (; i + 32 <= count; i += 32) {
-            /* Load 16 bytes = 32 nibbles */
-            uint8x16_t packed = vld1q_u8(block->qs + i / 2);
+            float32x4_t v_scale = vdupq_n_f32(scale);
+            float32x4_t v_mn    = vdupq_n_f32(mn + 0.5f * scale); /* bin centering */
+            float32x4_t dot_acc0 = vdupq_n_f32(0.0f);
+            float32x4_t dot_acc1 = vdupq_n_f32(0.0f);
 
-            /* Unpack: low nibbles and high nibbles */
-            uint8x16_t lo_nib = vandq_u8(packed, mask_0f);
-            uint8x16_t hi_nib = vshrq_n_u8(packed, 4);
+            int i = 0;
+            /* Process 32 elements at a time (16 bytes of packed data) */
+            for (; i + 32 <= count; i += 32) {
+                uint8x16_t packed = vld1q_u8(block->qs + i / 2);
+                uint8x16_t lo_nib = vandq_u8(packed, mask_0f);
+                uint8x16_t hi_nib = vshrq_n_u8(packed, 4);
+                uint8x16x2_t zipped = vzipq_u8(lo_nib, hi_nib);
 
-            /* Interleave to get original order: lo0, hi0, lo1, hi1, ... */
-            uint8x16x2_t zipped = vzipq_u8(lo_nib, hi_nib);
+                uint16x8_t w0 = vmovl_u8(vget_low_u8(zipped.val[0]));
+                uint32x4_t d0 = vmovl_u16(vget_low_u16(w0));
+                float32x4_t f0 = vcvtq_f32_u32(d0);
+                float32x4_t v0 = vfmaq_f32(v_mn, f0, v_scale);
+                dot_acc0 = vfmaq_f32(dot_acc0, v0, vld1q_f32(query + offset + i));
 
-            /* Convert first 16 uint8 values to float32 (4 groups of 4) */
-            /* Group 0: elements i..i+3 */
-            uint16x8_t w0 = vmovl_u8(vget_low_u8(zipped.val[0]));
-            uint32x4_t d0 = vmovl_u16(vget_low_u16(w0));
-            float32x4_t f0 = vcvtq_f32_u32(d0);
-            float32x4_t v0 = vfmaq_f32(v_mn, f0, v_scale);
-            float32x4_t q0 = vld1q_f32(query + i);
-            dot_acc0 = vfmaq_f32(dot_acc0, v0, q0);
+                uint32x4_t d1 = vmovl_u16(vget_high_u16(w0));
+                float32x4_t f1 = vcvtq_f32_u32(d1);
+                float32x4_t v1 = vfmaq_f32(v_mn, f1, v_scale);
+                dot_acc1 = vfmaq_f32(dot_acc1, v1, vld1q_f32(query + offset + i + 4));
 
-            /* Group 1: elements i+4..i+7 */
-            uint32x4_t d1 = vmovl_u16(vget_high_u16(w0));
-            float32x4_t f1 = vcvtq_f32_u32(d1);
-            float32x4_t v1 = vfmaq_f32(v_mn, f1, v_scale);
-            float32x4_t q1 = vld1q_f32(query + i + 4);
-            dot_acc1 = vfmaq_f32(dot_acc1, v1, q1);
+                uint16x8_t w1 = vmovl_u8(vget_high_u8(zipped.val[0]));
+                uint32x4_t d2 = vmovl_u16(vget_low_u16(w1));
+                float32x4_t f2 = vcvtq_f32_u32(d2);
+                float32x4_t v2 = vfmaq_f32(v_mn, f2, v_scale);
+                dot_acc0 = vfmaq_f32(dot_acc0, v2, vld1q_f32(query + offset + i + 8));
 
-            /* Group 2: elements i+8..i+11 */
-            uint16x8_t w1 = vmovl_u8(vget_high_u8(zipped.val[0]));
-            uint32x4_t d2 = vmovl_u16(vget_low_u16(w1));
-            float32x4_t f2 = vcvtq_f32_u32(d2);
-            float32x4_t v2 = vfmaq_f32(v_mn, f2, v_scale);
-            float32x4_t q2 = vld1q_f32(query + i + 8);
-            dot_acc0 = vfmaq_f32(dot_acc0, v2, q2);
+                uint32x4_t d3 = vmovl_u16(vget_high_u16(w1));
+                float32x4_t f3 = vcvtq_f32_u32(d3);
+                float32x4_t v3 = vfmaq_f32(v_mn, f3, v_scale);
+                dot_acc1 = vfmaq_f32(dot_acc1, v3, vld1q_f32(query + offset + i + 12));
 
-            /* Group 3: elements i+12..i+15 */
-            uint32x4_t d3 = vmovl_u16(vget_high_u16(w1));
-            float32x4_t f3 = vcvtq_f32_u32(d3);
-            float32x4_t v3 = vfmaq_f32(v_mn, f3, v_scale);
-            float32x4_t q3 = vld1q_f32(query + i + 12);
-            dot_acc1 = vfmaq_f32(dot_acc1, v3, q3);
+                uint16x8_t w2 = vmovl_u8(vget_low_u8(zipped.val[1]));
+                uint32x4_t d4 = vmovl_u16(vget_low_u16(w2));
+                float32x4_t f4 = vcvtq_f32_u32(d4);
+                float32x4_t v4 = vfmaq_f32(v_mn, f4, v_scale);
+                dot_acc0 = vfmaq_f32(dot_acc0, v4, vld1q_f32(query + offset + i + 16));
 
-            /* Group 4: elements i+16..i+19 */
-            uint16x8_t w2 = vmovl_u8(vget_low_u8(zipped.val[1]));
-            uint32x4_t d4 = vmovl_u16(vget_low_u16(w2));
-            float32x4_t f4 = vcvtq_f32_u32(d4);
-            float32x4_t v4 = vfmaq_f32(v_mn, f4, v_scale);
-            float32x4_t q4 = vld1q_f32(query + i + 16);
-            dot_acc0 = vfmaq_f32(dot_acc0, v4, q4);
+                uint32x4_t d5 = vmovl_u16(vget_high_u16(w2));
+                float32x4_t f5 = vcvtq_f32_u32(d5);
+                float32x4_t v5 = vfmaq_f32(v_mn, f5, v_scale);
+                dot_acc1 = vfmaq_f32(dot_acc1, v5, vld1q_f32(query + offset + i + 20));
 
-            /* Group 5: elements i+20..i+23 */
-            uint32x4_t d5 = vmovl_u16(vget_high_u16(w2));
-            float32x4_t f5 = vcvtq_f32_u32(d5);
-            float32x4_t v5 = vfmaq_f32(v_mn, f5, v_scale);
-            float32x4_t q5 = vld1q_f32(query + i + 20);
-            dot_acc1 = vfmaq_f32(dot_acc1, v5, q5);
+                uint16x8_t w3 = vmovl_u8(vget_high_u8(zipped.val[1]));
+                uint32x4_t d6 = vmovl_u16(vget_low_u16(w3));
+                float32x4_t f6 = vcvtq_f32_u32(d6);
+                float32x4_t v6 = vfmaq_f32(v_mn, f6, v_scale);
+                dot_acc0 = vfmaq_f32(dot_acc0, v6, vld1q_f32(query + offset + i + 24));
 
-            /* Group 6: elements i+24..i+27 */
-            uint16x8_t w3 = vmovl_u8(vget_high_u8(zipped.val[1]));
-            uint32x4_t d6 = vmovl_u16(vget_low_u16(w3));
-            float32x4_t f6 = vcvtq_f32_u32(d6);
-            float32x4_t v6 = vfmaq_f32(v_mn, f6, v_scale);
-            float32x4_t q6 = vld1q_f32(query + i + 24);
-            dot_acc0 = vfmaq_f32(dot_acc0, v6, q6);
+                uint32x4_t d7 = vmovl_u16(vget_high_u16(w3));
+                float32x4_t f7 = vcvtq_f32_u32(d7);
+                float32x4_t v7 = vfmaq_f32(v_mn, f7, v_scale);
+                dot_acc1 = vfmaq_f32(dot_acc1, v7, vld1q_f32(query + offset + i + 28));
+            }
 
-            /* Group 7: elements i+28..i+31 */
-            uint32x4_t d7 = vmovl_u16(vget_high_u16(w3));
-            float32x4_t f7 = vcvtq_f32_u32(d7);
-            float32x4_t v7 = vfmaq_f32(v_mn, f7, v_scale);
-            float32x4_t q7 = vld1q_f32(query + i + 28);
-            dot_acc1 = vfmaq_f32(dot_acc1, v7, q7);
+            /* Process 8 elements at a time for remainder */
+            for (; i + 8 <= count; i += 8) {
+                uint8_t b0 = block->qs[i / 2 + 0];
+                uint8_t b1 = block->qs[i / 2 + 1];
+                uint8_t b2 = block->qs[i / 2 + 2];
+                uint8_t b3 = block->qs[i / 2 + 3];
+
+                float q_arr[8] = {
+                    (float)(b0 & 0x0F), (float)(b0 >> 4),
+                    (float)(b1 & 0x0F), (float)(b1 >> 4),
+                    (float)(b2 & 0x0F), (float)(b2 >> 4),
+                    (float)(b3 & 0x0F), (float)(b3 >> 4),
+                };
+
+                float32x4_t ql = vld1q_f32(q_arr);
+                float32x4_t qh = vld1q_f32(q_arr + 4);
+                float32x4_t vl = vfmaq_f32(v_mn, ql, v_scale);
+                float32x4_t vh = vfmaq_f32(v_mn, qh, v_scale);
+                dot_acc0 = vfmaq_f32(dot_acc0, vl, vld1q_f32(query + offset + i));
+                dot_acc1 = vfmaq_f32(dot_acc1, vh, vld1q_f32(query + offset + i + 4));
+            }
+
+            /* Horizontal sum of both accumulators */
+            float dot = vaddvq_f32(vaddq_f32(dot_acc0, dot_acc1));
+
+            /* Scalar tail */
+            for (; i < count; i++) {
+                uint8_t byte = block->qs[i / 2];
+                int q = (i % 2 == 0) ? (byte & 0x0F) : (byte >> 4);
+                float val = mn + ((float)q + 0.5f) * scale;
+                dot += query[offset + i] * val;
+            }
+
+            total_dot += dot;
         }
 
-        /* Process 8 elements at a time for remainder */
-        for (; i + 8 <= count; i += 8) {
-            uint8_t b0 = block->qs[i / 2 + 0];
-            uint8_t b1 = block->qs[i / 2 + 1];
-            uint8_t b2 = block->qs[i / 2 + 2];
-            uint8_t b3 = block->qs[i / 2 + 3];
-
-            float q_arr[8] = {
-                (float)(b0 & 0x0F), (float)(b0 >> 4),
-                (float)(b1 & 0x0F), (float)(b1 >> 4),
-                (float)(b2 & 0x0F), (float)(b2 >> 4),
-                (float)(b3 & 0x0F), (float)(b3 >> 4),
-            };
-
-            float32x4_t ql = vld1q_f32(q_arr);
-            float32x4_t qh = vld1q_f32(q_arr + 4);
-            float32x4_t vl = vfmaq_f32(v_mn, ql, v_scale);
-            float32x4_t vh = vfmaq_f32(v_mn, qh, v_scale);
-            dot_acc0 = vfmaq_f32(dot_acc0, vl, vld1q_f32(query + i));
-            dot_acc1 = vfmaq_f32(dot_acc1, vh, vld1q_f32(query + i + 4));
-        }
-
-        /* Horizontal sum of both accumulators */
-        float dot = vaddvq_f32(vaddq_f32(dot_acc0, dot_acc1));
-
-        /* Scalar tail */
-        for (; i < count; i++) {
-            uint8_t byte = block->qs[i / 2];
-            int q = (i % 2 == 0) ? (byte & 0x0F) : (byte >> 4);
-            float val = mn + ((float)q + 0.5f) * scale;
-            dot += query[i] * val;
-        }
-
-        scores[s] = dot;
+        scores[s] = total_dot;
     }
 }
 
@@ -923,62 +908,67 @@ void tq_uniform_4b_attention_int_neon(const float* query, const void* kv,
     float q_scale, q_sum;
     tq_quantize_query_q8_neon(query, q8, &q_scale, &q_sum, head_dim);
 
-    const block_tq_uniform_4b* blocks = (const block_tq_uniform_4b*)kv;
+    int blocks_per_key = (head_dim + TQ_BK - 1) / TQ_BK;
+    const block_tq_uniform_4b* all_blocks = (const block_tq_uniform_4b*)kv;
     const int8x16_t mask_0f = vdupq_n_s8(0x0F);
 
     for (int s = 0; s < seq_len; s++) {
-        float k_scale = neon_fp16_to_fp32(blocks[s].scale);
-        float k_zp    = neon_fp16_to_fp32(blocks[s].zero_point);
-        float k_offset = k_zp + 0.5f * k_scale;
+        float total_score = 0;
 
-        int32x4_t acc = vdupq_n_s32(0);
+        for (int blk = 0; blk < blocks_per_key; blk++) {
+            int blk_offset = blk * TQ_BK;
+            int chunk = (head_dim - blk_offset > TQ_BK) ? TQ_BK : (head_dim - blk_offset);
+            const block_tq_uniform_4b* block = &all_blocks[s * blocks_per_key + blk];
 
-        /* Process 32 elements per iteration (16 packed bytes) */
-        int i;
-        for (i = 0; i + 15 < head_dim / 2; i += 16) {
-            /* Load 16 packed bytes = 32 Q4 values */
-            uint8x16_t packed = vld1q_u8(blocks[s].qs + i);
+            float k_scale = neon_fp16_to_fp32(block->scale);
+            float k_zp    = neon_fp16_to_fp32(block->zero_point);
 
-            /* Unpack: low nibbles and high nibbles */
-            int8x16_t q4_lo = vreinterpretq_s8_u8(vandq_u8(packed,
-                                   vreinterpretq_u8_s8(mask_0f)));
-            int8x16_t q4_hi = vreinterpretq_s8_u8(vshrq_n_u8(packed, 4));
+            int32x4_t acc = vdupq_n_s32(0);
 
-            /* Load 32 Q8 query values (interleaved: lo[0],hi[0],lo[1],hi[1]...)
-             * But our packing is: qs[i] has (elem[2i] | elem[2i+1]<<4)
-             * So q8 indices are: q8[2*i+0], q8[2*i+1], q8[2*(i+1)+0], ...
-             * We need q4_lo matched with q8[even] and q4_hi with q8[odd].
-             * Use deinterleave load to separate even/odd. */
-            int8x16x2_t q8_pairs = vld2q_s8(q8 + 2*i);
-            int8x16_t q8_even = q8_pairs.val[0]; /* q8[0],q8[2],q8[4],... */
-            int8x16_t q8_odd  = q8_pairs.val[1]; /* q8[1],q8[3],q8[5],... */
+            /* Process 32 elements per iteration (16 packed bytes) */
+            int i;
+            for (i = 0; i + 15 < chunk / 2; i += 16) {
+                uint8x16_t packed = vld1q_u8(block->qs + i);
 
-            /* Integer dot product: q4_lo * q8_even + q4_hi * q8_odd */
-            #if defined(__ARM_FEATURE_DOTPROD)
-            acc = vdotq_s32(acc, q4_lo, q8_even);
-            acc = vdotq_s32(acc, q4_hi, q8_odd);
-            #else
-            /* Fallback: vmull + vpaddl */
-            int16x8_t p0 = vmull_s8(vget_low_s8(q4_lo), vget_low_s8(q8_even));
-            int16x8_t p1 = vmull_s8(vget_high_s8(q4_lo), vget_high_s8(q8_even));
-            int16x8_t p2 = vmull_s8(vget_low_s8(q4_hi), vget_low_s8(q8_odd));
-            int16x8_t p3 = vmull_s8(vget_high_s8(q4_hi), vget_high_s8(q8_odd));
-            acc = vaddq_s32(acc, vpaddlq_s16(p0));
-            acc = vaddq_s32(acc, vpaddlq_s16(p1));
-            acc = vaddq_s32(acc, vpaddlq_s16(p2));
-            acc = vaddq_s32(acc, vpaddlq_s16(p3));
-            #endif
+                int8x16_t q4_lo = vreinterpretq_s8_u8(vandq_u8(packed,
+                                       vreinterpretq_u8_s8(mask_0f)));
+                int8x16_t q4_hi = vreinterpretq_s8_u8(vshrq_n_u8(packed, 4));
+
+                int8x16x2_t q8_pairs = vld2q_s8(q8 + blk_offset + 2*i);
+                int8x16_t q8_even = q8_pairs.val[0];
+                int8x16_t q8_odd  = q8_pairs.val[1];
+
+                #if defined(__ARM_FEATURE_DOTPROD)
+                acc = vdotq_s32(acc, q4_lo, q8_even);
+                acc = vdotq_s32(acc, q4_hi, q8_odd);
+                #else
+                int16x8_t p0 = vmull_s8(vget_low_s8(q4_lo), vget_low_s8(q8_even));
+                int16x8_t p1 = vmull_s8(vget_high_s8(q4_lo), vget_high_s8(q8_even));
+                int16x8_t p2 = vmull_s8(vget_low_s8(q4_hi), vget_low_s8(q8_odd));
+                int16x8_t p3 = vmull_s8(vget_high_s8(q4_hi), vget_high_s8(q8_odd));
+                acc = vaddq_s32(acc, vpaddlq_s16(p0));
+                acc = vaddq_s32(acc, vpaddlq_s16(p1));
+                acc = vaddq_s32(acc, vpaddlq_s16(p2));
+                acc = vaddq_s32(acc, vpaddlq_s16(p3));
+                #endif
+            }
+
+            /* Scalar tail */
+            int32_t isum = vaddvq_s32(acc);
+            for (; i < chunk / 2; i++) {
+                uint8_t p = block->qs[i];
+                isum += (int32_t)(p & 0x0F) * (int32_t)q8[blk_offset + 2*i];
+                isum += (int32_t)(p >> 4)   * (int32_t)q8[blk_offset + 2*i + 1];
+            }
+
+            /* Partial query sum for this block's zero-point correction */
+            float block_q_sum = 0;
+            for (int d = 0; d < chunk; d++) block_q_sum += query[blk_offset + d];
+
+            total_score += (float)isum * k_scale * q_scale + (k_zp + 0.5f * k_scale) * block_q_sum;
         }
 
-        /* Scalar tail */
-        int32_t isum = vaddvq_s32(acc);
-        for (; i < head_dim / 2; i++) {
-            uint8_t p = blocks[s].qs[i];
-            isum += (int32_t)(p & 0x0F) * (int32_t)q8[2*i];
-            isum += (int32_t)(p >> 4)   * (int32_t)q8[2*i + 1];
-        }
-
-        scores[s] = (float)isum * k_scale * q_scale + k_offset * q_sum;
+        scores[s] = total_score;
     }
 }
 

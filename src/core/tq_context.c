@@ -86,12 +86,19 @@ tq_status tq_quantize_keys(tq_context_t* ctx,
 
     pthread_mutex_lock(&ctx->mutex);
 
-    size_t type_size = TQ_TRAITS[type].type_size;
+    size_t block_size = TQ_TRAITS[type].block_size;
+    size_t type_size  = TQ_TRAITS[type].type_size;
+    int blocks_per_key = (head_dim + (int)block_size - 1) / (int)block_size;
     uint8_t* dst = (uint8_t*)out;
 
     for (int i = 0; i < n; i++) {
-        qfn(keys + i * head_dim, dst, head_dim);
-        dst += type_size;
+        for (int b = 0; b < blocks_per_key; b++) {
+            int offset = b * (int)block_size;
+            int chunk = head_dim - offset;
+            if (chunk > (int)block_size) chunk = (int)block_size;
+            qfn(keys + i * head_dim + offset, dst, chunk);
+            dst += type_size;
+        }
     }
 
     pthread_mutex_unlock(&ctx->mutex);
@@ -110,12 +117,19 @@ tq_status tq_dequantize_keys(tq_context_t* ctx,
     tq_dequantize_fn dfn = TQ_TRAITS[type].dequantize;
     if (!dfn) return TQ_ERR_NOT_IMPL;
 
-    size_t type_size = TQ_TRAITS[type].type_size;
+    size_t block_size = TQ_TRAITS[type].block_size;
+    size_t type_size  = TQ_TRAITS[type].type_size;
+    int blocks_per_key = (head_dim + (int)block_size - 1) / (int)block_size;
     const uint8_t* src = (const uint8_t*)quantized;
 
     for (int i = 0; i < n; i++) {
-        dfn(src, out + i * head_dim, head_dim);
-        src += type_size;
+        for (int b = 0; b < blocks_per_key; b++) {
+            int offset = b * (int)block_size;
+            int chunk = head_dim - offset;
+            if (chunk > (int)block_size) chunk = (int)block_size;
+            dfn(src, out + i * head_dim + offset, chunk);
+            src += type_size;
+        }
     }
 
     return TQ_OK;
@@ -132,12 +146,19 @@ tq_status tq_quantize_values(tq_context_t* ctx,
     tq_quantize_fn qfn = TQ_TRAITS[type].quantize;
     if (!qfn) return TQ_ERR_NOT_IMPL;
 
-    size_t type_size = TQ_TRAITS[type].type_size;
+    size_t block_size = TQ_TRAITS[type].block_size;
+    size_t type_size  = TQ_TRAITS[type].type_size;
+    int blocks_per_key = ((int)head_dim + (int)block_size - 1) / (int)block_size;
     uint8_t* dst = (uint8_t*)out;
 
     for (int i = 0; i < n; i++) {
-        qfn(values + i * head_dim, dst, head_dim);
-        dst += type_size;
+        for (int b = 0; b < blocks_per_key; b++) {
+            int offset = b * (int)block_size;
+            int chunk = head_dim - offset;
+            if (chunk > (int)block_size) chunk = (int)block_size;
+            qfn(values + i * head_dim + offset, dst, chunk);
+            dst += type_size;
+        }
     }
 
     return TQ_OK;

@@ -21,6 +21,8 @@ extern void tq_uniform_4b_quantize_ref(const float* src, void* dst, int n);
 extern void tq_uniform_4b_dequantize_ref(const void* src, float* dst, int n);
 extern void tq_uniform_4b_attention_ref(const float* query, const void* kv,
                                          float* scores, int seq_len, int head_dim);
+extern void tq_uniform_4b_attention_int_ref(const float* query, const void* kv,
+                                             float* scores, int seq_len, int head_dim);
 extern void tq_uniform_2b_quantize_ref(const float* src, void* dst, int n);
 extern void tq_uniform_2b_dequantize_ref(const void* src, float* dst, int n);
 extern void tq_uniform_2b_attention_ref(const float* query, const void* kv,
@@ -89,7 +91,7 @@ const tq_type_traits_t TQ_TRAITS[TQ_TYPE_COUNT] = {
         .bpe        = (float)sizeof(block_tq_uniform_4b) * 8.0f / TQ_BK,
         .quantize   = tq_uniform_4b_quantize_ref,
         .dequantize = tq_uniform_4b_dequantize_ref,
-        .attention  = tq_uniform_4b_attention_ref,
+        .attention  = tq_uniform_4b_attention_int_ref,
         .residual_type = TQ_TYPE_COUNT,
     },
     [TQ_TYPE_UNIFORM_2B] = {

@@ -149,12 +149,21 @@ void tq_mixed_4b8_dequantize_ref(const void* src, float* dst, int n) {
 
 void tq_mixed_4b8_attention_ref(const float* query, const void* kv,
                                  float* scores, int seq_len, int head_dim) {
-    const block_tq_mixed_4b8* blocks = (const block_tq_mixed_4b8*)kv;
+    int blocks_per_key = (head_dim + TQ_BK - 1) / TQ_BK;
+    const block_tq_mixed_4b8* all_blocks = (const block_tq_mixed_4b8*)kv;
+
     for (int s = 0; s < seq_len; s++) {
-        float deq[256]; /* max head_dim */
-        tq_mixed_4b8_dequantize_ref(&blocks[s], deq, head_dim);
         float dot = 0;
-        for (int d = 0; d < head_dim; d++) dot += query[d] * deq[d];
+        for (int b = 0; b < blocks_per_key; b++) {
+            int offset = b * TQ_BK;
+            int chunk = (head_dim - offset > TQ_BK) ? TQ_BK : (head_dim - offset);
+
+            float deq[TQ_BK];
+            tq_mixed_4b8_dequantize_ref(&all_blocks[s * blocks_per_key + b], deq, chunk);
+
+            for (int d = 0; d < chunk; d++)
+                dot += query[offset + d] * deq[d];
+        }
         scores[s] = dot;
     }
 }

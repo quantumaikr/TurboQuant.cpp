@@ -136,61 +136,57 @@ void tq_polar_dequantize_ref(const void* src, float* dst, int n) {
 
 void tq_polar_attention_ref(const float* query, const void* kv_cache,
                             float* scores, int seq_len, int head_dim) {
-    /* Each key is one block_tq_polar covering head_dim elements.
-     * Instead of dequantizing each key to FP32 then computing dot product,
-     * we precompute cos/sin/radius lookup tables per block and gather by index.
-     * This matches the Triton kernel in refs/PolarQuant/models/kernel4group.py. */
-    const block_tq_polar* blocks = (const block_tq_polar*)kv_cache;
-    int pairs = head_dim / 2;
-    if (pairs > TQ_BK / 2) pairs = TQ_BK / 2;
+    /* Each key may span multiple blocks when head_dim > TQ_BK.
+     * We precompute cos/sin/radius lookup tables per block and gather by index. */
+    int blocks_per_key = (head_dim + TQ_BK - 1) / TQ_BK;
+    const block_tq_polar* all_blocks = (const block_tq_polar*)kv_cache;
 
     /* Theta uses 2 bits (4 levels), rho uses 2 bits (4 levels) */
     const int theta_levels = 4;
     const int rho_levels = 4;
 
     for (int s = 0; s < seq_len; s++) {
-        const block_tq_polar* block = &blocks[s];
-
-        /* Decode block parameters from FP16 */
-        float tscale = fp16_to_fp32(block->tscale);
-        float tmin   = fp16_to_fp32(block->tmn);
-        float rscale = fp16_to_fp32(block->rscale);
-        float rmin   = fp16_to_fp32(block->rmn);
-
-        /* Step 1: Precompute theta lookup tables
-         * For quantization level q: theta = tmin + (q + 0.5) * tscale
-         * Using floor-based quantization with bin-centered reconstruction
-         * matching the Triton reference kernel. */
-        float cos_lut[4], sin_lut[4];
-        for (int q = 0; q < theta_levels; q++) {
-            float theta = tmin + ((float)q + 0.5f) * tscale;
-            cos_lut[q] = cosf(theta);
-            sin_lut[q] = sinf(theta);
-        }
-
-        /* Step 2: Precompute radius lookup table */
-        float radius_lut[4];
-        for (int q = 0; q < rho_levels; q++) {
-            radius_lut[q] = rmin + ((float)q + 0.5f) * rscale;
-        }
-
-        /* Step 3: For each pair, gather from LUT by index and accumulate */
         float score = 0.0f;
-        for (int i = 0; i < pairs; i++) {
-            /* Extract packed indices (same layout as quantize/dequantize) */
-            uint8_t byte = block->indices[i / 2];
-            uint8_t packed = (i % 2 == 0) ? (byte & 0x0F) : (byte >> 4);
-            int tq = packed & 0x03;
-            int rq = (packed >> 2) & 0x03;
 
-            /* Dot product contribution from this pair:
-             * key[2i]   = radius * cos(theta)
-             * key[2i+1] = radius * sin(theta)
-             * contrib = query[2i] * radius * cos(theta) + query[2i+1] * radius * sin(theta)
-             *         = radius * (query[2i] * cos(theta) + query[2i+1] * sin(theta)) */
-            float contrib = query[2 * i] * cos_lut[tq] + query[2 * i + 1] * sin_lut[tq];
-            contrib *= radius_lut[rq];
-            score += contrib;
+        for (int blk = 0; blk < blocks_per_key; blk++) {
+            int offset = blk * TQ_BK;
+            int chunk = (head_dim - offset > TQ_BK) ? TQ_BK : (head_dim - offset);
+            int pairs = chunk / 2;
+
+            const block_tq_polar* block = &all_blocks[s * blocks_per_key + blk];
+
+            /* Decode block parameters from FP16 */
+            float tscale = fp16_to_fp32(block->tscale);
+            float tmin   = fp16_to_fp32(block->tmn);
+            float rscale = fp16_to_fp32(block->rscale);
+            float rmin   = fp16_to_fp32(block->rmn);
+
+            /* Precompute theta lookup tables */
+            float cos_lut[4], sin_lut[4];
+            for (int q = 0; q < theta_levels; q++) {
+                float theta = tmin + ((float)q + 0.5f) * tscale;
+                cos_lut[q] = cosf(theta);
+                sin_lut[q] = sinf(theta);
+            }
+
+            /* Precompute radius lookup table */
+            float radius_lut[4];
+            for (int q = 0; q < rho_levels; q++) {
+                radius_lut[q] = rmin + ((float)q + 0.5f) * rscale;
+            }
+
+            /* For each pair, gather from LUT by index and accumulate */
+            for (int i = 0; i < pairs; i++) {
+                uint8_t byte = block->indices[i / 2];
+                uint8_t packed = (i % 2 == 0) ? (byte & 0x0F) : (byte >> 4);
+                int tq = packed & 0x03;
+                int rq = (packed >> 2) & 0x03;
+
+                float contrib = query[offset + 2 * i] * cos_lut[tq]
+                              + query[offset + 2 * i + 1] * sin_lut[tq];
+                contrib *= radius_lut[rq];
+                score += contrib;
+            }
         }
 
         scores[s] = score;
