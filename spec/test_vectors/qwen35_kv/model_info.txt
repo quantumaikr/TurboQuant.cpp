@@ -1,0 +1,10 @@
+model: Qwen/Qwen3.5-0.8B (synthetic)
+prompt_tokens: 64
+layers_saved: 4
+architecture: hybrid (DeltaNet + Gated Attention)
+kv_heads: 2
+q_heads: 8
+head_dim: 256
+total_layers: 24
+attention_layers: 6 (every 4th)
+note: synthetic data with realistic statistics
