@@ -13,11 +13,13 @@ option(TQ_BUILD_METAL "Build Metal backend" OFF)
 file(GLOB TQ_CORE_SOURCES src/core/*.c)
 file(GLOB TQ_CACHE_SOURCES src/cache/*.c)
 file(GLOB TQ_CPU_SOURCES src/backend/cpu/*.c)
+file(GLOB TQ_ENGINE_SOURCES src/engine/*.c)
 
 add_library(turboquant STATIC
     ${TQ_CORE_SOURCES}
     ${TQ_CACHE_SOURCES}
     ${TQ_CPU_SOURCES}
+    ${TQ_ENGINE_SOURCES}
 )
 target_include_directories(turboquant PUBLIC include)
 target_link_libraries(turboquant PRIVATE m)
@@ -27,6 +29,7 @@ add_library(turboquant_shared SHARED
     ${TQ_CORE_SOURCES}
     ${TQ_CACHE_SOURCES}
     ${TQ_CPU_SOURCES}
+    ${TQ_ENGINE_SOURCES}
 )
 target_include_directories(turboquant_shared PUBLIC include)
 target_link_libraries(turboquant_shared PRIVATE m)
@@ -81,6 +84,10 @@ if(TQ_BUILD_BENCH)
         target_link_libraries(${bench_name} turboquant)
     endforeach()
 endif()
+
+# CLI inference tool
+add_executable(tq_run tools/tq_run.c)
+target_link_libraries(tq_run turboquant)
 
 # Examples (always built)
 file(GLOB EXAMPLE_C_SOURCES examples/*.c)
