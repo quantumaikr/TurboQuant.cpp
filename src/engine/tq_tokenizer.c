@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stddef.h>
 
 /* ============================================================
  * Minimal JSON helpers (reused from tq_model.c pattern)
@@ -683,6 +684,88 @@ tq_tokenizer_t* tq_load_tokenizer(const char* path) {
     }
 
     free(data);
+    return tok;
+}
+
+/* ============================================================
+ * Load tokenizer from TQM file (extract embedded tokenizer)
+ * ============================================================ */
+tq_tokenizer_t* tq_load_tokenizer_from_tqm(const char* tqm_path) {
+    if (!tqm_path) return NULL;
+
+    FILE* f = fopen(tqm_path, "rb");
+    if (!f) {
+        fprintf(stderr, "tq_load_tokenizer_from_tqm: cannot open '%s'\n", tqm_path);
+        return NULL;
+    }
+
+    /* Read the TQM header to get tokenizer offset and size */
+    uint8_t hdr_buf[512];
+    if (fread(hdr_buf, 1, 512, f) != 512) {
+        fprintf(stderr, "tq_load_tokenizer_from_tqm: file too small\n");
+        fclose(f);
+        return NULL;
+    }
+
+    uint32_t magic;
+    memcpy(&magic, hdr_buf, 4);
+    if (magic != 0x4D515454) { /* TQM_MAGIC */
+        fprintf(stderr, "tq_load_tokenizer_from_tqm: not a TQM file\n");
+        fclose(f);
+        return NULL;
+    }
+
+    /* Extract tokenizer offset and size from header using offsetof */
+    uint64_t tok_offset, tok_size;
+    memcpy(&tok_offset, hdr_buf + offsetof(tqm_header_t, tokenizer_offset), 8);
+    memcpy(&tok_size, hdr_buf + offsetof(tqm_header_t, tokenizer_size), 8);
+
+    if (tok_size == 0) {
+        fprintf(stderr, "tq_load_tokenizer_from_tqm: no embedded tokenizer\n");
+        fclose(f);
+        return NULL;
+    }
+
+    /* Read tokenizer data */
+    char* tok_data = (char*)malloc((size_t)tok_size);
+    if (!tok_data) { fclose(f); return NULL; }
+
+    fseek(f, (long)tok_offset, SEEK_SET);
+    size_t nread = fread(tok_data, 1, (size_t)tok_size, f);
+    fclose(f);
+
+    if (nread != (size_t)tok_size) {
+        fprintf(stderr, "tq_load_tokenizer_from_tqm: short read (%zu/%llu)\n",
+                nread, (unsigned long long)tok_size);
+        free(tok_data);
+        return NULL;
+    }
+
+    tq_tokenizer_t* tok = tq_load_tokenizer_from_memory(tok_data, (size_t)tok_size);
+    free(tok_data);
+    return tok;
+}
+
+/* ============================================================
+ * Load tokenizer from memory buffer (for TQM embedded tokenizer)
+ * ============================================================ */
+tq_tokenizer_t* tq_load_tokenizer_from_memory(const char* data, size_t size) {
+    if (!data || size == 0) return NULL;
+
+    /* Make a null-terminated copy */
+    char* buf = (char*)malloc(size + 1);
+    if (!buf) return NULL;
+    memcpy(buf, data, size);
+    buf[size] = '\0';
+
+    tq_tokenizer_t* tok = NULL;
+    if (is_json_file(buf, size)) {
+        tok = load_hf_tokenizer_json(buf, size);
+    } else {
+        fprintf(stderr, "tq_load_tokenizer_from_memory: unrecognized format\n");
+    }
+
+    free(buf);
     return tok;
 }
 

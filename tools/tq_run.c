@@ -165,6 +165,12 @@ int main(int argc, char** argv) {
         if (!tokenizer) {
             fprintf(stderr, "Warning: failed to load tokenizer, using raw IDs\n");
         }
+    } else {
+        /* Try to load embedded tokenizer from TQM file */
+        tokenizer = tq_load_tokenizer_from_tqm(model_path);
+        if (tokenizer) {
+            fprintf(stderr, "Loaded embedded tokenizer from TQM file\n");
+        }
     }
 
     /* Set thread count for matmul parallelism */

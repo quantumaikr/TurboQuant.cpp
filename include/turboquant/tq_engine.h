@@ -217,11 +217,76 @@ typedef struct {
 } tq_tokenizer_t;
 
 /* ============================================================
+ * TQM (TurboQuant Model) binary format — pre-quantized, mmap-ready
+ *
+ * File layout:
+ *   [0..511]          tqm_header_t  (512 bytes, aligned)
+ *   [tok_off..+tok_sz] Tokenizer JSON (raw bytes)
+ *   [wt_off..+wt_sz]  Weights (Q4 packed + FP32 norms + BF16 embeds)
+ *
+ * All weight sections are 64-byte aligned for efficient mmap access.
+ * Q4 weights are stored as (packed_bytes, float_scales) per matrix.
+ * ============================================================ */
+
+#define TQM_MAGIC   0x4D515454  /* "TTQM" in little-endian */
+#define TQM_VERSION 1
+#define TQM_ALIGN   64          /* alignment for weight sections */
+
+#pragma pack(push, 1)
+typedef struct {
+    uint32_t magic;           /* TQM_MAGIC */
+    uint32_t version;         /* TQM_VERSION */
+
+    /* Model config (mirrors tq_model_config_t) */
+    int32_t n_layers;
+    int32_t hidden_dim;
+    int32_t intermediate_dim;
+    int32_t n_heads;
+    int32_t n_kv_heads;
+    int32_t head_dim;
+    int32_t vocab_size;
+    int32_t max_seq_len;
+    float   rope_freq_base;
+    float   rms_norm_eps;
+
+    /* DeltaNet config */
+    int32_t delta_n_heads;
+    int32_t delta_key_head_dim;
+    int32_t delta_value_head_dim;
+    int32_t delta_conv_width;
+    float   partial_rotary_factor;
+    int32_t use_qk_norm;
+    int32_t attn_output_gate;
+
+    /* Quantization config */
+    int32_t weight_quant;     /* 0=FP32, 4=Q4, 8=Q8 */
+    int32_t embed_format;     /* 0=FP32, 16=BF16 */
+
+    /* Section offsets (from file start) */
+    uint64_t tokenizer_offset;
+    uint64_t tokenizer_size;
+    uint64_t weights_offset;
+    uint64_t weights_size;
+
+    /* Layer type map */
+    int32_t n_attn_layers;
+    int32_t attn_layer_indices[64]; /* which layers are self_attn (max 64) */
+
+    /* Padding to 512 bytes.
+     * With pack(1): 8+32+8+16+12+8+32+260 = 376 used, 136 pad */
+    uint8_t _pad[136];
+} tqm_header_t;
+#pragma pack(pop)
+
+/* ============================================================
  * API
  * ============================================================ */
 
 /* Model loading */
 tq_model_t* tq_load_model(const char* path);
+tq_model_t* tq_load_tqm(const char* path);
+int tq_save_tqm(tq_model_t* model, const char* tokenizer_path,
+                const char* output_path);
 void tq_free_model(tq_model_t* model);
 
 /* State management */
@@ -243,6 +308,8 @@ int tq_sample_topp(const float* logits, int vocab_size,
 
 /* Tokenizer */
 tq_tokenizer_t* tq_load_tokenizer(const char* path);
+tq_tokenizer_t* tq_load_tokenizer_from_memory(const char* data, size_t size);
+tq_tokenizer_t* tq_load_tokenizer_from_tqm(const char* tqm_path);
 void tq_free_tokenizer(tq_tokenizer_t* tok);
 int tq_encode(const tq_tokenizer_t* tok, const char* text,
               int* tokens, int max_tokens, int add_bos);

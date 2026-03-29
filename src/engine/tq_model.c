@@ -538,10 +538,35 @@ static int* detect_attn_layers(tensor_info_t* tensors, int n_tensors,
     return indices;
 }
 
+/* Forward declaration */
+static tq_model_t* tq_load_safetensors(const char* path);
+
+/* ============================================================
+ * Load model — auto-detect format (TQM or safetensors)
+ * ============================================================ */
+tq_model_t* tq_load_model(const char* path) {
+    if (!path) return NULL;
+
+    /* Check magic bytes to detect TQM format */
+    FILE* probe = fopen(path, "rb");
+    if (probe) {
+        uint32_t magic = 0;
+        if (fread(&magic, 4, 1, probe) == 1 && magic == TQM_MAGIC) {
+            fclose(probe);
+            fprintf(stderr, "tq_load_model: detected TQM format, using fast loader\n");
+            return tq_load_tqm(path);
+        }
+        fclose(probe);
+    }
+
+    /* Fall through to safetensors loader */
+    return tq_load_safetensors(path);
+}
+
 /* ============================================================
  * Load model from safetensors file
  * ============================================================ */
-tq_model_t* tq_load_model(const char* path) {
+static tq_model_t* tq_load_safetensors(const char* path) {
     if (!path) return NULL;
 
 #ifdef _WIN32
@@ -1555,6 +1580,523 @@ void tq_quantize_weights_q4(tq_model_t* model) {
 
     fprintf(stderr, "tq_quantize_weights_q4: quantized to Q4 (%zu MB, was ~%zu MB FP32)\n",
             used / (1024 * 1024), used * 8 / (1024 * 1024));
+}
+
+/* ============================================================
+ * TQM format: pre-quantized model loading (mmap, zero-copy)
+ *
+ * The .tqm file stores:
+ *   - 512-byte header (tqm_header_t)
+ *   - Tokenizer JSON (raw bytes, variable size)
+ *   - Weights section (Q4 packed + FP32 norms + BF16 embeds)
+ *
+ * All pointers into the model's weight arrays point directly
+ * into the mmap'd file — no malloc, no conversion.
+ * ============================================================ */
+
+/* Align offset up to TQM_ALIGN boundary */
+static uint64_t tqm_align(uint64_t offset) {
+    return (offset + TQM_ALIGN - 1) & ~((uint64_t)(TQM_ALIGN - 1));
+}
+
+tq_model_t* tq_load_tqm(const char* path) {
+    if (!path) return NULL;
+
+#ifdef _WIN32
+    HANDLE hFile = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ,
+                               NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        fprintf(stderr, "tq_load_tqm: cannot open '%s'\n", path);
+        return NULL;
+    }
+    LARGE_INTEGER fileSize;
+    GetFileSizeEx(hFile, &fileSize);
+    size_t file_size = (size_t)fileSize.QuadPart;
+
+    HANDLE hMap = CreateFileMappingA(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
+    if (!hMap) { CloseHandle(hFile); return NULL; }
+    void* mmap_data = MapViewOfFile(hMap, FILE_MAP_READ, 0, 0, 0);
+    CloseHandle(hMap);
+    CloseHandle(hFile);
+    if (!mmap_data) return NULL;
+#else
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        fprintf(stderr, "tq_load_tqm: cannot open '%s'\n", path);
+        return NULL;
+    }
+    struct stat st;
+    if (fstat(fd, &st) < 0) { close(fd); return NULL; }
+    size_t file_size = (size_t)st.st_size;
+
+    void* mmap_data = mmap(NULL, file_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
+    if (mmap_data == MAP_FAILED) {
+        fprintf(stderr, "tq_load_tqm: mmap failed for '%s'\n", path);
+        return NULL;
+    }
+#endif
+
+    if (file_size < sizeof(tqm_header_t)) {
+        fprintf(stderr, "tq_load_tqm: file too small (%zu bytes)\n", file_size);
+        goto fail_tqm;
+    }
+
+    const tqm_header_t* hdr = (const tqm_header_t*)mmap_data;
+    if (hdr->magic != TQM_MAGIC) {
+        fprintf(stderr, "tq_load_tqm: invalid magic 0x%08X (expected 0x%08X)\n",
+                hdr->magic, TQM_MAGIC);
+        goto fail_tqm;
+    }
+    if (hdr->version != TQM_VERSION) {
+        fprintf(stderr, "tq_load_tqm: unsupported version %u\n", hdr->version);
+        goto fail_tqm;
+    }
+
+    /* Allocate model */
+    tq_model_t* model = (tq_model_t*)calloc(1, sizeof(tq_model_t));
+    if (!model) goto fail_tqm;
+
+    model->_mmap_data = mmap_data;
+    model->_mmap_size = file_size;
+
+    /* Copy config from header */
+    tq_model_config_t* c = &model->config;
+    c->n_layers         = hdr->n_layers;
+    c->hidden_dim       = hdr->hidden_dim;
+    c->intermediate_dim = hdr->intermediate_dim;
+    c->n_heads          = hdr->n_heads;
+    c->n_kv_heads       = hdr->n_kv_heads;
+    c->head_dim         = hdr->head_dim;
+    c->vocab_size       = hdr->vocab_size;
+    c->max_seq_len      = hdr->max_seq_len;
+    c->rope_freq_base   = hdr->rope_freq_base;
+    c->rms_norm_eps     = hdr->rms_norm_eps;
+
+    c->delta_n_heads       = hdr->delta_n_heads;
+    c->delta_key_head_dim  = hdr->delta_key_head_dim;
+    c->delta_value_head_dim= hdr->delta_value_head_dim;
+    c->delta_conv_width    = hdr->delta_conv_width;
+    c->partial_rotary_factor = hdr->partial_rotary_factor;
+    c->use_qk_norm         = hdr->use_qk_norm;
+    c->attn_output_gate    = hdr->attn_output_gate;
+
+    /* Attn layer indices */
+    model->n_attn_layers = hdr->n_attn_layers;
+    if (hdr->n_attn_layers > 0) {
+        model->attn_layer_indices = (int*)malloc((size_t)hdr->n_attn_layers * sizeof(int));
+        if (!model->attn_layer_indices) { free(model); goto fail_tqm; }
+        for (int i = 0; i < hdr->n_attn_layers; i++) {
+            model->attn_layer_indices[i] = hdr->attn_layer_indices[i];
+        }
+    }
+
+    /* Build is-attn lookup */
+    int* is_attn_layer = (int*)calloc((size_t)c->n_layers, sizeof(int));
+    if (is_attn_layer) {
+        for (int i = 0; i < model->n_attn_layers; i++) {
+            int idx = model->attn_layer_indices[i];
+            if (idx >= 0 && idx < c->n_layers) is_attn_layer[idx] = 1;
+        }
+    }
+
+    /* Dimensions for Q4 weight sizes */
+    int dim = c->hidden_dim;
+    int q_dim = c->n_heads * c->head_dim;
+    int kv_dim = c->n_kv_heads * c->head_dim;
+    int inter = c->intermediate_dim;
+    int qg_dim = c->attn_output_gate ? q_dim * 2 : q_dim;
+    int delta_qkv_dim = 3 * c->delta_n_heads * c->delta_key_head_dim;
+    int delta_z_dim = c->delta_n_heads * c->delta_value_head_dim;
+    int delta_dn = c->delta_n_heads;
+    int delta_conv_total = delta_qkv_dim; /* conv1d channels */
+    int delta_conv_width = c->delta_conv_width;
+    int delta_vhd = c->delta_value_head_dim;
+
+    /* Navigate to weights section */
+    uint8_t* ptr = (uint8_t*)mmap_data + hdr->weights_offset;
+    uint8_t* file_end = (uint8_t*)mmap_data + file_size;
+
+    /* Helper macro: read FP32 array pointer from mmap */
+    #define TQM_READ_FP32(dest, count) do {                   \
+        size_t _bytes = (size_t)(count) * sizeof(float);      \
+        if (ptr + _bytes > file_end) goto fail_tqm_model;     \
+        (dest) = (float*)ptr;                                  \
+        ptr += _bytes;                                         \
+    } while (0)
+
+    /* Helper macro: read Q4 weight (packed bytes + float scales) */
+    #define TQM_READ_Q4(dest_qs, dest_sc, rows, cols) do {    \
+        int _nb = ((cols) + 31) / 32;                          \
+        size_t _qs_bytes = (size_t)(rows) * _nb * 16;          \
+        size_t _sc_bytes = (size_t)(rows) * _nb * sizeof(float); \
+        if (ptr + _qs_bytes + _sc_bytes > file_end) goto fail_tqm_model; \
+        (dest_qs) = (uint8_t*)ptr;                             \
+        ptr += _qs_bytes;                                      \
+        (dest_sc) = (float*)ptr;                               \
+        ptr += _sc_bytes;                                      \
+    } while (0)
+
+    /* Allocate layers */
+    model->layers = (tq_layer_weights_t*)calloc((size_t)c->n_layers,
+                                                 sizeof(tq_layer_weights_t));
+    if (!model->layers) goto fail_tqm_model;
+
+    /* Read per-layer weights */
+    for (int l = 0; l < c->n_layers; l++) {
+        tq_layer_weights_t* layer = &model->layers[l];
+
+        /* Both layer types have norms */
+        TQM_READ_FP32(layer->attn_norm, dim);
+        TQM_READ_FP32(layer->ffn_norm, dim);
+
+        if (is_attn_layer && is_attn_layer[l]) {
+            /* Self-attention layer */
+            TQM_READ_Q4(layer->wq_q4, layer->wq_q4s, qg_dim, dim);
+            TQM_READ_Q4(layer->wk_q4, layer->wk_q4s, kv_dim, dim);
+            TQM_READ_Q4(layer->wv_q4, layer->wv_q4s, kv_dim, dim);
+            TQM_READ_Q4(layer->wo_q4, layer->wo_q4s, dim, q_dim);
+
+            if (c->use_qk_norm) {
+                TQM_READ_FP32(layer->q_norm, c->head_dim);
+                TQM_READ_FP32(layer->k_norm, c->head_dim);
+            }
+        } else {
+            /* DeltaNet layer */
+            TQM_READ_FP32(layer->delta_a_log, delta_dn);
+            TQM_READ_FP32(layer->delta_dt_bias, delta_dn);
+            TQM_READ_Q4(layer->delta_in_proj_qkv_q4, layer->delta_in_proj_qkv_q4s,
+                         delta_qkv_dim, dim);
+            TQM_READ_Q4(layer->delta_in_proj_z_q4, layer->delta_in_proj_z_q4s,
+                         delta_z_dim, dim);
+            TQM_READ_Q4(layer->delta_in_proj_a_q4, layer->delta_in_proj_a_q4s,
+                         delta_dn, dim);
+            TQM_READ_Q4(layer->delta_in_proj_b_q4, layer->delta_in_proj_b_q4s,
+                         delta_dn, dim);
+            TQM_READ_FP32(layer->delta_conv1d, delta_conv_total * delta_conv_width);
+            TQM_READ_FP32(layer->delta_norm, delta_vhd);
+            TQM_READ_Q4(layer->delta_out_proj_q4, layer->delta_out_proj_q4s,
+                         dim, delta_z_dim);
+        }
+
+        /* FFN (all layers) */
+        TQM_READ_Q4(layer->w_gate_q4, layer->w_gate_q4s, inter, dim);
+        TQM_READ_Q4(layer->w_up_q4, layer->w_up_q4s, inter, dim);
+        TQM_READ_Q4(layer->w_down_q4, layer->w_down_q4s, dim, inter);
+    }
+
+    /* Output norm */
+    TQM_READ_FP32(model->output_norm, dim);
+
+    /* Embedding and output as BF16 */
+    {
+        size_t embed_elems = (size_t)c->vocab_size * dim;
+        size_t embed_bytes = embed_elems * 2; /* BF16 = 2 bytes */
+        if (ptr + embed_bytes > file_end) goto fail_tqm_model;
+        model->embed_bf16 = (const uint16_t*)ptr;
+        model->token_embedding = NULL;
+        ptr += embed_bytes;
+
+        /* Check if output weight is tied (offset == 0 means tied) */
+        if (ptr + embed_bytes <= file_end) {
+            /* Separate lm_head */
+            model->output_weight_bf16 = (const uint16_t*)ptr;
+            model->output_weight = NULL;
+            ptr += embed_bytes;
+        } else {
+            /* Tied: output_weight points to embed_tokens */
+            model->output_weight_bf16 = model->embed_bf16;
+            model->output_weight = NULL;
+        }
+    }
+
+    #undef TQM_READ_FP32
+    #undef TQM_READ_Q4
+
+    model->use_q4_weights = 1;
+    free(is_attn_layer);
+
+    fprintf(stderr, "tq_load_tqm: loaded %d layers (%d self_attn), "
+            "dim=%d, heads=%d/%d, vocab=%d [%.1f MB, mmap zero-copy]\n",
+            c->n_layers, model->n_attn_layers, dim,
+            c->n_heads, c->n_kv_heads, c->vocab_size,
+            (double)file_size / (1024.0 * 1024.0));
+
+    return model;
+
+fail_tqm_model:
+    fprintf(stderr, "tq_load_tqm: weight data extends past end of file\n");
+    free(is_attn_layer);
+    free(model->attn_layer_indices);
+    free(model->layers);
+    free(model);
+
+fail_tqm:
+#ifdef _WIN32
+    if (mmap_data) UnmapViewOfFile(mmap_data);
+#else
+    if (mmap_data && mmap_data != MAP_FAILED) munmap(mmap_data, file_size);
+#endif
+    return NULL;
+}
+
+/* ============================================================
+ * TQM saver — write pre-quantized model to .tqm file
+ *
+ * The model MUST have Q4 weights (use_q4_weights == 1) before
+ * calling this function.  Call tq_quantize_weights_q4() first.
+ * ============================================================ */
+
+/* Helper: write with 64-byte alignment padding */
+static int tqm_write_pad(FILE* f, uint64_t current_offset) {
+    uint64_t aligned = tqm_align(current_offset);
+    if (aligned > current_offset) {
+        uint64_t pad_size = aligned - current_offset;
+        uint8_t zeros[64] = {0};
+        while (pad_size > 0) {
+            size_t chunk = pad_size > 64 ? 64 : (size_t)pad_size;
+            if (fwrite(zeros, 1, chunk, f) != chunk) return -1;
+            pad_size -= chunk;
+        }
+    }
+    return 0;
+}
+
+int tq_save_tqm(tq_model_t* model, const char* tokenizer_path,
+                const char* output_path) {
+    if (!model || !output_path) return -1;
+    if (!model->use_q4_weights) {
+        fprintf(stderr, "tq_save_tqm: model must be Q4-quantized first\n");
+        return -1;
+    }
+
+    const tq_model_config_t* c = &model->config;
+    int dim = c->hidden_dim;
+    int q_dim = c->n_heads * c->head_dim;
+    int kv_dim = c->n_kv_heads * c->head_dim;
+    int inter = c->intermediate_dim;
+    int qg_dim = c->attn_output_gate ? q_dim * 2 : q_dim;
+    int delta_qkv_dim = 3 * c->delta_n_heads * c->delta_key_head_dim;
+    int delta_z_dim = c->delta_n_heads * c->delta_value_head_dim;
+    int delta_dn = c->delta_n_heads;
+    int delta_conv_total = delta_qkv_dim;
+    int delta_conv_width = c->delta_conv_width;
+    int delta_vhd = c->delta_value_head_dim;
+
+    /* Build is-attn lookup */
+    int* is_attn_layer = (int*)calloc((size_t)c->n_layers, sizeof(int));
+    if (!is_attn_layer) return -1;
+    for (int i = 0; i < model->n_attn_layers; i++) {
+        int idx = model->attn_layer_indices[i];
+        if (idx >= 0 && idx < c->n_layers) is_attn_layer[idx] = 1;
+    }
+
+    /* Read tokenizer file if provided */
+    char* tok_data = NULL;
+    size_t tok_size = 0;
+    if (tokenizer_path) {
+        FILE* tf = fopen(tokenizer_path, "rb");
+        if (tf) {
+            fseek(tf, 0, SEEK_END);
+            tok_size = (size_t)ftell(tf);
+            fseek(tf, 0, SEEK_SET);
+            tok_data = (char*)malloc(tok_size);
+            if (tok_data) {
+                size_t nr = fread(tok_data, 1, tok_size, tf);
+                if (nr != tok_size) {
+                    free(tok_data);
+                    tok_data = NULL;
+                    tok_size = 0;
+                }
+            }
+            fclose(tf);
+        } else {
+            fprintf(stderr, "tq_save_tqm: warning: cannot open tokenizer '%s'\n",
+                    tokenizer_path);
+        }
+    }
+
+    FILE* f = fopen(output_path, "wb");
+    if (!f) {
+        fprintf(stderr, "tq_save_tqm: cannot create '%s'\n", output_path);
+        free(tok_data);
+        free(is_attn_layer);
+        return -1;
+    }
+
+    /* Compute section offsets */
+    uint64_t tok_offset = tqm_align(sizeof(tqm_header_t));
+    uint64_t wt_offset = tqm_align(tok_offset + tok_size);
+
+    /* Build and write header */
+    tqm_header_t hdr;
+    memset(&hdr, 0, sizeof(hdr));
+    hdr.magic   = TQM_MAGIC;
+    hdr.version = TQM_VERSION;
+
+    hdr.n_layers         = c->n_layers;
+    hdr.hidden_dim       = c->hidden_dim;
+    hdr.intermediate_dim = c->intermediate_dim;
+    hdr.n_heads          = c->n_heads;
+    hdr.n_kv_heads       = c->n_kv_heads;
+    hdr.head_dim         = c->head_dim;
+    hdr.vocab_size       = c->vocab_size;
+    hdr.max_seq_len      = c->max_seq_len;
+    hdr.rope_freq_base   = c->rope_freq_base;
+    hdr.rms_norm_eps     = c->rms_norm_eps;
+
+    hdr.delta_n_heads       = c->delta_n_heads;
+    hdr.delta_key_head_dim  = c->delta_key_head_dim;
+    hdr.delta_value_head_dim= c->delta_value_head_dim;
+    hdr.delta_conv_width    = c->delta_conv_width;
+    hdr.partial_rotary_factor = c->partial_rotary_factor;
+    hdr.use_qk_norm         = c->use_qk_norm;
+    hdr.attn_output_gate    = c->attn_output_gate;
+
+    hdr.weight_quant = 4; /* Q4 */
+    hdr.embed_format = 16; /* BF16 */
+
+    hdr.tokenizer_offset = tok_offset;
+    hdr.tokenizer_size   = tok_size;
+    hdr.weights_offset   = wt_offset;
+    /* weights_size filled after writing */
+
+    hdr.n_attn_layers = model->n_attn_layers;
+    for (int i = 0; i < model->n_attn_layers && i < 64; i++) {
+        hdr.attn_layer_indices[i] = model->attn_layer_indices[i];
+    }
+
+    fwrite(&hdr, sizeof(hdr), 1, f);
+
+    /* Pad to tokenizer offset */
+    {
+        uint64_t cur = sizeof(tqm_header_t);
+        tqm_write_pad(f, cur);
+    }
+
+    /* Write tokenizer */
+    if (tok_data && tok_size > 0) {
+        fwrite(tok_data, 1, tok_size, f);
+    }
+    free(tok_data);
+
+    /* Pad to weights offset */
+    {
+        uint64_t cur = tok_offset + tok_size;
+        tqm_write_pad(f, cur);
+    }
+
+    /* Helper macros for writing */
+    #define TQM_WRITE_FP32(src, count) do {                            \
+        if ((src)) fwrite((src), sizeof(float), (size_t)(count), f);   \
+        else { float _z = 0; for (int _i = 0; _i < (count); _i++)     \
+            fwrite(&_z, sizeof(float), 1, f); }                        \
+    } while (0)
+
+    #define TQM_WRITE_Q4(qs, sc, rows, cols) do {                      \
+        int _nb = ((cols) + 31) / 32;                                   \
+        size_t _qs_bytes = (size_t)(rows) * _nb * 16;                   \
+        size_t _sc_bytes = (size_t)(rows) * _nb * sizeof(float);        \
+        if ((qs)) fwrite((qs), 1, _qs_bytes, f);                       \
+        else { uint8_t _z = 0; for (size_t _i = 0; _i < _qs_bytes; _i++) \
+            fwrite(&_z, 1, 1, f); }                                    \
+        if ((sc)) fwrite((sc), 1, _sc_bytes, f);                       \
+        else { float _zf = 0; for (size_t _i = 0;                      \
+            _i < (size_t)(rows) * _nb; _i++) fwrite(&_zf, sizeof(float), 1, f); } \
+    } while (0)
+
+    /* Write per-layer weights */
+    for (int l = 0; l < c->n_layers; l++) {
+        const tq_layer_weights_t* layer = &model->layers[l];
+
+        TQM_WRITE_FP32(layer->attn_norm, dim);
+        TQM_WRITE_FP32(layer->ffn_norm, dim);
+
+        if (is_attn_layer[l]) {
+            TQM_WRITE_Q4(layer->wq_q4, layer->wq_q4s, qg_dim, dim);
+            TQM_WRITE_Q4(layer->wk_q4, layer->wk_q4s, kv_dim, dim);
+            TQM_WRITE_Q4(layer->wv_q4, layer->wv_q4s, kv_dim, dim);
+            TQM_WRITE_Q4(layer->wo_q4, layer->wo_q4s, dim, q_dim);
+
+            if (c->use_qk_norm) {
+                TQM_WRITE_FP32(layer->q_norm, c->head_dim);
+                TQM_WRITE_FP32(layer->k_norm, c->head_dim);
+            }
+        } else {
+            TQM_WRITE_FP32(layer->delta_a_log, delta_dn);
+            TQM_WRITE_FP32(layer->delta_dt_bias, delta_dn);
+            TQM_WRITE_Q4(layer->delta_in_proj_qkv_q4, layer->delta_in_proj_qkv_q4s,
+                          delta_qkv_dim, dim);
+            TQM_WRITE_Q4(layer->delta_in_proj_z_q4, layer->delta_in_proj_z_q4s,
+                          delta_z_dim, dim);
+            TQM_WRITE_Q4(layer->delta_in_proj_a_q4, layer->delta_in_proj_a_q4s,
+                          delta_dn, dim);
+            TQM_WRITE_Q4(layer->delta_in_proj_b_q4, layer->delta_in_proj_b_q4s,
+                          delta_dn, dim);
+            TQM_WRITE_FP32(layer->delta_conv1d, delta_conv_total * delta_conv_width);
+            TQM_WRITE_FP32(layer->delta_norm, delta_vhd);
+            TQM_WRITE_Q4(layer->delta_out_proj_q4, layer->delta_out_proj_q4s,
+                          dim, delta_z_dim);
+        }
+
+        TQM_WRITE_Q4(layer->w_gate_q4, layer->w_gate_q4s, inter, dim);
+        TQM_WRITE_Q4(layer->w_up_q4, layer->w_up_q4s, inter, dim);
+        TQM_WRITE_Q4(layer->w_down_q4, layer->w_down_q4s, dim, inter);
+    }
+
+    /* Output norm */
+    TQM_WRITE_FP32(model->output_norm, dim);
+
+    /* Embedding BF16 */
+    {
+        size_t embed_elems = (size_t)c->vocab_size * dim;
+        if (model->embed_bf16) {
+            fwrite(model->embed_bf16, 2, embed_elems, f);
+        } else if (model->token_embedding) {
+            /* Convert FP32 to BF16 on the fly */
+            for (size_t i = 0; i < embed_elems; i++) {
+                uint32_t fp32;
+                memcpy(&fp32, &model->token_embedding[i], sizeof(float));
+                uint16_t bf16 = (uint16_t)(fp32 >> 16);
+                fwrite(&bf16, 2, 1, f);
+            }
+        } else {
+            /* Write zeros */
+            uint16_t z = 0;
+            for (size_t i = 0; i < embed_elems; i++) fwrite(&z, 2, 1, f);
+        }
+
+        /* Output weight (lm_head) — write if different from embed */
+        if (model->output_weight_bf16 &&
+            model->output_weight_bf16 != model->embed_bf16) {
+            fwrite(model->output_weight_bf16, 2, embed_elems, f);
+        } else if (model->output_weight &&
+                   model->output_weight != model->token_embedding) {
+            for (size_t i = 0; i < embed_elems; i++) {
+                uint32_t fp32;
+                memcpy(&fp32, &model->output_weight[i], sizeof(float));
+                uint16_t bf16 = (uint16_t)(fp32 >> 16);
+                fwrite(&bf16, 2, 1, f);
+            }
+        }
+        /* If tied, don't write — loader will detect from file size */
+    }
+
+    #undef TQM_WRITE_FP32
+    #undef TQM_WRITE_Q4
+
+    /* Update weights_size in header */
+    long end_pos = ftell(f);
+    hdr.weights_size = (uint64_t)end_pos - wt_offset;
+    fseek(f, 0, SEEK_SET);
+    fwrite(&hdr, sizeof(hdr), 1, f);
+
+    fclose(f);
+    free(is_attn_layer);
+
+    fprintf(stderr, "tq_save_tqm: saved '%s' (%.1f MB)\n",
+            output_path, (double)end_pos / (1024.0 * 1024.0));
+    return 0;
 }
 
 /* ============================================================

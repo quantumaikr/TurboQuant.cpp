@@ -1,6 +1,6 @@
 # TurboQuant.cpp — Session State
 
-**Last updated**: 2026-03-29 (v0.9.1 non-matmul overhead optimization)
+**Last updated**: 2026-03-29 (v0.9.2 TQM format for instant model loading)
 **Last commit**: pending
 
 ## Speed Progression
@@ -60,6 +60,60 @@ llama.cpp Q4_K_M:  ~50   tok/s  ← target
 - `src/engine/tq_transformer.c` — All 4 strategies
 - `src/engine/tq_ops.c` — Added tq_matmul_q4_preq(), fixed unused var warning
 - `include/turboquant/tq_engine.h` — Added tq_matmul_q4_preq() declaration
+
+## v0.9.2 Changes — TQM Format (Instant Model Loading)
+
+### Problem
+Loading safetensors BF16 models requires: mmap → parse JSON → BF16→FP32 convert → Q4 quantize.
+This takes ~6s for an 0.8B model. Goal: <0.5s via pre-quantized mmap-ready format.
+
+### Solution: TQM (TurboQuant Model) binary format
+- 512-byte packed header (tqm_header_t) with full model config
+- Embedded tokenizer.json (raw bytes, variable size)
+- Pre-quantized Q4 weights + FP32 norms + BF16 embeddings
+- All sections 64-byte aligned for efficient mmap access
+- Zero-copy loading: weight pointers point directly into mmap'd file
+
+### Components Implemented
+1. **Format definition** (`include/turboquant/tq_engine.h`)
+   - `tqm_header_t` — 512-byte packed struct with magic, config, section offsets
+   - `TQM_MAGIC` (0x4D515454 = "TTQM"), `TQM_VERSION` (1), `TQM_ALIGN` (64)
+
+2. **TQM loader** (`src/engine/tq_model.c`)
+   - `tq_load_tqm()` — mmap file, cast header, set weight pointers directly
+   - Zero malloc for weights, zero conversion — all pointers into mmap'd data
+   - `tq_load_model()` auto-detects TQM vs safetensors by magic bytes
+
+3. **TQM saver** (`src/engine/tq_model.c`)
+   - `tq_save_tqm()` — writes header + tokenizer + Q4 weights sequentially
+   - Handles BF16 embed passthrough and FP32→BF16 on-the-fly conversion
+   - Supports tied/untied output weights
+
+4. **Converter tool** (`tools/tq_convert.c`)
+   - CLI: `tq_convert model.safetensors tokenizer.json -o model.tqm`
+   - 3-step pipeline: load → quantize Q4 → write TQM
+
+5. **Tokenizer from memory** (`src/engine/tq_tokenizer.c`)
+   - `tq_load_tokenizer_from_memory()` — parse JSON from buffer
+   - `tq_load_tokenizer_from_tqm()` — extract embedded tokenizer from .tqm file
+   - `tq_run` auto-loads embedded tokenizer when no -t flag given
+
+6. **Tests** (`tests/test_tqm.cpp`)
+   - Header size verification (512 bytes)
+   - Magic value verification
+   - Save/load roundtrip with synthetic model (norm + Q4 weight byte-exact match)
+   - Auto-detect format (tq_load_model dispatches correctly)
+   - Tokenizer from-memory loading
+   - All 20 tests pass (6 new TQM tests)
+
+### Files Modified/Created
+- `include/turboquant/tq_engine.h` — tqm_header_t, tq_load_tqm, tq_save_tqm, tq_load_tokenizer_from_memory/tqm
+- `src/engine/tq_model.c` — tq_load_tqm(), tq_save_tqm(), auto-detect in tq_load_model()
+- `src/engine/tq_tokenizer.c` — tq_load_tokenizer_from_memory(), tq_load_tokenizer_from_tqm()
+- `tools/tq_convert.c` — NEW converter tool
+- `tools/tq_run.c` — auto-load embedded tokenizer from TQM
+- `tests/test_tqm.cpp` — NEW test file (6 tests)
+- `CMakeLists.txt` — added tq_convert build target
 
 ## What Needs Work
 1. Measure actual speed improvement (need model file for tq_run)
