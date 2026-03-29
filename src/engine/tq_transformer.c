@@ -161,23 +161,29 @@ static void l2_normalize(float* v, int n) {
  * ============================================================ */
 static float causal_conv1d_step(float input, float* conv_buf,
                                  const float* weight, int conv_width) {
-    /* Shift buffer left and insert new input */
+    /* conv_buf holds the previous (conv_width - 1) inputs:
+     *   conv_buf[0] = x[t-K+1], ..., conv_buf[K-2] = x[t-1]
+     * The current input x[t] is NOT in the buffer yet.
+     *
+     * Causal conv1d output at time t:
+     *   out = sum_{k=0}^{K-2} weight[k] * conv_buf[k]  +  weight[K-1] * input
+     *
+     * After computing, shift buffer left and insert input for next step. */
     int buf_len = conv_width - 1;
-    for (int i = 0; i < buf_len - 1; i++) {
-        conv_buf[i] = conv_buf[i + 1];
-    }
-    conv_buf[buf_len - 1] = input;
 
-    /* Compute: sum of weight[i] * buffer[i] for i=0..buf_len-1 (past inputs)
-     *          + weight[conv_width-1] * current_input
-     * Actually, conv1d weight layout is [out_channels, 1, kernel_size].
-     * For causal conv: output = sum_{k=0}^{K-1} weight[k] * x[t-K+1+k]
-     * The buffer holds x[t-K+1]..x[t-1], and input is x[t]. */
+    /* Compute output BEFORE updating buffer */
     float out = 0.0f;
     for (int k = 0; k < buf_len; k++) {
         out += weight[k] * conv_buf[k];
     }
     out += weight[buf_len] * input;
+
+    /* Now update buffer: shift left and insert current input */
+    for (int i = 0; i < buf_len - 1; i++) {
+        conv_buf[i] = conv_buf[i + 1];
+    }
+    conv_buf[buf_len - 1] = input;
+
     return out;
 }
 

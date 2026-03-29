@@ -89,6 +89,10 @@ endif()
 add_executable(tq_run tools/tq_run.c)
 target_link_libraries(tq_run turboquant)
 
+# Debug comparison tool
+add_executable(debug_compare tools/debug_compare.c)
+target_link_libraries(debug_compare turboquant)
+
 # Examples (always built)
 file(GLOB EXAMPLE_C_SOURCES examples/*.c)
 file(GLOB EXAMPLE_CXX_SOURCES examples/*.cpp)

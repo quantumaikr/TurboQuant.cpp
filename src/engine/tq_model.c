@@ -991,6 +991,49 @@ tq_model_t* tq_load_model(const char* path) {
 
     free(tensors);
 
+    /* Qwen3.5 RMSNorm adjustment: Qwen3_5RMSNorm computes
+     * output = norm(x) * (1.0 + weight), NOT norm(x) * weight.
+     * We bake the "+1" into the weight so tq_rmsnorm can stay as
+     * out = x * rsqrt * weight.
+     *
+     * This applies to: input_layernorm, post_attention_layernorm,
+     * model.norm, q_norm, k_norm.
+     * It does NOT apply to: linear_attn.norm (Qwen3_5RMSNormGated
+     * uses plain weight without +1).
+     *
+     * We detect Qwen3.5 by the presence of DeltaNet layers. */
+    if (model->config.delta_n_heads > 0) {
+        int dim_h = model->config.hidden_dim;
+        int head_dim_h = model->config.head_dim;
+
+        for (int l = 0; l < n_layers; l++) {
+            tq_layer_weights_t* layer_w = &model->layers[l];
+            if (layer_w->attn_norm) {
+                for (int i = 0; i < dim_h; i++)
+                    layer_w->attn_norm[i] += 1.0f;
+            }
+            if (layer_w->ffn_norm) {
+                for (int i = 0; i < dim_h; i++)
+                    layer_w->ffn_norm[i] += 1.0f;
+            }
+            if (layer_w->q_norm) {
+                for (int i = 0; i < head_dim_h; i++)
+                    layer_w->q_norm[i] += 1.0f;
+            }
+            if (layer_w->k_norm) {
+                for (int i = 0; i < head_dim_h; i++)
+                    layer_w->k_norm[i] += 1.0f;
+            }
+            /* Note: delta_norm is NOT adjusted — Qwen3_5RMSNormGated
+             * uses plain weight without +1 offset */
+        }
+        if (model->output_norm) {
+            for (int i = 0; i < dim_h; i++)
+                model->output_norm[i] += 1.0f;
+        }
+        fprintf(stderr, "tq_load_model: applied Qwen3.5 RMSNorm +1 weight adjustment\n");
+    }
+
     fprintf(stderr, "tq_load_model: loaded %d layers (%d with self_attn), "
             "dim=%d, heads=%d/%d, vocab=%d\n",
             model->config.n_layers, model->n_attn_layers,
