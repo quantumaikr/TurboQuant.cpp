@@ -10,27 +10,49 @@
 #include <math.h>
 #include <string.h>
 #include <float.h>
+#include <pthread.h>
 
 #ifdef __ARM_NEON
 #include <arm_neon.h>
 #endif
 
 /* ============================================================
- * Matrix-vector multiply: out[i] = sum_j(w[i*d + j] * x[j])
- *
- * This is THE dominant cost in LLM inference (~90% of compute).
- * w is [n, d] row-major, x is [d], out is [n].
+ * Global thread count for matmul parallelism
  * ============================================================ */
-void tq_matmul(float* out, const float* x, const float* w, int n, int d) {
+static int g_n_threads = 1;
+
+void tq_set_threads(int n_threads) {
+    if (n_threads < 1) n_threads = 1;
+    if (n_threads > 16) n_threads = 16;
+    g_n_threads = n_threads;
+}
+
+int tq_get_threads(void) {
+    return g_n_threads;
+}
+
+/* ============================================================
+ * Multi-threaded matmul worker
+ * ============================================================ */
+typedef struct {
+    float* out;
+    const float* x;
+    const float* w;
+    int start_row;
+    int end_row;
+    int d;
+} matmul_task_t;
+
+static void matmul_rows(float* out, const float* x, const float* w,
+                        int start_row, int end_row, int d) {
 #ifdef __ARM_NEON
-    for (int i = 0; i < n; i++) {
+    for (int i = start_row; i < end_row; i++) {
         const float* wi = w + (size_t)i * d;
         float32x4_t acc0 = vdupq_n_f32(0.0f);
         float32x4_t acc1 = vdupq_n_f32(0.0f);
         float32x4_t acc2 = vdupq_n_f32(0.0f);
         float32x4_t acc3 = vdupq_n_f32(0.0f);
         int j = 0;
-        /* Process 16 elements per iteration for better ILP */
         for (; j + 15 < d; j += 16) {
             float32x4_t vx0 = vld1q_f32(x + j);
             float32x4_t vx1 = vld1q_f32(x + j + 4);
@@ -45,26 +67,22 @@ void tq_matmul(float* out, const float* x, const float* w, int n, int d) {
             acc2 = vfmaq_f32(acc2, vx2, vw2);
             acc3 = vfmaq_f32(acc3, vx3, vw3);
         }
-        /* Process remaining 4-element chunks */
         for (; j + 3 < d; j += 4) {
             float32x4_t vx = vld1q_f32(x + j);
             float32x4_t vw = vld1q_f32(wi + j);
             acc0 = vfmaq_f32(acc0, vx, vw);
         }
-        /* Reduce four accumulators */
         acc0 = vaddq_f32(acc0, acc1);
         acc2 = vaddq_f32(acc2, acc3);
         acc0 = vaddq_f32(acc0, acc2);
         float sum = vaddvq_f32(acc0);
-        /* Scalar tail */
         for (; j < d; j++) {
             sum += wi[j] * x[j];
         }
         out[i] = sum;
     }
 #else
-    /* Generic scalar implementation */
-    for (int i = 0; i < n; i++) {
+    for (int i = start_row; i < end_row; i++) {
         const float* wi = w + (size_t)i * d;
         float sum = 0.0f;
         for (int j = 0; j < d; j++) {
@@ -73,6 +91,49 @@ void tq_matmul(float* out, const float* x, const float* w, int n, int d) {
         out[i] = sum;
     }
 #endif
+}
+
+static void* matmul_worker(void* arg) {
+    matmul_task_t* t = (matmul_task_t*)arg;
+    matmul_rows(t->out, t->x, t->w, t->start_row, t->end_row, t->d);
+    return NULL;
+}
+
+/* ============================================================
+ * Matrix-vector multiply: out[i] = sum_j(w[i*d + j] * x[j])
+ *
+ * This is THE dominant cost in LLM inference (~90% of compute).
+ * w is [n, d] row-major, x is [d], out is [n].
+ * ============================================================ */
+void tq_matmul(float* out, const float* x, const float* w, int n, int d) {
+    int n_threads = g_n_threads;
+
+    /* For small matrices or single-thread config, skip thread overhead */
+    if (n < 256 || n_threads <= 1) {
+        matmul_rows(out, x, w, 0, n, d);
+        return;
+    }
+
+    /* Cap threads to available rows */
+    if (n_threads > n) n_threads = n;
+    if (n_threads > 16) n_threads = 16;
+
+    pthread_t threads[16];
+    matmul_task_t tasks[16];
+
+    int rows_per_thread = n / n_threads;
+    for (int t = 0; t < n_threads; t++) {
+        tasks[t].out = out;
+        tasks[t].x = x;
+        tasks[t].w = w;
+        tasks[t].d = d;
+        tasks[t].start_row = t * rows_per_thread;
+        tasks[t].end_row = (t == n_threads - 1) ? n : (t + 1) * rows_per_thread;
+        pthread_create(&threads[t], NULL, matmul_worker, &tasks[t]);
+    }
+    for (int t = 0; t < n_threads; t++) {
+        pthread_join(threads[t], NULL);
+    }
 }
 
 /* ============================================================

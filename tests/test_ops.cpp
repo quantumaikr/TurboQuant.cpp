@@ -156,6 +156,63 @@ TEST(TqOps, MatMulNEONUnaligned) {
     }
 }
 
+TEST(TqOps, MatMulMultiThreaded) {
+    /* Large n to trigger multi-threaded path (n >= 256) */
+    const int n = 1024, d = 512;
+    std::vector<float> w(n * d), x(d), out(n), ref(n);
+
+    fill_random(w.data(), n * d, 700);
+    fill_random(x.data(), d, 800);
+
+    /* Enable 4 threads */
+    tq_set_threads(4);
+
+    tq_matmul(out.data(), x.data(), w.data(), n, d);
+    ref_matmul(ref.data(), x.data(), w.data(), n, d);
+
+    for (int i = 0; i < n; i++) {
+        EXPECT_NEAR(out[i], ref[i], std::abs(ref[i]) * 1e-4f + 1e-4f)
+            << "Mismatch at row " << i;
+    }
+
+    /* Restore single-threaded */
+    tq_set_threads(1);
+}
+
+TEST(TqOps, MatMulMultiThreadedVocab) {
+    /* Simulate vocab projection: very large n, moderate d */
+    const int n = 4096, d = 256;
+    std::vector<float> w(n * d), x(d), out(n), ref(n);
+
+    fill_random(w.data(), n * d, 900);
+    fill_random(x.data(), d, 1000);
+
+    tq_set_threads(4);
+    tq_matmul(out.data(), x.data(), w.data(), n, d);
+
+    ref_matmul(ref.data(), x.data(), w.data(), n, d);
+
+    for (int i = 0; i < n; i++) {
+        EXPECT_NEAR(out[i], ref[i], std::abs(ref[i]) * 1e-4f + 1e-4f)
+            << "Mismatch at row " << i;
+    }
+
+    tq_set_threads(1);
+}
+
+TEST(TqOps, SetGetThreads) {
+    tq_set_threads(8);
+    EXPECT_EQ(tq_get_threads(), 8);
+    tq_set_threads(1);
+    EXPECT_EQ(tq_get_threads(), 1);
+    /* Clamp to valid range */
+    tq_set_threads(0);
+    EXPECT_EQ(tq_get_threads(), 1);
+    tq_set_threads(100);
+    EXPECT_EQ(tq_get_threads(), 16);
+    tq_set_threads(1);
+}
+
 /* ============================================================
  * RMSNorm tests
  * ============================================================ */

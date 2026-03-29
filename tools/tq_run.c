@@ -12,6 +12,7 @@
  *   -P <top_p>       Top-p nucleus sampling (default: 0.9)
  *   -k <kv_type>     KV cache type: fp32, uniform_4b, uniform_2b,
  *                     polar_3b, polar_4b, turbo_3b, turbo_4b (default: uniform_4b)
+ *   -j <threads>     Number of threads for matmul (default: 4)
  *   -s <seed>        Random seed (default: 42)
  *   --info           Print model info and exit
  */
@@ -55,6 +56,7 @@ static void print_usage(const char* prog) {
     fprintf(stderr, "  -T <temperature> Sampling temperature (default: 0.7)\n");
     fprintf(stderr, "  -P <top_p>       Top-p sampling (default: 0.9)\n");
     fprintf(stderr, "  -k <kv_type>     KV cache quantization type\n");
+    fprintf(stderr, "  -j <threads>     Number of threads for matmul (default: 4)\n");
     fprintf(stderr, "  -s <seed>        Random seed (default: 42)\n");
     fprintf(stderr, "  --info           Print model info and exit\n");
 }
@@ -73,6 +75,7 @@ int main(int argc, char** argv) {
     float temperature = 0.7f;
     float top_p = 0.9f;
     tq_type kv_type = TQ_TYPE_UNIFORM_4B;
+    int n_threads = 4;
     int info_only = 0;
 
     for (int i = 1; i < argc; i++) {
@@ -90,6 +93,8 @@ int main(int argc, char** argv) {
             top_p = (float)atof(argv[++i]);
         } else if (strcmp(argv[i], "-k") == 0 && i + 1 < argc) {
             kv_type = parse_kv_type(argv[++i]);
+        } else if (strcmp(argv[i], "-j") == 0 && i + 1 < argc) {
+            n_threads = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--info") == 0) {
             info_only = 1;
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
@@ -133,6 +138,10 @@ int main(int argc, char** argv) {
             fprintf(stderr, "Warning: failed to load tokenizer, using raw IDs\n");
         }
     }
+
+    /* Set thread count for matmul parallelism */
+    tq_set_threads(n_threads);
+    fprintf(stderr, "Threads: %d\n", tq_get_threads());
 
     /* Configure generation */
     tq_gen_config_t config = tq_default_gen_config();

@@ -9,6 +9,9 @@ option(TQ_BUILD_BENCH "Build benchmarks" OFF)
 option(TQ_BUILD_CUDA "Build CUDA backend" OFF)
 option(TQ_BUILD_METAL "Build Metal backend" OFF)
 
+# Threads (pthread)
+find_package(Threads REQUIRED)
+
 # Core library
 file(GLOB TQ_CORE_SOURCES src/core/*.c)
 file(GLOB TQ_CACHE_SOURCES src/cache/*.c)
@@ -22,7 +25,7 @@ add_library(turboquant STATIC
     ${TQ_ENGINE_SOURCES}
 )
 target_include_directories(turboquant PUBLIC include)
-target_link_libraries(turboquant PRIVATE m)
+target_link_libraries(turboquant PRIVATE m Threads::Threads)
 
 # Shared library for Python bindings
 add_library(turboquant_shared SHARED
@@ -32,7 +35,7 @@ add_library(turboquant_shared SHARED
     ${TQ_ENGINE_SOURCES}
 )
 target_include_directories(turboquant_shared PUBLIC include)
-target_link_libraries(turboquant_shared PRIVATE m)
+target_link_libraries(turboquant_shared PRIVATE m Threads::Threads)
 set_target_properties(turboquant_shared PROPERTIES
     OUTPUT_NAME turboquant
     POSITION_INDEPENDENT_CODE ON)

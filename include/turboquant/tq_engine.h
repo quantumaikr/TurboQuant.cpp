@@ -204,6 +204,10 @@ void tq_mul(float* out, const float* a, const float* b, int n);
 /* Default generation config */
 tq_gen_config_t tq_default_gen_config(void);
 
+/* Thread control for matmul parallelism */
+void tq_set_threads(int n_threads);
+int tq_get_threads(void);
+
 #ifdef __cplusplus
 }
 #endif
