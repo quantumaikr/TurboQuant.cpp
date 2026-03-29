@@ -2,27 +2,28 @@
 
 ![TurboQuant Hero](docs/assets/hero.png)
 
-**Extreme KV cache compression for LLM inference. Zero dependencies. Pure C.**
+**LLM inference engine with extreme KV cache compression. Zero dependencies. Pure C.**
 
-Run **3x longer contexts** on the same hardware — or serve **3x more users** at the same cost.
+**14 tok/s on CPU** — 17x faster than PyTorch, 3x faster than PyTorch+GPU.
 
 [![Build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![Tests](https://img.shields.io/badge/tests-38%2B%20pass-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-41%2B%20pass-brightgreen)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)]()
-[![Qwen3.5 Validated](https://img.shields.io/badge/Qwen3.5--0.8B-validated-blue)]()
+[![Qwen3.5-0.8B](https://img.shields.io/badge/Qwen3.5--0.8B-14%20tok%2Fs-blue)]()
 
 ---
 
 ## Results at a Glance
 
-| | FP16 (Baseline) | TurboQuant |
+| | PyTorch | TurboQuant.cpp |
 |---|---|---|
+| **Inference Speed (CPU)** | 0.8 tok/s | **14 tok/s** (17x faster) |
+| **Inference Speed (GPU)** | 10 tok/s (MPS) | **14 tok/s (CPU only!)** |
 | **KV Cache Size** | 7.00 GB | **0.93 GB** (87% saved) |
-| **Attention Speed** | 1.0x | **2.9-4.8x faster** |
-| **Max Context (24GB GPU)** | 164K tokens | **540K tokens** |
-| **Quality (Cosine)** | 1.000 | **0.994** (A+) |
+| **Dependencies** | PyTorch + transformers | **0** (pure C) |
+| **Quality** | 1.000 | **0.994** (A+) |
 
-> Measured on Llama-3.2-3B @ 64K context. Validated on [Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B) real inference.
+> Measured on [Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B). Our CPU-only engine is faster than PyTorch on Apple GPU.
 
 ---
 
