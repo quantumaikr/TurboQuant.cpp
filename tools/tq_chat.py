@@ -115,8 +115,9 @@ def run_chat(question, model, tokenizer):
 
     print(f"  {C.BOLD}{C.GREEN}A:{C.NC} ", end="", flush=True)
 
+    import contextlib, io
     t0 = time.time()
-    with torch.no_grad():
+    with torch.no_grad(), contextlib.redirect_stderr(io.StringIO()):
         out = model.generate(
             **inputs,
             max_new_tokens=300,
@@ -158,17 +159,34 @@ def main():
 
     print_header()
 
-    # Load model
+    # Load model (suppress noisy warnings)
     print(f"  {C.DIM}Loading Qwen3.5-0.8B...{C.NC}", end="", flush=True)
+
+    import warnings
+    import logging
+    import contextlib, io
+    warnings.filterwarnings("ignore")
+    logging.disable(logging.WARNING)
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    os.environ["TRANSFORMERS_NO_ADVISORY_WARNINGS"] = "1"
+    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     model_name = "Qwen/Qwen3.5-0.8B"
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name, trust_remote_code=True, dtype=torch.float32
-    )
+    with contextlib.redirect_stderr(io.StringIO()):
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name, trust_remote_code=True, dtype=torch.float32
+        )
     model.eval()
+
+    # Pre-set pad_token_id to suppress "Setting pad_token_id" message
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+    model.generation_config.pad_token_id = tokenizer.eos_token_id
+
     print(f" {C.GREEN}✓{C.NC}")
     print()
 
