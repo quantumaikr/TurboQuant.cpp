@@ -51,7 +51,7 @@ __global__ void tq_value_quantize_4b_kernel(
     gmax = s_minmax[1];
 
     float range = fmaxf(gmax - gmin, 1e-8f);
-    float scale = range / 15.0f; /* 4-bit: 16 levels (0..15) */
+    float scale = range / 16.0f; /* 4-bit: 16 bins of width range/16 */
 
     /* Thread 0 writes header */
     if (tid == 0) {
@@ -61,7 +61,7 @@ __global__ void tq_value_quantize_4b_kernel(
 
     /* Each pair of threads packs two 4-bit values into one byte */
     if (tid < TQ_BK_CUDA && global_idx < n) {
-        int q = __float2int_rn((val - gmin) / scale);
+        int q = __float2int_rd((val - gmin) / scale);
         q = max(0, min(15, q));
 
         /* Shared staging for byte packing */
@@ -112,7 +112,7 @@ __global__ void tq_value_quantize_2b_kernel(
     gmax = s_minmax[1];
 
     float range = fmaxf(gmax - gmin, 1e-8f);
-    float scale = range / 3.0f; /* 2-bit: 4 levels (0..3) */
+    float scale = range / 4.0f; /* 2-bit: 4 bins of width range/4 */
 
     if (tid == 0) {
         out[block_idx].scale      = tq_float_to_half(scale);
@@ -120,7 +120,7 @@ __global__ void tq_value_quantize_2b_kernel(
     }
 
     if (tid < TQ_BK_CUDA && global_idx < n) {
-        int q = __float2int_rn((val - gmin) / scale);
+        int q = __float2int_rd((val - gmin) / scale);
         q = max(0, min(3, q));
 
         __shared__ uint8_t s_quant[TQ_BK_CUDA];
@@ -188,7 +188,7 @@ __global__ void tq_value_dequant_matmul_4b_kernel(
             q = (byte >> 4) & 0x0F;
         }
 
-        float dequant_val = zero + q * scale;
+        float dequant_val = zero + ((float)q + 0.5f) * scale;
         accum += w * dequant_val;
     }
 

@@ -196,6 +196,7 @@ kernel void tq_polar_quantize(
         float y = tg_keys[2 * tid + 1];
         radius = sqrt(x * x + y * y);
         theta  = atan2(y, x);
+        if (theta < 0.0f) theta += 2.0f * 3.14159265358979323846f;
         tg_theta[tid]  = theta;
         tg_radius[tid] = radius;
     }
@@ -227,8 +228,8 @@ kernel void tq_polar_quantize(
 
     float trange = max(tmax - tmin, 1e-8f);
     float rrange = max(rmax - rmin, 1e-8f);
-    float tscale = trange / 3.0f;
-    float rscale = rrange / 3.0f;
+    float tscale = trange / 4.0f;
+    float rscale = rrange / 4.0f;
 
     /* Write block header */
     if (tid == 0) {
@@ -244,8 +245,8 @@ kernel void tq_polar_quantize(
         float t = tg_theta[tid];
         float r = tg_radius[tid];
 
-        int tq = int(round((t - tmin) / tscale));
-        int rq = int(round((r - rmin) / rscale));
+        int tq = int(floor((t - tmin) / tscale));
+        int rq = int(floor((r - rmin) / rscale));
         tq = clamp(tq, 0, 3);
         rq = clamp(rq, 0, 3);
 
@@ -261,8 +262,8 @@ kernel void tq_polar_quantize(
     if (tid < uint(TQ_PAIRS) && (tid % 2 == 1)) {
         float t = tg_theta[tid];
         float r = tg_radius[tid];
-        int tq = clamp(int(round((t - tmin) / tscale)), 0, 3);
-        int rq = clamp(int(round((r - rmin) / rscale)), 0, 3);
+        int tq = clamp(int(floor((t - tmin) / tscale)), 0, 3);
+        int rq = clamp(int(floor((r - rmin) / rscale)), 0, 3);
         uchar packed = uchar((rq << 2) | tq);
         tg_packed[tid / 2] |= (packed << 4);
     }
@@ -312,7 +313,7 @@ kernel void tq_polar_attention(
     threadgroup float tg_scratch[8];
 
     if (tid < 4) {
-        float t = tmin + float(tid) * tscale;
+        float t = tmin + (float(tid) + 0.5f) * tscale;
         tg_cos[tid] = cos(t);
         tg_sin[tid] = sin(t);
     }
@@ -326,7 +327,7 @@ kernel void tq_polar_attention(
         int tq = packed & 0x03;
         int rq = (packed >> 2) & 0x03;
 
-        float rad = rmin + float(rq) * rscale;
+        float rad = rmin + (float(rq) + 0.5f) * rscale;
         float dx = rad * tg_cos[tq];
         float dy = rad * tg_sin[tq];
 

@@ -27,8 +27,8 @@ kernel void tq_value_quantize_4b(
 
     if (scale < 1e-8f) scale = 1e-8f;
 
-    int q0 = clamp(int(round((v0 - zp) / scale)), 0, 15);
-    int q1 = clamp(int(round((v1 - zp) / scale)), 0, 15);
+    int q0 = clamp(int(floor((v0 - zp) / scale)), 0, 15);
+    int q1 = clamp(int(floor((v1 - zp) / scale)), 0, 15);
 
     output[tid] = uchar((q1 << 4) | (q0 & 0x0F));
 }
@@ -51,6 +51,6 @@ kernel void tq_value_dequantize_4b(
 
     uint i0 = tid * 2;
     uint i1 = tid * 2 + 1;
-    if (i0 < n) output[i0] = float(q0) * scale + zp;
-    if (i1 < n) output[i1] = float(q1) * scale + zp;
+    if (i0 < n) output[i0] = (float(q0) + 0.5f) * scale + zp;
+    if (i1 < n) output[i1] = (float(q1) + 0.5f) * scale + zp;
 }

@@ -74,6 +74,7 @@ __global__ void tq_fused_polar_cache_kernel(
 
             float r = sqrtf(x * x + y * y);
             float t = atan2f(y, x);
+            if (t < 0.0f) t += 2.0f * 3.14159265358979323846f;
             s_theta[tid]  = t;
             s_radius[tid] = r;
         }
@@ -101,8 +102,8 @@ __global__ void tq_fused_polar_cache_kernel(
 
         float trange = fmaxf(tmax - tmin, 1e-8f);
         float rrange = fmaxf(rmax - rmin, 1e-8f);
-        float tscale = trange / 3.0f;
-        float rscale = rrange / 3.0f;
+        float tscale = trange / 4.0f;
+        float rscale = rrange / 4.0f;
 
         /* Cache output location:
            Linear index = cache_block_idx * (num_heads * BLOCK_SIZE) + h * BLOCK_SIZE + offset */
@@ -120,8 +121,8 @@ __global__ void tq_fused_polar_cache_kernel(
         /* Pack indices through shared staging */
         __shared__ uint8_t s_packed[TQ_BK_CUDA / 2];
         if (tid < pairs) {
-            int tq = __float2int_rn((s_theta[tid] - tmin) / tscale);
-            int rq = __float2int_rn((s_radius[tid] - rmin) / rscale);
+            int tq = __float2int_rd((s_theta[tid] - tmin) / tscale);
+            int rq = __float2int_rd((s_radius[tid] - rmin) / rscale);
             tq = max(0, min(3, tq));
             rq = max(0, min(3, rq));
             uint8_t packed = (uint8_t)((rq << 2) | tq);
@@ -130,8 +131,8 @@ __global__ void tq_fused_polar_cache_kernel(
         __syncthreads();
 
         if (tid < pairs && (tid % 2 == 1)) {
-            int tq = __float2int_rn((s_theta[tid] - tmin) / tscale);
-            int rq = __float2int_rn((s_radius[tid] - rmin) / rscale);
+            int tq = __float2int_rd((s_theta[tid] - tmin) / tscale);
+            int rq = __float2int_rd((s_radius[tid] - rmin) / rscale);
             tq = max(0, min(3, tq));
             rq = max(0, min(3, rq));
             uint8_t packed = (uint8_t)((rq << 2) | tq);
@@ -226,8 +227,8 @@ __global__ void tq_fused_uniform_cache_kernel(
             for (int i = tid; i < pack_elems; i += blockDim.x) {
                 int d0 = 2 * i;
                 int d1 = 2 * i + 1;
-                int q0 = __float2int_rn((s_vals[d0] - gmin) / scale);
-                int q1 = (d1 < head_dim) ? __float2int_rn((s_vals[d1] - gmin) / scale) : 0;
+                int q0 = __float2int_rd((s_vals[d0] - gmin) / scale);
+                int q1 = (d1 < head_dim) ? __float2int_rd((s_vals[d1] - gmin) / scale) : 0;
                 q0 = max(0, min(max_val, q0));
                 q1 = max(0, min(max_val, q1));
                 out[cache_out_idx].qs[i] = (uint8_t)((q1 << 4) | q0);
@@ -246,7 +247,7 @@ __global__ void tq_fused_uniform_cache_kernel(
                 for (int j = 0; j < 4; j++) {
                     int d = 4 * i + j;
                     if (d < head_dim) {
-                        int q = __float2int_rn((s_vals[d] - gmin) / scale);
+                        int q = __float2int_rd((s_vals[d] - gmin) / scale);
                         q = max(0, min(max_val, q));
                         byte |= (uint8_t)(q << (2 * j));
                     }
@@ -309,8 +310,8 @@ __global__ void tq_fused_paged_attention_kernel(
         int tq = packed & 0x03;
         int rq = (packed >> 2) & 0x03;
 
-        float theta  = tmin + tq * tscale;
-        float radius = rmin + rq * rscale;
+        float theta  = tmin + ((float)tq + 0.5f) * tscale;
+        float radius = rmin + ((float)rq + 0.5f) * rscale;
 
         float dx = radius * cosf(theta);
         float dy = radius * sinf(theta);

@@ -58,6 +58,7 @@ __global__ void tq_polar_quantize_kernel(
         float y = s_keys[2 * tid + 1];
         radius = sqrtf(x * x + y * y);
         theta  = atan2f(y, x); /* [-pi, pi] */
+        if (theta < 0.0f) theta += 2.0f * 3.14159265358979323846f;
 
         s_theta[tid]  = theta;
         s_radius[tid] = radius;
@@ -100,8 +101,8 @@ __global__ void tq_polar_quantize_kernel(
     if (trange < 1e-8f) trange = 1e-8f;
     if (rrange < 1e-8f) rrange = 1e-8f;
 
-    float tscale = trange / 3.0f; /* 4 quantization levels: 0,1,2,3 */
-    float rscale = rrange / 3.0f;
+    float tscale = trange / 4.0f; /* 4 bins of width range/4 */
+    float rscale = rrange / 4.0f;
 
     /* Thread 0 writes the block header */
     if (tid == 0) {
@@ -116,8 +117,8 @@ __global__ void tq_polar_quantize_kernel(
         float t = s_theta[tid];
         float r = s_radius[tid];
 
-        int tq = __float2int_rn((t - tmin) / tscale);
-        int rq = __float2int_rn((r - rmin) / rscale);
+        int tq = __float2int_rd((t - tmin) / tscale);
+        int rq = __float2int_rd((r - rmin) / rscale);
         tq = max(0, min(3, tq));
         rq = max(0, min(3, rq));
 
@@ -143,8 +144,8 @@ __global__ void tq_polar_quantize_kernel(
         float t = s_theta[tid];
         float r = s_radius[tid];
 
-        int tq = __float2int_rn((t - tmin) / tscale);
-        int rq = __float2int_rn((r - rmin) / rscale);
+        int tq = __float2int_rd((t - tmin) / tscale);
+        int rq = __float2int_rd((r - rmin) / rscale);
         tq = max(0, min(3, tq));
         rq = max(0, min(3, rq));
 
@@ -160,8 +161,8 @@ __global__ void tq_polar_quantize_kernel(
     if (tid < pairs && (tid % 2 == 1)) {
         float t = s_theta[tid];
         float r = s_radius[tid];
-        int tq = __float2int_rn((t - tmin) / tscale);
-        int rq = __float2int_rn((r - rmin) / rscale);
+        int tq = __float2int_rd((t - tmin) / tscale);
+        int rq = __float2int_rd((r - rmin) / rscale);
         tq = max(0, min(3, tq));
         rq = max(0, min(3, rq));
         uint8_t packed = (uint8_t)((rq << 2) | tq);
@@ -209,7 +210,7 @@ __global__ void tq_polar_attention_kernel(
     __shared__ float s_cos_lut[4];
     __shared__ float s_sin_lut[4];
     if (tid < 4) {
-        float theta = tmin + tid * tscale;
+        float theta = tmin + ((float)tid + 0.5f) * tscale;
         s_cos_lut[tid] = cosf(theta);
         s_sin_lut[tid] = sinf(theta);
     }
@@ -226,7 +227,7 @@ __global__ void tq_polar_attention_kernel(
         int rq = (packed >> 2) & 0x03;
 
         /* Dequantize to Cartesian */
-        float radius = rmin + rq * rscale;
+        float radius = rmin + ((float)rq + 0.5f) * rscale;
         float dx = radius * s_cos_lut[tq];
         float dy = radius * s_sin_lut[tq];
 

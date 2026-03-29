@@ -98,7 +98,7 @@ void tq_uniform_4b_quantize_avx2(const float* src, void* dst, int n) {
 
     float range = mx - mn;
     if (range < 1e-8f) range = 1e-8f;
-    float scale = range / 15.0f;
+    float scale = range / 16.0f; /* 16 bins of width range/16 */
     float inv_scale = 1.0f / scale;
 
     block->scale      = avx_fp32_to_fp16(scale);
@@ -116,8 +116,8 @@ void tq_uniform_4b_quantize_avx2(const float* src, void* dst, int n) {
         __m256 v = _mm256_loadu_ps(src + i);
         __m256 shifted = _mm256_sub_ps(v, v_mn);
         __m256 scaled  = _mm256_mul_ps(shifted, v_invs);
-        /* Round to nearest: _mm256_round_ps with _MM_FROUND_TO_NEAREST_INT */
-        __m256 rounded = _mm256_round_ps(scaled, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
+        /* Floor: _mm256_round_ps with _MM_FROUND_TO_NEG_INF */
+        __m256 rounded = _mm256_round_ps(scaled, _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC);
         /* Clamp to [0, 15] */
         rounded = _mm256_max_ps(rounded, v_zero);
         rounded = _mm256_min_ps(rounded, v_15);
@@ -139,7 +139,7 @@ void tq_uniform_4b_quantize_avx2(const float* src, void* dst, int n) {
 
     /* Scalar tail */
     for (; i < count; i++) {
-        int q = (int)roundf((src[i] - mn) * inv_scale);
+        int q = (int)floorf((src[i] - mn) * inv_scale);
         if (q < 0)  q = 0;
         if (q > 15) q = 15;
         if (i % 2 == 0) {
@@ -172,11 +172,11 @@ void tq_uniform_4b_dequantize_avx2(const void* src, float* dst, int n) {
         for (int k = 0; k < 8; k++) {
             int idx = i + k;
             uint8_t byte = block->qs[idx / 2];
-            q_arr[k] = (float)((idx % 2 == 0) ? (byte & 0x0F) : (byte >> 4));
+            q_arr[k] = (float)((idx % 2 == 0) ? (byte & 0x0F) : (byte >> 4)) + 0.5f;
         }
 
         __m256 q = _mm256_loadu_ps(q_arr);
-        /* dst = mn + q * scale using FMA */
+        /* dst = mn + (q + 0.5) * scale using FMA (0.5 already added above) */
         __m256 result = _mm256_fmadd_ps(q, v_scale, v_mn);
         _mm256_storeu_ps(dst + i, result);
     }
@@ -185,7 +185,7 @@ void tq_uniform_4b_dequantize_avx2(const void* src, float* dst, int n) {
     for (; i < count; i++) {
         uint8_t byte = block->qs[i / 2];
         int q = (i % 2 == 0) ? (byte & 0x0F) : (byte >> 4);
-        dst[i] = mn + q * scale;
+        dst[i] = mn + ((float)q + 0.5f) * scale;
     }
 }
 

@@ -131,6 +131,7 @@ kernel void tq_turbo_quantize(
         float y = tg_keys[2 * tid + 1];
         radius = sqrt(x * x + y * y);
         theta  = atan2(y, x);
+        if (theta < 0.0f) theta += 2.0f * 3.14159265358979323846f;
         tg_theta[tid]  = theta;
         tg_radius[tid] = radius;
     }
@@ -177,8 +178,8 @@ kernel void tq_turbo_quantize(
 
     float tmin = tg_params[0], tmax = tg_params[1];
     float rmin = tg_params[2], rmax = tg_params[3];
-    float tscale = max(tmax - tmin, 1e-8f) / 3.0f;
-    float rscale = max(rmax - rmin, 1e-8f) / 3.0f;
+    float tscale = max(tmax - tmin, 1e-8f) / 4.0f;
+    float rscale = max(rmax - rmin, 1e-8f) / 4.0f;
 
     if (tid == 0) {
         output[tgid].polar.tscale = float_to_fp16_m(tscale);
@@ -189,16 +190,16 @@ kernel void tq_turbo_quantize(
 
     /* Quantize, pack, and compute residual */
     if (tid < uint(TQ_PAIRS)) {
-        int tq = clamp(int(round((tg_theta[tid] - tmin) / tscale)), 0, 3);
-        int rq = clamp(int(round((tg_radius[tid] - rmin) / rscale)), 0, 3);
+        int tq = clamp(int(floor((tg_theta[tid] - tmin) / tscale)), 0, 3);
+        int rq = clamp(int(floor((tg_radius[tid] - rmin) / rscale)), 0, 3);
         uchar packed = uchar((rq << 2) | tq);
         if (tid % 2 == 0) tg_packed[tid / 2] = packed;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     if (tid < uint(TQ_PAIRS) && (tid % 2 == 1)) {
-        int tq = clamp(int(round((tg_theta[tid] - tmin) / tscale)), 0, 3);
-        int rq = clamp(int(round((tg_radius[tid] - rmin) / rscale)), 0, 3);
+        int tq = clamp(int(floor((tg_theta[tid] - tmin) / tscale)), 0, 3);
+        int rq = clamp(int(floor((tg_radius[tid] - rmin) / rscale)), 0, 3);
         uchar packed = uchar((rq << 2) | tq);
         tg_packed[tid / 2] |= (packed << 4);
     }
@@ -216,8 +217,8 @@ kernel void tq_turbo_quantize(
         int tqi = pk & 0x03;
         int rqi = (pk >> 2) & 0x03;
 
-        float rt = tmin + float(tqi) * tscale;
-        float rr = rmin + float(rqi) * rscale;
+        float rt = tmin + (float(tqi) + 0.5f) * tscale;
+        float rr = rmin + (float(rqi) + 0.5f) * rscale;
         float rx = rr * cos(rt);
         float ry = rr * sin(rt);
 
@@ -321,7 +322,7 @@ kernel void tq_turbo_attention(
     threadgroup float tg_residual[TQ_BK];
 
     if (tid < 4) {
-        float t = tmin + float(tid) * tscale;
+        float t = tmin + (float(tid) + 0.5f) * tscale;
         tg_cos[tid] = cos(t);
         tg_sin[tid] = sin(t);
     }
@@ -335,7 +336,7 @@ kernel void tq_turbo_attention(
         int tq = packed & 0x03;
         int rq = (packed >> 2) & 0x03;
 
-        float rad = rmin + float(rq) * rscale;
+        float rad = rmin + (float(rq) + 0.5f) * rscale;
         float dx = rad * tg_cos[tq];
         float dy = rad * tg_sin[tq];
 

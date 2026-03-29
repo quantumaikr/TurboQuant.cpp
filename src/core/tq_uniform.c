@@ -52,14 +52,14 @@ void tq_uniform_4b_quantize_ref(const float* src, void* dst, int n) {
 
     float range = mx - mn;
     if (range < 1e-8f) range = 1e-8f;
-    float scale = range / 15.0f; /* 4-bit: 16 levels (0..15) */
+    float scale = range / 16.0f; /* 4-bit: 16 bins of width range/16 */
 
     block->scale      = uni_fp32_to_fp16(scale);
     block->zero_point = uni_fp32_to_fp16(mn);
 
     memset(block->qs, 0, TQ_BK / 2);
     for (int i = 0; i < count; i++) {
-        int q = (int)roundf((src[i] - mn) / scale);
+        int q = (int)floorf((src[i] - mn) / scale);
         if (q < 0)  q = 0;
         if (q > 15) q = 15;
         /* LSB-first packing: two 4-bit values per byte */
@@ -84,7 +84,7 @@ void tq_uniform_4b_dequantize_ref(const void* src, float* dst, int n) {
     for (int i = 0; i < count; i++) {
         uint8_t byte = block->qs[i / 2];
         int q = (i % 2 == 0) ? (byte & 0x0F) : (byte >> 4);
-        dst[i] = mn + q * scale;
+        dst[i] = mn + ((float)q + 0.5f) * scale;
     }
 }
 
@@ -103,14 +103,14 @@ void tq_uniform_2b_quantize_ref(const float* src, void* dst, int n) {
 
     float range = mx - mn;
     if (range < 1e-8f) range = 1e-8f;
-    float scale = range / 3.0f; /* 2-bit: 4 levels (0..3) */
+    float scale = range / 4.0f; /* 2-bit: 4 bins of width range/4 */
 
     block->scale      = uni_fp32_to_fp16(scale);
     block->zero_point = uni_fp32_to_fp16(mn);
 
     memset(block->qs, 0, TQ_BK / 4);
     for (int i = 0; i < count; i++) {
-        int q = (int)roundf((src[i] - mn) / scale);
+        int q = (int)floorf((src[i] - mn) / scale);
         if (q < 0) q = 0;
         if (q > 3) q = 3;
         /* LSB-first packing: four 2-bit values per byte */
@@ -133,7 +133,7 @@ void tq_uniform_2b_dequantize_ref(const void* src, float* dst, int n) {
         uint8_t byte = block->qs[i / 4];
         int pos = i % 4;
         int q = (byte >> (pos * 2)) & 0x03;
-        dst[i] = mn + q * scale;
+        dst[i] = mn + ((float)q + 0.5f) * scale;
     }
 }
 

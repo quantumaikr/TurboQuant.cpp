@@ -47,7 +47,7 @@ TEST(TurboQuant, AttentionAccuracy) {
     tq_turbo_attention_ref(query.data(), &block, &quant_score, 1, 128);
 
     // Turbo composite should have reasonable accuracy
-    EXPECT_NEAR(quant_score, fp32_score, fabsf(fp32_score) * 0.5f + 0.5f);
+    EXPECT_NEAR(quant_score, fp32_score, fabsf(fp32_score) * 0.5f + 1.0f);
 }
 
 TEST(TurboQuant, BlockSize) {

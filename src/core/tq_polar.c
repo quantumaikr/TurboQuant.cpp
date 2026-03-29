@@ -60,6 +60,7 @@ void tq_polar_quantize_ref(const float* src, void* dst, int n) {
         float y = src[2 * i + 1];
         float r = sqrtf(x * x + y * y);
         float t = atan2f(y, x); /* range: [-pi, pi] */
+        if (t < 0.0f) t += 2.0f * TQ_PI; /* shift to [0, 2pi] */
 
         thetas[i] = t;
         radii[i]  = r;
@@ -76,8 +77,8 @@ void tq_polar_quantize_ref(const float* src, void* dst, int n) {
     if (trange < 1e-8f) trange = 1e-8f;
     if (rrange < 1e-8f) rrange = 1e-8f;
 
-    float tscale = trange / 3.0f; /* 4 levels: 0,1,2,3 */
-    float rscale = rrange / 3.0f;
+    float tscale = trange / 4.0f; /* 4 bins of width range/4 */
+    float rscale = rrange / 4.0f;
 
     block->tscale = fp32_to_fp16(tscale);
     block->tmn    = fp32_to_fp16(tmin);
@@ -87,8 +88,8 @@ void tq_polar_quantize_ref(const float* src, void* dst, int n) {
     memset(block->indices, 0, TQ_BK / 2);
 
     for (int i = 0; i < pairs; i++) {
-        int tq = (int)roundf((thetas[i] - tmin) / tscale);
-        int rq = (int)roundf((radii[i] - rmin) / rscale);
+        int tq = (int)floorf((thetas[i] - tmin) / tscale);
+        int rq = (int)floorf((radii[i] - rmin) / rscale);
         if (tq < 0) { tq = 0; }
         if (tq > 3) { tq = 3; }
         if (rq < 0) { rq = 0; }
@@ -123,8 +124,8 @@ void tq_polar_dequantize_ref(const void* src, float* dst, int n) {
         int tq = packed & 0x03;
         int rq = (packed >> 2) & 0x03;
 
-        float theta  = tmin + tq * tscale;
-        float radius = rmin + rq * rscale;
+        float theta  = tmin + ((float)tq + 0.5f) * tscale;
+        float radius = rmin + ((float)rq + 0.5f) * rscale;
 
         dst[2 * i]     = radius * cosf(theta);
         dst[2 * i + 1] = radius * sinf(theta);
@@ -157,14 +158,12 @@ void tq_polar_attention_ref(const float* query, const void* kv_cache,
         float rmin   = fp16_to_fp32(block->rmn);
 
         /* Step 1: Precompute theta lookup tables
-         * For quantization level q: theta = tmin + q * tscale
-         * (matching the quantize formula: tq = round((theta - tmin) / tscale))
-         * The +0.5 midpoint centering from the Triton kernel is omitted here
-         * because our quantizer uses round() to nearest integer level,
-         * so reconstruction uses the level directly without midpoint offset. */
+         * For quantization level q: theta = tmin + (q + 0.5) * tscale
+         * Using floor-based quantization with bin-centered reconstruction
+         * matching the Triton reference kernel. */
         float cos_lut[4], sin_lut[4];
         for (int q = 0; q < theta_levels; q++) {
-            float theta = tmin + (float)q * tscale;
+            float theta = tmin + ((float)q + 0.5f) * tscale;
             cos_lut[q] = cosf(theta);
             sin_lut[q] = sinf(theta);
         }
@@ -172,7 +171,7 @@ void tq_polar_attention_ref(const float* query, const void* kv_cache,
         /* Step 2: Precompute radius lookup table */
         float radius_lut[4];
         for (int q = 0; q < rho_levels; q++) {
-            radius_lut[q] = rmin + (float)q * rscale;
+            radius_lut[q] = rmin + ((float)q + 0.5f) * rscale;
         }
 
         /* Step 3: For each pair, gather from LUT by index and accumulate */

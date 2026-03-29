@@ -74,7 +74,7 @@ void tq_uniform_4b_quantize_neon(const float* src, void* dst, int n) {
 
     float range = mx - mn;
     if (range < 1e-8f) range = 1e-8f;
-    float scale = range / 15.0f;
+    float scale = range / 16.0f; /* 16 bins of width range/16 */
     float inv_scale = 1.0f / scale;
 
     block->scale      = neon_fp32_to_fp16(scale);
@@ -91,11 +91,11 @@ void tq_uniform_4b_quantize_neon(const float* src, void* dst, int n) {
     i = 0;
     for (; i + 4 <= count; i += 4) {
         float32x4_t v = vld1q_f32(src + i);
-        /* q = round((v - mn) * inv_scale), clamped to [0, 15] */
+        /* q = floor((v - mn) * inv_scale), clamped to [0, 15] */
         float32x4_t shifted = vsubq_f32(v, v_mn);
         float32x4_t scaled  = vmulq_f32(shifted, v_invs);
-        /* Round to nearest int (NEON vcvtnq rounds to nearest even) */
-        int32x4_t qi = vcvtnq_s32_f32(scaled);
+        /* Floor to int (NEON vcvtmq rounds toward -infinity) */
+        int32x4_t qi = vcvtmq_s32_f32(scaled);
         /* Clamp */
         float32x4_t qf = vcvtq_f32_s32(qi);
         qf = vmaxq_f32(qf, v_zero);
@@ -117,7 +117,7 @@ void tq_uniform_4b_quantize_neon(const float* src, void* dst, int n) {
 
     /* Scalar tail */
     for (; i < count; i++) {
-        int q = (int)roundf((src[i] - mn) * inv_scale);
+        int q = (int)floorf((src[i] - mn) * inv_scale);
         if (q < 0)  q = 0;
         if (q > 15) q = 15;
         if (i % 2 == 0) {
@@ -154,18 +154,18 @@ void tq_uniform_4b_dequantize_neon(const void* src, float* dst, int n) {
         uint8_t b2 = block->qs[i / 2 + 2];
         uint8_t b3 = block->qs[i / 2 + 3];
 
-        /* Unpack 8 nibbles into two float32x4 */
+        /* Unpack 8 nibbles into two float32x4, add 0.5 for bin centering */
         float q_arr[8] = {
-            (float)(b0 & 0x0F), (float)(b0 >> 4),
-            (float)(b1 & 0x0F), (float)(b1 >> 4),
-            (float)(b2 & 0x0F), (float)(b2 >> 4),
-            (float)(b3 & 0x0F), (float)(b3 >> 4),
+            (float)(b0 & 0x0F) + 0.5f, (float)(b0 >> 4) + 0.5f,
+            (float)(b1 & 0x0F) + 0.5f, (float)(b1 >> 4) + 0.5f,
+            (float)(b2 & 0x0F) + 0.5f, (float)(b2 >> 4) + 0.5f,
+            (float)(b3 & 0x0F) + 0.5f, (float)(b3 >> 4) + 0.5f,
         };
 
         float32x4_t q_lo = vld1q_f32(q_arr);
         float32x4_t q_hi = vld1q_f32(q_arr + 4);
 
-        /* dst = mn + q * scale  (using fused multiply-add) */
+        /* dst = mn + (q + 0.5) * scale  (using fused multiply-add) */
         float32x4_t r_lo = vfmaq_f32(v_mn, q_lo, v_scale);
         float32x4_t r_hi = vfmaq_f32(v_mn, q_hi, v_scale);
 
@@ -177,7 +177,7 @@ void tq_uniform_4b_dequantize_neon(const void* src, float* dst, int n) {
     for (; i < count; i++) {
         uint8_t byte = block->qs[i / 2];
         int q = (i % 2 == 0) ? (byte & 0x0F) : (byte >> 4);
-        dst[i] = mn + q * scale;
+        dst[i] = mn + ((float)q + 0.5f) * scale;
     }
 }
 
@@ -281,8 +281,14 @@ void tq_polar_quantize_neon(const float* src, void* dst, int n) {
         float32x4_t r2 = vfmaq_f32(vmulq_f32(vx, vx), vy, vy);
         float32x4_t vr = neon_sqrt_f32(r2);
 
-        /* Theta = atan2(y, x) using NEON approximation */
+        /* Theta = atan2(y, x) using NEON approximation, shifted to [0, 2pi] */
         float32x4_t vt = neon_atan2_approx(vy, vx);
+        {
+            float32x4_t v_2pi = vdupq_n_f32(2.0f * TQ_PI);
+            float32x4_t v_zero_f = vdupq_n_f32(0.0f);
+            uint32x4_t neg_mask = vcltq_f32(vt, v_zero_f);
+            vt = vaddq_f32(vt, vbslq_f32(neg_mask, v_2pi, v_zero_f));
+        }
 
         vst1q_f32(thetas + p, vt);
         vst1q_f32(radii + p, vr);
@@ -293,7 +299,9 @@ void tq_polar_quantize_neon(const float* src, void* dst, int n) {
         float x = src[2 * p];
         float y = src[2 * p + 1];
         radii[p]  = sqrtf(x * x + y * y);
-        thetas[p] = atan2f(y, x);
+        float t = atan2f(y, x);
+        if (t < 0.0f) t += 2.0f * TQ_PI;
+        thetas[p] = t;
     }
 
     /* Find min/max of theta and radius using NEON */
@@ -329,8 +337,8 @@ void tq_polar_quantize_neon(const float* src, void* dst, int n) {
     if (trange < 1e-8f) trange = 1e-8f;
     if (rrange < 1e-8f) rrange = 1e-8f;
 
-    float tscale = trange / 3.0f;
-    float rscale = rrange / 3.0f;
+    float tscale = trange / 4.0f;
+    float rscale = rrange / 4.0f;
 
     block->tscale = neon_fp32_to_fp16(tscale);
     block->tmn    = neon_fp32_to_fp16(tmin);
@@ -352,15 +360,15 @@ void tq_polar_quantize_neon(const float* src, void* dst, int n) {
         float32x4_t t = vld1q_f32(thetas + p);
         float32x4_t r = vld1q_f32(radii + p);
 
-        /* Quantize theta: tq = round((t - tmin) / tscale), clamp [0,3] */
+        /* Quantize theta: tq = floor((t - tmin) / tscale), clamp [0,3] */
         float32x4_t tq_f = vmulq_f32(vsubq_f32(t, v_tmin), v_tinvs);
-        int32x4_t tq_i = vcvtnq_s32_f32(tq_f);
+        int32x4_t tq_i = vcvtmq_s32_f32(tq_f);
         float32x4_t tq_clamped = vmaxq_f32(vminq_f32(vcvtq_f32_s32(tq_i), v_three), v_zero);
         int32x4_t tq = vcvtq_s32_f32(tq_clamped);
 
-        /* Quantize radius: rq = round((r - rmin) / rscale), clamp [0,3] */
+        /* Quantize radius: rq = floor((r - rmin) / rscale), clamp [0,3] */
         float32x4_t rq_f = vmulq_f32(vsubq_f32(r, v_rmin), v_rinvs);
-        int32x4_t rq_i = vcvtnq_s32_f32(rq_f);
+        int32x4_t rq_i = vcvtmq_s32_f32(rq_f);
         float32x4_t rq_clamped = vmaxq_f32(vminq_f32(vcvtq_f32_s32(rq_i), v_three), v_zero);
         int32x4_t rq = vcvtq_s32_f32(rq_clamped);
 
@@ -383,8 +391,8 @@ void tq_polar_quantize_neon(const float* src, void* dst, int n) {
 
     /* Scalar tail */
     for (; p < pairs; p++) {
-        int tq = (int)roundf((thetas[p] - tmin) / tscale);
-        int rq = (int)roundf((radii[p] - rmin) / rscale);
+        int tq = (int)floorf((thetas[p] - tmin) / tscale);
+        int rq = (int)floorf((radii[p] - rmin) / rscale);
         if (tq < 0) tq = 0; if (tq > 3) tq = 3;
         if (rq < 0) rq = 0; if (rq > 3) rq = 3;
 
@@ -421,8 +429,8 @@ void tq_polar_dequantize_neon(const void* src, float* dst, int n) {
         int tq = packed & 0x03;
         int rq = (packed >> 2) & 0x03;
 
-        float theta  = tmin + tq * tscale;
-        float radius = rmin + rq * rscale;
+        float theta  = tmin + ((float)tq + 0.5f) * tscale;
+        float radius = rmin + ((float)rq + 0.5f) * rscale;
 
         dst[2 * i]     = radius * cosf(theta);
         dst[2 * i + 1] = radius * sinf(theta);
@@ -642,7 +650,7 @@ void tq_polar_attention_neon(const float* query, const void* kv_cache,
         /* Precompute cos/sin LUT for 4 theta levels */
         float cos_lut[4], sin_lut[4];
         for (int q = 0; q < 4; q++) {
-            float theta = tmin + (float)q * tscale;
+            float theta = tmin + ((float)q + 0.5f) * tscale;
             cos_lut[q] = cosf(theta);
             sin_lut[q] = sinf(theta);
         }
@@ -650,7 +658,7 @@ void tq_polar_attention_neon(const float* query, const void* kv_cache,
         /* Precompute radius LUT */
         float radius_lut[4];
         for (int q = 0; q < 4; q++) {
-            radius_lut[q] = rmin + (float)q * rscale;
+            radius_lut[q] = rmin + ((float)q + 0.5f) * rscale;
         }
 
         /* Accumulate dot product using NEON
@@ -738,7 +746,7 @@ void tq_uniform_4b_attention_neon(const float* query, const void* kv_cache,
         float mn    = neon_fp16_to_fp32(block->zero_point);
 
         float32x4_t v_scale = vdupq_n_f32(scale);
-        float32x4_t v_mn    = vdupq_n_f32(mn);
+        float32x4_t v_mn    = vdupq_n_f32(mn + 0.5f * scale); /* bin centering */
         float32x4_t dot_acc0 = vdupq_n_f32(0.0f);
         float32x4_t dot_acc1 = vdupq_n_f32(0.0f);
 
@@ -846,7 +854,7 @@ void tq_uniform_4b_attention_neon(const float* query, const void* kv_cache,
         for (; i < count; i++) {
             uint8_t byte = block->qs[i / 2];
             int q = (i % 2 == 0) ? (byte & 0x0F) : (byte >> 4);
-            float val = mn + q * scale;
+            float val = mn + ((float)q + 0.5f) * scale;
             dot += query[i] * val;
         }
 

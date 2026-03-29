@@ -114,6 +114,7 @@ kernel void tq_fused_polar_cache(
         float y = keys[key_offset + 2 * tid + 1];
         radius = sqrt(x * x + y * y);
         theta  = atan2(y, x);
+        if (theta < 0.0f) theta += 2.0f * 3.14159265358979323846f;
         tg_theta[tid]  = theta;
         tg_radius[tid] = radius;
     }
@@ -161,8 +162,8 @@ kernel void tq_fused_polar_cache(
 
     float tmin = tg_params[0], tmax = tg_params[1];
     float rmin = tg_params[2], rmax = tg_params[3];
-    float tscale = max(tmax - tmin, 1e-8f) / 3.0f;
-    float rscale = max(rmax - rmin, 1e-8f) / 3.0f;
+    float tscale = max(tmax - tmin, 1e-8f) / 4.0f;
+    float rscale = max(rmax - rmin, 1e-8f) / 4.0f;
 
     /* Compute cache output index */
     uint cache_idx = cache_block_idx * (num_heads * block_size)
@@ -178,16 +179,16 @@ kernel void tq_fused_polar_cache(
     /* Pack indices */
     threadgroup uchar tg_packed[TQ_PAIRS];
     if (tid < pairs) {
-        int tq = clamp(int(round((tg_theta[tid] - tmin) / tscale)), 0, 3);
-        int rq = clamp(int(round((tg_radius[tid] - rmin) / rscale)), 0, 3);
+        int tq = clamp(int(floor((tg_theta[tid] - tmin) / tscale)), 0, 3);
+        int rq = clamp(int(floor((tg_radius[tid] - rmin) / rscale)), 0, 3);
         uchar packed = uchar((rq << 2) | tq);
         if (tid % 2 == 0) tg_packed[tid / 2] = packed;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     if (tid < pairs && (tid % 2 == 1)) {
-        int tq = clamp(int(round((tg_theta[tid] - tmin) / tscale)), 0, 3);
-        int rq = clamp(int(round((tg_radius[tid] - rmin) / rscale)), 0, 3);
+        int tq = clamp(int(floor((tg_theta[tid] - tmin) / tscale)), 0, 3);
+        int rq = clamp(int(floor((tg_radius[tid] - rmin) / rscale)), 0, 3);
         uchar packed = uchar((rq << 2) | tq);
         tg_packed[tid / 2] |= (packed << 4);
     }
@@ -269,7 +270,7 @@ kernel void tq_fused_uniform4b_cache(
     float gmin = tg_minmax[0];
     float gmax = tg_minmax[1];
     float range = max(gmax - gmin, 1e-8f);
-    float scale = range / 15.0f;
+    float scale = range / 16.0f;
 
     uint cache_idx = cache_block_idx * (num_heads * block_size)
                    + head_idx * block_size + offset_in_block;
@@ -282,7 +283,7 @@ kernel void tq_fused_uniform4b_cache(
     /* Pack two 4-bit values per byte */
     threadgroup uchar tg_quant[TQ_BK];
     if (tid < head_dim) {
-        int q = clamp(int(round((tg_vals[tid] - gmin) / scale)), 0, 15);
+        int q = clamp(int(floor((tg_vals[tid] - gmin) / scale)), 0, 15);
         tg_quant[tid] = uchar(q);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
