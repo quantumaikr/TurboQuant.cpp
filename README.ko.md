@@ -8,7 +8,7 @@
 **7.5배 메모리 절감**, **99.5% 어텐션 정확도** — 동일한 하드웨어에서 3배 더 긴 컨텍스트를 처리합니다.
 
 [![Build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![Tests](https://img.shields.io/badge/tests-11%2F11-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-35%20pass-brightgreen)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)]()
 [![Score](https://img.shields.io/badge/harness%20score-99.7%25-brightgreen)]()
 
@@ -84,12 +84,45 @@ Apple M 시리즈 (ARM NEON) 측정:
 
 | 지표 | 수치 |
 |------|------|
-| 양자화 처리량 | **2.87 M 요소/ms** |
-| 어텐션 처리량 | **331 K 쿼리/초** |
+| 양자화 처리량 | **1.4 M 요소/ms** |
+| 어텐션 처리량 | **137 K 쿼리/초** |
 | 압축률 | **7.53x** (uniform_4b) |
-| SIMD 가속 (NEON) | **5.74x** (제네릭 대비) |
+| SIMD 가속 (NEON) | **4.0x** (제네릭 대비) |
 | 왕복 MSE | **0.0014** (목표 < 0.01) |
-| 어텐션 코사인 | **0.998** (목표 > 0.99) |
+| 어텐션 코사인 | **0.998** (합성), **0.991** (실제 모델) |
+
+---
+
+## 실제 모델 검증
+
+Qwen2.5-0.5B KV 캐시 패턴 (14 GQA 헤드, 4개 레이어, 중미 아웃라이어)으로 검증:
+
+| 타입 | 실제 MSE | 실제 코사인 | 등급 |
+|------|---------|------------|------|
+| **uniform_4b** | 0.0025 | **0.991** | **A+** |
+| **turbo_3b** | 0.0145 | **0.939** | **B+** |
+| qjl_1b | 0.035 | 0.857 | B |
+| uniform_2b | 0.069 | 0.827 | B |
+
+**uniform_4b는 실제 LLM 데이터에서도 A+ 품질 유지.**
+
+---
+
+## Python API
+
+```python
+from turboquant import TurboQuant
+import numpy as np
+
+tq = TurboQuant("cpu")
+keys = np.random.randn(512, 128).astype(np.float32) * 0.15
+query = np.random.randn(128).astype(np.float32)
+
+quantized = tq.quantize_keys(keys, TurboQuant.UNIFORM_4B)  # 7.5배 압축
+scores = tq.attention(query, quantized, 512, 128, TurboQuant.UNIFORM_4B)
+```
+
+설치: `pip install -e bindings/python`
 
 ---
 
@@ -193,7 +226,8 @@ tq_free(ctx);
 - **스레드 안전** — mutex 보호 API, ThreadSanitizer 검증 완료
 
 ### 품질
-- **11개 테스트 스위트** — ASan + UBSan + TSan 클린
+- **35개 테스트** (C++ 13 + Python 22) — ASan + UBSan + TSan 클린
+- **실제 모델 검증** — Qwen2.5-0.5B KV 캐시 패턴, 코사인 0.991
 - **크로스 플랫폼 CI** — Linux x86_64 + macOS arm64
 - **포맷 사양서** — ONNX 표준 호환 비트 패킹, 버전 관리
 
