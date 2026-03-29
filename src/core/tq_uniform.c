@@ -137,6 +137,75 @@ void tq_uniform_2b_dequantize_ref(const void* src, float* dst, int n) {
     }
 }
 
+/* ---------- Q8 query quantization for integer-domain attention ---------- */
+
+void tq_quantize_query_q8(const float* query, int8_t* q8_out,
+                           float* scale_out, float* sum_out, int n) {
+    /* Find absolute max */
+    float amax = 0;
+    float qsum = 0;
+    for (int i = 0; i < n; i++) {
+        float a = fabsf(query[i]);
+        if (a > amax) amax = a;
+        qsum += query[i];
+    }
+
+    float scale = amax / 127.0f;
+    if (scale < 1e-10f) scale = 1e-10f;
+    float inv_scale = 1.0f / scale;
+
+    for (int i = 0; i < n; i++) {
+        int v = (int)roundf(query[i] * inv_scale);
+        if (v > 127) v = 127;
+        if (v < -128) v = -128;
+        q8_out[i] = (int8_t)v;
+    }
+
+    *scale_out = scale;
+    *sum_out = qsum;
+}
+
+/* ---------- Integer-domain Q4xQ8 attention (no dequantization!) ---------- */
+
+/* The key insight: query is quantized ONCE to Q8, then reused for all seq_len keys.
+ * Original dequantized value = mn + (q4 + 0.5) * k_scale
+ * So: dot = sum(query[i] * (mn + (q4+0.5)*k_scale))
+ *         = k_scale * sum(query[i] * q4) + (mn + 0.5*k_scale) * sum(query[i])
+ * With Q8 query: query[i] ~ q8[i] * q_scale
+ *   dot ~ q_scale * k_scale * isum + (mn + 0.5*k_scale) * q_sum
+ * where isum = sum(q8[i] * q4[i]) computed in integer domain.
+ */
+void tq_uniform_4b_attention_int_ref(const float* query, const void* kv,
+                                      float* scores, int seq_len, int head_dim) {
+    /* Step 1: Quantize query to Q8 (once, amortized over seq_len) */
+    int8_t q8[512]; /* max head_dim supported */
+    float q_scale, q_sum;
+    tq_quantize_query_q8(query, q8, &q_scale, &q_sum, head_dim);
+
+    const block_tq_uniform_4b* blocks = (const block_tq_uniform_4b*)kv;
+
+    for (int s = 0; s < seq_len; s++) {
+        float k_scale = uni_fp16_to_fp32(blocks[s].scale);
+        float k_zp    = uni_fp16_to_fp32(blocks[s].zero_point);
+        float k_offset = k_zp + 0.5f * k_scale; /* bin centering */
+
+        /* Step 2: Integer dot product (no dequantize!) */
+        int32_t isum = 0;
+        for (int i = 0; i < head_dim / 2; i++) {
+            uint8_t packed = blocks[s].qs[i];
+            int32_t q4_lo = (int32_t)(packed & 0x0F);  /* low nibble [0,15] */
+            int32_t q4_hi = (int32_t)(packed >> 4);     /* high nibble [0,15] */
+
+            isum += q4_lo * (int32_t)q8[2*i];
+            isum += q4_hi * (int32_t)q8[2*i + 1];
+        }
+
+        /* Step 3: Convert to float ONCE with combined scale
+         * dot ~ k_scale * q_scale * isum + k_offset * q_sum */
+        scores[s] = (float)isum * k_scale * q_scale + k_offset * q_sum;
+    }
+}
+
 /* ---------- Uniform 4-bit attention (dequantize + dot product) ---------- */
 
 void tq_uniform_4b_attention_ref(const float* query, const void* kv,
