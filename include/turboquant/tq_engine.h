@@ -73,14 +73,19 @@ typedef struct {
     tq_model_config_t config;
 
     /* Token embedding */
-    float* token_embedding;   /* [vocab_size, hidden_dim] */
+    float* token_embedding;   /* [vocab_size, hidden_dim] — FP32, or NULL if using BF16 */
 
     /* Per-layer weights */
     tq_layer_weights_t* layers;
 
     /* Output */
     float* output_norm;       /* [hidden_dim] */
-    float* output_weight;     /* [vocab_size, hidden_dim] (may be tied to embedding) */
+    float* output_weight;     /* [vocab_size, hidden_dim] — FP32, or NULL if using BF16 */
+
+    /* Streaming BF16 support: keep embedding/output as mmap'd BF16,
+     * convert on demand to save ~2GB for 0.8B models */
+    const uint16_t* embed_bf16;        /* [vocab_size, hidden_dim] raw BF16 from mmap (NULL if FP32) */
+    const uint16_t* output_weight_bf16;/* [vocab_size, hidden_dim] raw BF16 from mmap (NULL if FP32) */
 
     /* Hybrid architecture support (e.g., Qwen3.5 with DeltaNet layers) */
     int n_attn_layers;        /* number of layers with standard self_attn */
@@ -198,6 +203,7 @@ const char* tq_decode(const tq_tokenizer_t* tok, int prev_token, int token);
 
 /* Tensor operations (exported for testing/reuse) */
 void tq_matmul(float* out, const float* x, const float* w, int n, int d);
+void tq_matmul_bf16(float* out, const float* x, const uint16_t* w_bf16, int n, int d);
 void tq_rmsnorm(float* out, const float* x, const float* weight, int n, float eps);
 void tq_rope(float* q, float* k, int pos, int head_dim,
              int n_heads, int n_kv_heads, float freq_base);

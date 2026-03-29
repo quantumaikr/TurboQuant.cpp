@@ -1,6 +1,6 @@
 # TurboQuant.cpp — Session State
 
-**Last updated**: 2026-03-29 (grow round 3)
+**Last updated**: 2026-03-29 (streaming BF16 memory optimization)
 **Last commit**: pending
 **Score**: 99.7%
 
@@ -14,11 +14,12 @@
 - ✅ KV cache quantization library (8 types, integer Q4×Q8 attention)
 - ✅ **KV cache quantization integrated into inference forward pass** (quantize-on-store, Q4xQ8 integer attention for seq_len > 32)
 - ✅ **tok/s display** in tq_run output (timing via clock_gettime)
+- ✅ **Streaming BF16**: embed_tokens + lm_head kept as mmap'd BF16, converted on demand (saves ~2GB for Qwen3.5-0.8B)
 - ✅ 19 C++ test suites, 22 Python tests
 - ✅ CLI tools: tq_run (-j threads), tq, tq_chat, tq_realtime_demo
 
 ### What Needs Work (Priority Order)
-1. **Memory**: 3.3GB for BF16->FP32 conversion (should stream/quantize weights)
+1. **Memory**: ~~3.3GB~~ ~1.3GB for BF16->FP32 conversion (embed_tokens + lm_head kept as BF16, saving ~2GB). Further reduction possible with streaming BF16 matmul for layer weights.
 2. **Weight quantization**: Q8/Q4 weights for 2x memory reduction
 3. **Metal GPU inference**: Apple GPU for matmul
 4. **Value cache quantization**: currently only keys are quantized in the cache

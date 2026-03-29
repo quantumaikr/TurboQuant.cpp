@@ -25,6 +25,10 @@
 #include <math.h>
 #include <stdio.h>
 
+#ifdef __ARM_NEON
+#include <arm_neon.h>
+#endif
+
 /* ============================================================
  * State management
  * ============================================================ */
@@ -612,8 +616,30 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
     int dim = c->hidden_dim;
 
     /* Step 1: Token embedding */
-    memcpy(s->x, model->token_embedding + (size_t)token * dim,
-           dim * sizeof(float));
+    if (model->embed_bf16) {
+        /* Streaming BF16->FP32 conversion: convert only this token's row */
+        const uint16_t* bf16_row = model->embed_bf16 + (size_t)token * dim;
+#ifdef __ARM_NEON
+        int i = 0;
+        for (; i + 3 < dim; i += 4) {
+            uint16x4_t b = vld1_u16(bf16_row + i);
+            float32x4_t f = vreinterpretq_f32_u32(vshll_n_u16(b, 16));
+            vst1q_f32(s->x + i, f);
+        }
+        for (; i < dim; i++) {
+            uint32_t bits = ((uint32_t)bf16_row[i]) << 16;
+            memcpy(&s->x[i], &bits, 4);
+        }
+#else
+        for (int i = 0; i < dim; i++) {
+            uint32_t bits = ((uint32_t)bf16_row[i]) << 16;
+            memcpy(&s->x[i], &bits, 4);
+        }
+#endif
+    } else {
+        memcpy(s->x, model->token_embedding + (size_t)token * dim,
+               dim * sizeof(float));
+    }
 
     /* Step 2: Transformer layers */
     for (int l = 0; l < c->n_layers; l++) {
@@ -647,7 +673,11 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
     tq_rmsnorm(s->x, s->x, model->output_norm, dim, c->rms_norm_eps);
 
     /* Step 4: Output projection to vocab logits */
-    tq_matmul(s->logits, s->x, model->output_weight, c->vocab_size, dim);
+    if (model->output_weight_bf16) {
+        tq_matmul_bf16(s->logits, s->x, model->output_weight_bf16, c->vocab_size, dim);
+    } else {
+        tq_matmul(s->logits, s->x, model->output_weight, c->vocab_size, dim);
+    }
 
     return s->logits;
 }

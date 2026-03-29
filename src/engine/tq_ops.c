@@ -137,6 +137,125 @@ void tq_matmul(float* out, const float* x, const float* w, int n, int d) {
 }
 
 /* ============================================================
+ * BF16 matmul worker helpers
+ * ============================================================ */
+typedef struct {
+    float* out;
+    const float* x;
+    const uint16_t* w_bf16;
+    int start_row;
+    int end_row;
+    int d;
+} matmul_bf16_task_t;
+
+static void matmul_bf16_rows(float* out, const float* x,
+                              const uint16_t* w_bf16,
+                              int start_row, int end_row, int d) {
+#ifdef __ARM_NEON
+    for (int i = start_row; i < end_row; i++) {
+        const uint16_t* wi = w_bf16 + (size_t)i * d;
+        float32x4_t acc0 = vdupq_n_f32(0.0f);
+        float32x4_t acc1 = vdupq_n_f32(0.0f);
+        float32x4_t acc2 = vdupq_n_f32(0.0f);
+        float32x4_t acc3 = vdupq_n_f32(0.0f);
+        int j = 0;
+        for (; j + 15 < d; j += 16) {
+            /* Convert 4 BF16 values to FP32 via shift-left-16 */
+            uint16x4_t b0 = vld1_u16(wi + j);
+            uint16x4_t b1 = vld1_u16(wi + j + 4);
+            uint16x4_t b2 = vld1_u16(wi + j + 8);
+            uint16x4_t b3 = vld1_u16(wi + j + 12);
+            float32x4_t vw0 = vreinterpretq_f32_u32(vshll_n_u16(b0, 16));
+            float32x4_t vw1 = vreinterpretq_f32_u32(vshll_n_u16(b1, 16));
+            float32x4_t vw2 = vreinterpretq_f32_u32(vshll_n_u16(b2, 16));
+            float32x4_t vw3 = vreinterpretq_f32_u32(vshll_n_u16(b3, 16));
+            float32x4_t vx0 = vld1q_f32(x + j);
+            float32x4_t vx1 = vld1q_f32(x + j + 4);
+            float32x4_t vx2 = vld1q_f32(x + j + 8);
+            float32x4_t vx3 = vld1q_f32(x + j + 12);
+            acc0 = vfmaq_f32(acc0, vx0, vw0);
+            acc1 = vfmaq_f32(acc1, vx1, vw1);
+            acc2 = vfmaq_f32(acc2, vx2, vw2);
+            acc3 = vfmaq_f32(acc3, vx3, vw3);
+        }
+        for (; j + 3 < d; j += 4) {
+            uint16x4_t b = vld1_u16(wi + j);
+            float32x4_t vw = vreinterpretq_f32_u32(vshll_n_u16(b, 16));
+            float32x4_t vx = vld1q_f32(x + j);
+            acc0 = vfmaq_f32(acc0, vx, vw);
+        }
+        acc0 = vaddq_f32(acc0, acc1);
+        acc2 = vaddq_f32(acc2, acc3);
+        acc0 = vaddq_f32(acc0, acc2);
+        float sum = vaddvq_f32(acc0);
+        for (; j < d; j++) {
+            uint32_t bits = ((uint32_t)wi[j]) << 16;
+            float wf;
+            memcpy(&wf, &bits, 4);
+            sum += wf * x[j];
+        }
+        out[i] = sum;
+    }
+#else
+    for (int i = start_row; i < end_row; i++) {
+        const uint16_t* wi = w_bf16 + (size_t)i * d;
+        float sum = 0.0f;
+        for (int j = 0; j < d; j++) {
+            uint32_t bits = ((uint32_t)wi[j]) << 16;
+            float wf;
+            memcpy(&wf, &bits, 4);
+            sum += wf * x[j];
+        }
+        out[i] = sum;
+    }
+#endif
+}
+
+static void* matmul_bf16_worker(void* arg) {
+    matmul_bf16_task_t* t = (matmul_bf16_task_t*)arg;
+    matmul_bf16_rows(t->out, t->x, t->w_bf16, t->start_row, t->end_row, t->d);
+    return NULL;
+}
+
+/* ============================================================
+ * Matrix-vector multiply with BF16 weights (streaming conversion)
+ *
+ * Same as tq_matmul but weights are BF16 (uint16_t*), converted
+ * to FP32 on-the-fly during dot product. Saves ~2x memory vs
+ * pre-converting all weights to FP32.
+ *
+ * w_bf16 is [n, d] row-major BF16, x is [d] FP32, out is [n] FP32.
+ * ============================================================ */
+void tq_matmul_bf16(float* out, const float* x, const uint16_t* w_bf16, int n, int d) {
+    int n_threads = g_n_threads;
+
+    if (n < 256 || n_threads <= 1) {
+        matmul_bf16_rows(out, x, w_bf16, 0, n, d);
+        return;
+    }
+
+    if (n_threads > n) n_threads = n;
+    if (n_threads > 16) n_threads = 16;
+
+    pthread_t threads[16];
+    matmul_bf16_task_t tasks[16];
+
+    int rows_per_thread = n / n_threads;
+    for (int t = 0; t < n_threads; t++) {
+        tasks[t].out = out;
+        tasks[t].x = x;
+        tasks[t].w_bf16 = w_bf16;
+        tasks[t].d = d;
+        tasks[t].start_row = t * rows_per_thread;
+        tasks[t].end_row = (t == n_threads - 1) ? n : (t + 1) * rows_per_thread;
+        pthread_create(&threads[t], NULL, matmul_bf16_worker, &tasks[t]);
+    }
+    for (int t = 0; t < n_threads; t++) {
+        pthread_join(threads[t], NULL);
+    }
+}
+
+/* ============================================================
  * RMS Normalization: out[i] = (x[i] / rms) * weight[i]
  * where rms = sqrt(mean(x^2) + eps)
  * ============================================================ */

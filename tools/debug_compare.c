@@ -220,7 +220,15 @@ int main(int argc, char** argv) {
     s = tq_create_state(c, TQ_TYPE_COUNT);
 
     /* Embedding */
-    memcpy(s->x, model->token_embedding + (size_t)token * dim, dim * sizeof(float));
+    if (model->embed_bf16) {
+        const uint16_t* bf16_row = model->embed_bf16 + (size_t)token * dim;
+        for (int i = 0; i < dim; i++) {
+            uint32_t bits = ((uint32_t)bf16_row[i]) << 16;
+            memcpy(&s->x[i], &bits, 4);
+        }
+    } else {
+        memcpy(s->x, model->token_embedding + (size_t)token * dim, dim * sizeof(float));
+    }
     printf("--- Embedding ---\n");
     compare_with_ref("embed", s->x, dim);
     printf("\n");
@@ -544,7 +552,11 @@ int main(int argc, char** argv) {
     printf("\n");
 
     /* Logits */
-    tq_matmul(s->logits, s->x, model->output_weight, c->vocab_size, dim);
+    if (model->output_weight_bf16) {
+        tq_matmul_bf16(s->logits, s->x, model->output_weight_bf16, c->vocab_size, dim);
+    } else {
+        tq_matmul(s->logits, s->x, model->output_weight, c->vocab_size, dim);
+    }
     printf("--- Logits ---\n");
     compare_with_ref("logits", s->logits, c->vocab_size);
 

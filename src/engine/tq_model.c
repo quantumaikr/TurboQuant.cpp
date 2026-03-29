@@ -385,13 +385,41 @@ static float* load_tensor(void* data_base, tensor_info_t* t,
 }
 
 /* ============================================================
- * Calculate total FP32 bytes needed for all non-F32 tensors
+ * Get raw BF16 pointer for a tensor (zero-copy from mmap).
+ * Returns NULL if tensor is not BF16.
+ * ============================================================ */
+static const uint16_t* get_bf16_ptr(void* data_base, tensor_info_t* t) {
+    if (!t) return NULL;
+    if (strcmp(t->dtype, "BF16") != 0) return NULL;
+    return (const uint16_t*)((const char*)data_base + t->data_start);
+}
+
+/* ============================================================
+ * Check if a tensor name matches any of the "keep as BF16" names.
+ * These tensors won't be converted to FP32 upfront; instead they
+ * will be converted on demand during inference to save memory.
+ * ============================================================ */
+static int should_keep_bf16(const char* name) {
+    /* Embedding table — largest single tensor, only need one row at a time */
+    if (strcmp(name, "model.embed_tokens.weight") == 0) return 1;
+    if (strcmp(name, "model.language_model.embed_tokens.weight") == 0) return 1;
+    if (strcmp(name, "tok_embeddings.weight") == 0) return 1;
+    if (strcmp(name, "transformer.wte.weight") == 0) return 1;
+    /* lm_head — output projection, can use BF16 matmul */
+    if (strcmp(name, "lm_head.weight") == 0) return 1;
+    return 0;
+}
+
+/* ============================================================
+ * Calculate total FP32 bytes needed for all non-F32 tensors,
+ * excluding tensors that will be kept as BF16 (streaming conversion).
  * ============================================================ */
 static size_t calc_conversion_buffer_size(tensor_info_t* tensors, int n_tensors) {
     size_t total = 0;
     for (int i = 0; i < n_tensors; i++) {
         if (strcmp(tensors[i].dtype, "F32") != 0 &&
-            strcmp(tensors[i].dtype, "__metadata__") != 0) {
+            strcmp(tensors[i].dtype, "__metadata__") != 0 &&
+            !should_keep_bf16(tensors[i].name)) {
             int64_t data_bytes = tensors[i].data_end - tensors[i].data_start;
             int elem_size = dtype_element_size(tensors[i].dtype);
             if (elem_size > 0) {
@@ -656,8 +684,20 @@ tq_model_t* tq_load_model(const char* path) {
 
     model->config.vocab_size = (int)embed->shape[0];
     model->config.hidden_dim = (int)embed->shape[1];
-    model->token_embedding = load_tensor(data_base, embed,
-                                          &conv_buf, &conv_used, conv_capacity);
+
+    /* Try to keep embedding as BF16 (streaming conversion saves ~1GB) */
+    model->embed_bf16 = get_bf16_ptr(data_base, embed);
+    if (model->embed_bf16) {
+        /* BF16 embedding: don't convert, will convert on demand in forward pass */
+        model->token_embedding = NULL;
+        size_t embed_bytes = (size_t)embed->shape[0] * embed->shape[1] * 2;
+        fprintf(stderr, "tq_load_model: keeping embed_tokens as BF16 (%zu MB saved)\n",
+                embed_bytes / (1024 * 1024));
+    } else {
+        /* F32 or other dtype: convert as before */
+        model->token_embedding = load_tensor(data_base, embed,
+                                              &conv_buf, &conv_used, conv_capacity);
+    }
 
     /* Detect n_layers (handles both standard and Qwen3.5 naming) */
     model->config.n_layers = detect_n_layers(tensors, n_tensors);
@@ -982,11 +1022,21 @@ tq_model_t* tq_load_model(const char* path) {
     /* Output weight — may be tied to embedding */
     tensor_info_t* lm_head = find_tensor(tensors, n_tensors, "lm_head.weight");
     if (lm_head) {
-        model->output_weight = load_tensor(data_base, lm_head,
-                                            &conv_buf, &conv_used, conv_capacity);
+        /* Try to keep lm_head as BF16 */
+        model->output_weight_bf16 = get_bf16_ptr(data_base, lm_head);
+        if (model->output_weight_bf16) {
+            model->output_weight = NULL;
+            size_t lm_bytes = (size_t)lm_head->shape[0] * lm_head->shape[1] * 2;
+            fprintf(stderr, "tq_load_model: keeping lm_head as BF16 (%zu MB saved)\n",
+                    lm_bytes / (1024 * 1024));
+        } else {
+            model->output_weight = load_tensor(data_base, lm_head,
+                                                &conv_buf, &conv_used, conv_capacity);
+        }
     } else {
-        /* Weight tying: reuse embedding */
+        /* Weight tying: reuse embedding (either FP32 or BF16) */
         model->output_weight = model->token_embedding;
+        model->output_weight_bf16 = model->embed_bf16;
     }
 
     free(tensors);
