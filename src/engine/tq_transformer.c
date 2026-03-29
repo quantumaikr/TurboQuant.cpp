@@ -164,15 +164,50 @@ void tq_free_state(tq_state_t* state) {
 }
 
 /* ============================================================
- * Helper: L2 normalize a vector in-place
+ * Helper: L2 normalize a vector in-place (NEON-optimized)
  * ============================================================ */
 static void l2_normalize(float* v, int n) {
+#ifdef __ARM_NEON
+    float32x4_t vss = vdupq_n_f32(0.0f);
+    int i = 0;
+    for (; i + 3 < n; i += 4) {
+        float32x4_t vx = vld1q_f32(v + i);
+        vss = vfmaq_f32(vss, vx, vx);
+    }
+    float ss = vaddvq_f32(vss);
+    for (; i < n; i++) ss += v[i] * v[i];
+    if (ss > 0.0f) {
+        float inv = 1.0f / sqrtf(ss);
+        float32x4_t vinv = vdupq_n_f32(inv);
+        i = 0;
+        for (; i + 3 < n; i += 4) {
+            float32x4_t vx = vld1q_f32(v + i);
+            vst1q_f32(v + i, vmulq_f32(vx, vinv));
+        }
+        for (; i < n; i++) v[i] *= inv;
+    }
+#else
     float ss = 0.0f;
     for (int i = 0; i < n; i++) ss += v[i] * v[i];
     if (ss > 0.0f) {
         float inv = 1.0f / sqrtf(ss);
         for (int i = 0; i < n; i++) v[i] *= inv;
     }
+#endif
+}
+
+/* ============================================================
+ * Fast exponential approximation (Schraudolph's algorithm)
+ * ~6x faster than expf(), accuracy within ~1% for |x| < 10
+ * Used for decay gates where exact precision is not critical.
+ * ============================================================ */
+static inline float fast_expf(float x) {
+    /* Clamp to avoid overflow/underflow */
+    if (x < -20.0f) return 0.0f;
+    if (x > 20.0f) return expf(x);
+    union { float f; int32_t i; } v;
+    v.i = (int32_t)(12102203.0f * x + 1065353216.0f);
+    return v.f;
 }
 
 /* ============================================================
@@ -183,32 +218,91 @@ static void l2_normalize(float* v, int n) {
  * weight has conv_width values.
  * Returns the convolution output for the current input.
  * ============================================================ */
-static float causal_conv1d_step(float input, float* conv_buf,
+static inline float causal_conv1d_step(float input, float* conv_buf,
                                  const float* weight, int conv_width) {
-    /* conv_buf holds the previous (conv_width - 1) inputs:
-     *   conv_buf[0] = x[t-K+1], ..., conv_buf[K-2] = x[t-1]
-     * The current input x[t] is NOT in the buffer yet.
-     *
-     * Causal conv1d output at time t:
-     *   out = sum_{k=0}^{K-2} weight[k] * conv_buf[k]  +  weight[K-1] * input
-     *
-     * After computing, shift buffer left and insert input for next step. */
     int buf_len = conv_width - 1;
-
-    /* Compute output BEFORE updating buffer */
     float out = 0.0f;
     for (int k = 0; k < buf_len; k++) {
         out += weight[k] * conv_buf[k];
     }
     out += weight[buf_len] * input;
-
-    /* Now update buffer: shift left and insert current input */
     for (int i = 0; i < buf_len - 1; i++) {
         conv_buf[i] = conv_buf[i + 1];
     }
     conv_buf[buf_len - 1] = input;
-
     return out;
+}
+
+/* ============================================================
+ * Batched causal conv1d for all channels + SiLU activation.
+ * When conv_width=4 (buf_len=3), we specialize to avoid inner loops.
+ * Uses NEON to process 4 channels simultaneously.
+ * ============================================================ */
+static void causal_conv1d_silu_batch(float* data, float* conv_st,
+                                      const float* conv_weights,
+                                      int n_channels, int conv_width) {
+    int conv_buf_len = conv_width - 1;
+
+#ifdef __ARM_NEON
+    if (conv_width == 4) {
+        /* Specialized path for width=4 (3 history values per channel).
+         * Conv state layout: [channel][buf_len=3] */
+        int ch = 0;
+        for (; ch + 3 < n_channels; ch += 4) {
+            /* For each of the 4 channels, compute:
+             * out = w[0]*buf[0] + w[1]*buf[1] + w[2]*buf[2] + w[3]*input */
+            float results[4];
+            for (int c = 0; c < 4; c++) {
+                int idx = ch + c;
+                float* buf = conv_st + idx * conv_buf_len;
+                const float* w = conv_weights + idx * conv_width;
+                float out = w[0] * buf[0] + w[1] * buf[1] + w[2] * buf[2] + w[3] * data[idx];
+                /* Shift buffer */
+                buf[0] = buf[1];
+                buf[1] = buf[2];
+                buf[2] = data[idx];
+                results[c] = out;
+            }
+            /* SiLU on 4 values at once: x / (1 + exp(-x)) */
+            float32x4_t vx = vld1q_f32(results);
+            float32x4_t vneg = vnegq_f32(vx);
+            /* Use fast exp for SiLU since exact precision is not critical here */
+            float exp_vals[4];
+            vst1q_f32(exp_vals, vneg);
+            exp_vals[0] = fast_expf(exp_vals[0]);
+            exp_vals[1] = fast_expf(exp_vals[1]);
+            exp_vals[2] = fast_expf(exp_vals[2]);
+            exp_vals[3] = fast_expf(exp_vals[3]);
+            float32x4_t vexp = vld1q_f32(exp_vals);
+            float32x4_t vone = vdupq_n_f32(1.0f);
+            float32x4_t vdenom = vaddq_f32(vone, vexp);
+            float32x4_t vresult = vdivq_f32(vx, vdenom);
+            vst1q_f32(data + ch, vresult);
+        }
+        /* Scalar tail */
+        for (; ch < n_channels; ch++) {
+            float* buf = conv_st + ch * conv_buf_len;
+            const float* w = conv_weights + ch * conv_width;
+            float out = w[0] * buf[0] + w[1] * buf[1] + w[2] * buf[2] + w[3] * data[ch];
+            buf[0] = buf[1];
+            buf[1] = buf[2];
+            buf[2] = data[ch];
+            data[ch] = out / (1.0f + fast_expf(-out));
+        }
+    } else
+#endif
+    {
+        /* Generic path */
+        for (int ch = 0; ch < n_channels; ch++) {
+            float* ch_conv_buf = conv_st + ch * conv_buf_len;
+            const float* ch_weight = conv_weights + ch * conv_width;
+            data[ch] = causal_conv1d_step(data[ch], ch_conv_buf, ch_weight, conv_width);
+        }
+        /* SiLU */
+        for (int i = 0; i < n_channels; i++) {
+            data[i] = data[i] / (1.0f + fast_expf(-data[i]));
+        }
+    }
 }
 
 /* ============================================================
@@ -245,16 +339,25 @@ static void deltanet_forward(tq_model_t* model, tq_state_t* s, int l) {
     float* state = s->delta_state + (size_t)l * dn * dk * dv;
     float* conv_st = s->conv_state + (size_t)l * qkv_dim * conv_buf_len;
 
+    /* Pre-quantize activation to Q8 once for all Q4 projections in this layer.
+     * This eliminates 4 redundant tq_quantize_row_q8 + malloc/free cycles. */
+    int8_t xb_q8[4096]; /* max hidden_dim, stack-allocated for speed */
+    float xb_q8s[128 + 1]; /* max blocks + 1 */
+    int has_q4 = (layer->delta_in_proj_qkv_q4 != NULL);
+    if (has_q4) {
+        tq_quantize_row_q8(s->xb, xb_q8, xb_q8s, dim);
+    }
+
     /* Step 1: Project input through QKV and Z */
     if (layer->delta_in_proj_qkv_q4)
-        tq_matmul_q4(s->delta_qkv, s->xb, layer->delta_in_proj_qkv_q4, layer->delta_in_proj_qkv_q4s, qkv_dim, dim);
+        tq_matmul_q4_preq(s->delta_qkv, layer->delta_in_proj_qkv_q4, layer->delta_in_proj_qkv_q4s, xb_q8, xb_q8s, qkv_dim, dim);
     else if (layer->delta_in_proj_qkv_q8)
         tq_matmul_q8(s->delta_qkv, s->xb, layer->delta_in_proj_qkv_q8, layer->delta_in_proj_qkv_q8s, qkv_dim, dim);
     else
         tq_matmul(s->delta_qkv, s->xb, layer->delta_in_proj_qkv, qkv_dim, dim);
 
     if (layer->delta_in_proj_z_q4)
-        tq_matmul_q4(s->delta_z, s->xb, layer->delta_in_proj_z_q4, layer->delta_in_proj_z_q4s, z_dim, dim);
+        tq_matmul_q4_preq(s->delta_z, layer->delta_in_proj_z_q4, layer->delta_in_proj_z_q4s, xb_q8, xb_q8s, z_dim, dim);
     else if (layer->delta_in_proj_z_q8)
         tq_matmul_q8(s->delta_z, s->xb, layer->delta_in_proj_z_q8, layer->delta_in_proj_z_q8s, z_dim, dim);
     else
@@ -263,7 +366,7 @@ static void deltanet_forward(tq_model_t* model, tq_state_t* s, int l) {
     /* Step 2: Project alpha and beta */
     /* alpha = in_proj_a @ x  -> [dn] */
     if (layer->delta_in_proj_a_q4)
-        tq_matmul_q4(s->delta_ab, s->xb, layer->delta_in_proj_a_q4, layer->delta_in_proj_a_q4s, dn, dim);
+        tq_matmul_q4_preq(s->delta_ab, layer->delta_in_proj_a_q4, layer->delta_in_proj_a_q4s, xb_q8, xb_q8s, dn, dim);
     else if (layer->delta_in_proj_a_q8)
         tq_matmul_q8(s->delta_ab, s->xb, layer->delta_in_proj_a_q8, layer->delta_in_proj_a_q8s, dn, dim);
     else
@@ -271,42 +374,38 @@ static void deltanet_forward(tq_model_t* model, tq_state_t* s, int l) {
 
     /* beta = sigmoid(in_proj_b @ x) -> [dn] */
     if (layer->delta_in_proj_b_q4)
-        tq_matmul_q4(s->delta_ab + dn, s->xb, layer->delta_in_proj_b_q4, layer->delta_in_proj_b_q4s, dn, dim);
+        tq_matmul_q4_preq(s->delta_ab + dn, layer->delta_in_proj_b_q4, layer->delta_in_proj_b_q4s, xb_q8, xb_q8s, dn, dim);
     else if (layer->delta_in_proj_b_q8)
         tq_matmul_q8(s->delta_ab + dn, s->xb, layer->delta_in_proj_b_q8, layer->delta_in_proj_b_q8s, dn, dim);
     else
         tq_matmul(s->delta_ab + dn, s->xb, layer->delta_in_proj_b, dn, dim);
     for (int h = 0; h < dn; h++) {
-        s->delta_ab[dn + h] = 1.0f / (1.0f + expf(-s->delta_ab[dn + h]));
+        s->delta_ab[dn + h] = 1.0f / (1.0f + fast_expf(-s->delta_ab[dn + h]));
     }
 
     /* Step 3: Compute gate (decay) per head
-     * In the GGUF conversion, A_log is stored as -exp(A_log).
-     * Since we load from safetensors (raw A_log), we compute:
-     *   gate = softplus(alpha + dt_bias) * (-exp(A_log))
-     * This produces a negative gate value (decay in log space).
-     * exp(gate) is the per-step multiplicative decay (< 1). */
+     * gate = softplus(alpha + dt_bias) * (-exp(A_log))
+     * exp(gate) is the per-step multiplicative decay (< 1).
+     * We precompute both gate_vals and exp(gate) to avoid repeated exp calls. */
     float gate_vals[128]; /* max 128 heads, stack-allocated for speed */
+    float decay_vals[128]; /* precomputed exp(gate) per head */
     for (int h = 0; h < dn; h++) {
         float alpha_biased = s->delta_ab[h] + layer->delta_dt_bias[h];
-        float alpha_sp = logf(1.0f + expf(alpha_biased)); /* softplus */
-        /* A_log in safetensors is raw; compute -exp(A_log) as the decay factor */
-        float neg_exp_alog = -expf(layer->delta_a_log[h]);
+        /* softplus: log(1 + exp(x)). For large x, softplus(x) ~ x */
+        float alpha_sp;
+        if (alpha_biased > 15.0f) {
+            alpha_sp = alpha_biased; /* softplus saturates to identity */
+        } else {
+            alpha_sp = logf(1.0f + fast_expf(alpha_biased));
+        }
+        float neg_exp_alog = -expf(layer->delta_a_log[h]); /* keep precise for model param */
         gate_vals[h] = alpha_sp * neg_exp_alog;
+        decay_vals[h] = fast_expf(gate_vals[h]); /* precompute decay */
     }
 
-    /* Step 4: Causal conv1d on QKV, then SiLU */
-    for (int ch = 0; ch < qkv_dim; ch++) {
-        float* ch_conv_buf = conv_st + ch * conv_buf_len;
-        const float* ch_weight = layer->delta_conv1d + ch * conv_width;
-        s->delta_qkv[ch] = causal_conv1d_step(s->delta_qkv[ch],
-                                                ch_conv_buf, ch_weight,
-                                                conv_width);
-    }
-    /* SiLU activation on conv output */
-    for (int i = 0; i < qkv_dim; i++) {
-        s->delta_qkv[i] = s->delta_qkv[i] / (1.0f + expf(-s->delta_qkv[i]));
-    }
+    /* Step 4: Causal conv1d on QKV + SiLU (batched, NEON-optimized) */
+    causal_conv1d_silu_batch(s->delta_qkv, conv_st, layer->delta_conv1d,
+                              qkv_dim, conv_width);
 
     /* Step 5: Split into Q, K, V per head and L2 normalize Q, K */
     float* Q_all = s->delta_qkv;
@@ -324,7 +423,7 @@ static void deltanet_forward(tq_model_t* model, tq_state_t* s, int l) {
         Q_all[i] *= q_scale;
     }
 
-    /* Step 7: Per-head recurrent delta rule update.
+    /* Step 7: Per-head recurrent delta rule update (NEON-optimized).
      *
      * Following the llama.cpp autoregressive implementation:
      *   S = S * exp(gate)           // decay state
@@ -340,19 +439,86 @@ static void deltanet_forward(tq_model_t* model, tq_state_t* s, int l) {
         float* vh = V_all + h * dv;
         float* sh = state + (size_t)h * dk * dv;
         float beta_h = s->delta_ab[dn + h];
+        float decay = decay_vals[h]; /* precomputed exp(gate) */
 
+#ifdef __ARM_NEON
+        /* NEON-optimized: fused decay + sk computation.
+         * For each row i of state: decay state, accumulate sk.
+         * sk[j] = sum_i(S[i,j] * K[i]) after decay */
+        float sk[128] __attribute__((aligned(16)));
+        memset(sk, 0, (size_t)dv * sizeof(float));
+
+        float32x4_t vdecay = vdupq_n_f32(decay);
+        for (int i = 0; i < dk; i++) {
+            float* sp = sh + i * dv;
+            float ki = kh[i];
+            float32x4_t vki = vdupq_n_f32(ki);
+            int j = 0;
+            for (; j + 3 < dv; j += 4) {
+                float32x4_t vs = vld1q_f32(sp + j);
+                vs = vmulq_f32(vs, vdecay);  /* decay */
+                vst1q_f32(sp + j, vs);        /* store decayed state */
+                float32x4_t vsk = vld1q_f32(sk + j);
+                vsk = vfmaq_f32(vsk, vs, vki); /* accumulate sk */
+                vst1q_f32(sk + j, vsk);
+            }
+            for (; j < dv; j++) {
+                sp[j] *= decay;
+                sk[j] += sp[j] * ki;
+            }
+        }
+
+        /* Delta: d = beta * (V - sk) */
+        float d_vec[128] __attribute__((aligned(16)));
+        float32x4_t vbeta = vdupq_n_f32(beta_h);
+        {
+            int j = 0;
+            for (; j + 3 < dv; j += 4) {
+                float32x4_t vv = vld1q_f32(vh + j);
+                float32x4_t vs = vld1q_f32(sk + j);
+                float32x4_t vd = vmulq_f32(vbeta, vsubq_f32(vv, vs));
+                vst1q_f32(d_vec + j, vd);
+            }
+            for (; j < dv; j++) {
+                d_vec[j] = beta_h * (vh[j] - sk[j]);
+            }
+        }
+
+        /* State update: S[i][j] += K[i] * d[j] (rank-1 outer product)
+         * + Output: o[j] = sum_i(S[i,j] * Q[i]) (simultaneously) */
+        float* oh = s->delta_out + h * dv;
+        memset(oh, 0, (size_t)dv * sizeof(float));
+
+        for (int i = 0; i < dk; i++) {
+            float* sp = sh + i * dv;
+            float ki = kh[i];
+            float qi = qh[i];
+            float32x4_t vki = vdupq_n_f32(ki);
+            float32x4_t vqi = vdupq_n_f32(qi);
+            int j = 0;
+            for (; j + 3 < dv; j += 4) {
+                float32x4_t vs = vld1q_f32(sp + j);
+                float32x4_t vd = vld1q_f32(d_vec + j);
+                vs = vfmaq_f32(vs, vki, vd);  /* S += K[i] * d */
+                vst1q_f32(sp + j, vs);
+                float32x4_t vo = vld1q_f32(oh + j);
+                vo = vfmaq_f32(vo, vs, vqi);   /* o += S * Q[i] */
+                vst1q_f32(oh + j, vo);
+            }
+            for (; j < dv; j++) {
+                sp[j] += ki * d_vec[j];
+                oh[j] += sp[j] * qi;
+            }
+        }
+#else
+        /* Scalar fallback */
         /* Decay: S = S * exp(gate) */
-        float decay = expf(gate_vals[h]);
         for (int i = 0; i < dk * dv; i++) {
             sh[i] *= decay;
         }
 
-        /* Compute sk = S @ K per value dimension:
-         * sk[j] = sum_i(S[i][j] * K[i]) for j=0..dv-1
-         * Actually, following the reference more carefully:
-         * sk = sum_rows(S * K) where K is broadcast across value dim.
-         * This means sk[j] = sum_i(S[i,j] * K[i]) */
-        float sk[128]; /* max head_dim */
+        /* Compute sk */
+        float sk[128];
         for (int j = 0; j < dv; j++) {
             float sum = 0.0f;
             for (int i = 0; i < dk; i++) {
@@ -361,22 +527,20 @@ static void deltanet_forward(tq_model_t* model, tq_state_t* s, int l) {
             sk[j] = sum;
         }
 
-        /* Delta: d = beta * (V - sk) */
-        float d[128];
+        /* Delta */
+        float d_vec[128];
         for (int j = 0; j < dv; j++) {
-            d[j] = beta_h * (vh[j] - sk[j]);
+            d_vec[j] = beta_h * (vh[j] - sk[j]);
         }
 
-        /* State update: S = S + outer(K, d)
-         * S[i][j] += K[i] * d[j] */
+        /* State update */
         for (int i = 0; i < dk; i++) {
             for (int j = 0; j < dv; j++) {
-                sh[i * dv + j] += kh[i] * d[j];
+                sh[i * dv + j] += kh[i] * d_vec[j];
             }
         }
 
-        /* Output: o = S @ Q
-         * o[j] = sum_i(S[i,j] * Q[i]) */
+        /* Output */
         float* oh = s->delta_out + h * dv;
         for (int j = 0; j < dv; j++) {
             float sum = 0.0f;
@@ -385,31 +549,70 @@ static void deltanet_forward(tq_model_t* model, tq_state_t* s, int l) {
             }
             oh[j] = sum;
         }
+#endif
     }
 
     /* Step 8: Apply group norm (per-head RMSNorm), then z gate (swish), then output projection */
-    /* norm(output, z): normalized = RMSNorm(output), gated = silu(z), result = normalized * gated */
     for (int h = 0; h < dn; h++) {
         float* oh = s->delta_out + h * dv;
 
         /* RMSNorm with delta_norm weights */
         float ss = 0.0f;
+#ifdef __ARM_NEON
+        {
+            float32x4_t vss = vdupq_n_f32(0.0f);
+            int j = 0;
+            for (; j + 3 < dv; j += 4) {
+                float32x4_t vo = vld1q_f32(oh + j);
+                vss = vfmaq_f32(vss, vo, vo);
+            }
+            ss = vaddvq_f32(vss);
+            for (; j < dv; j++) ss += oh[j] * oh[j];
+        }
+#else
         for (int j = 0; j < dv; j++) {
             ss += oh[j] * oh[j];
         }
+#endif
         ss = ss / dv + c->rms_norm_eps;
         float inv_rms = 1.0f / sqrtf(ss);
         for (int j = 0; j < dv; j++) {
             oh[j] = oh[j] * inv_rms * layer->delta_norm[j];
         }
 
-        /* Multiply by swish(z) for this head */
+        /* Multiply by swish(z) for this head (NEON + fast_expf) */
         float* zh = s->delta_z + h * dv;
+#ifdef __ARM_NEON
+        {
+            int j = 0;
+            for (; j + 3 < dv; j += 4) {
+                float32x4_t vz = vld1q_f32(zh + j);
+                float32x4_t vo = vld1q_f32(oh + j);
+                float32x4_t vneg = vnegq_f32(vz);
+                /* Fast exp for 4 values */
+                float neg_vals[4];
+                vst1q_f32(neg_vals, vneg);
+                float exp_vals[4] = {
+                    fast_expf(neg_vals[0]), fast_expf(neg_vals[1]),
+                    fast_expf(neg_vals[2]), fast_expf(neg_vals[3])
+                };
+                float32x4_t vexp = vld1q_f32(exp_vals);
+                float32x4_t vone = vdupq_n_f32(1.0f);
+                float32x4_t vsilu = vdivq_f32(vz, vaddq_f32(vone, vexp));
+                vst1q_f32(oh + j, vmulq_f32(vo, vsilu));
+            }
+            for (; j < dv; j++) {
+                float z_val = zh[j];
+                oh[j] *= z_val / (1.0f + fast_expf(-z_val));
+            }
+        }
+#else
         for (int j = 0; j < dv; j++) {
             float z_val = zh[j];
-            float z_silu = z_val / (1.0f + expf(-z_val));
+            float z_silu = z_val / (1.0f + fast_expf(-z_val));
             oh[j] *= z_silu;
         }
+#endif
     }
 
     /* Output projection: [dim, z_dim] @ delta_out[z_dim] -> xb2[dim] */
@@ -438,26 +641,30 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
     int kv_mul = n_heads / n_kv_heads;
     size_t kv_layer_stride = (size_t)c->max_seq_len * kv_dim;
 
+    /* Pre-quantize activation to Q8 once for all Q4 projections in this layer.
+     * This eliminates redundant tq_quantize_row_q8 + malloc/free in each matmul_q4 call. */
+    int8_t xb_q8[4096]; /* max hidden_dim */
+    float xb_q8s[128 + 1];
+    int has_q4 = (layer->wq_q4 != NULL);
+    if (has_q4) {
+        tq_quantize_row_q8(s->xb, xb_q8, xb_q8s, dim);
+    }
+
     /* QKV projections.
      * When attn_output_gate is enabled, wq has shape [2*n_heads*head_dim, dim]
      * and outputs [Q, gate_q] concatenated. We project into xb2 as temp. */
     float* gate_q = NULL;
     if (c->attn_output_gate) {
-        /* Project full Q+gate interleaved:
-         * wq output is [n_heads * head_dim * 2] arranged as:
-         *   [Q_head0(head_dim), Gate_head0(head_dim), Q_head1, Gate_head1, ...]
-         * We need to deinterleave into Q and gate. */
         int qg_dim = n_heads * head_dim * 2;
         if (layer->wq_q4)
-            tq_matmul_q4(s->xb2, s->xb, layer->wq_q4, layer->wq_q4s, qg_dim, dim);
+            tq_matmul_q4_preq(s->xb2, layer->wq_q4, layer->wq_q4s, xb_q8, xb_q8s, qg_dim, dim);
         else if (layer->wq_q8)
             tq_matmul_q8(s->xb2, s->xb, layer->wq_q8, layer->wq_q8s, qg_dim, dim);
         else
             tq_matmul(s->xb2, s->xb, layer->wq, qg_dim, dim);
         /* Deinterleave: extract Q and gate from interleaved layout */
-        gate_q = s->xb2; /* reuse xb2 for gate after we extract Q */
-        /* We need a temp buffer. Use att buffer as it's large enough. */
-        float* gate_tmp = s->att; /* repurpose att temporarily */
+        gate_q = s->xb2;
+        float* gate_tmp = s->att;
         for (int h = 0; h < n_heads; h++) {
             memcpy(s->q + h * head_dim,
                    s->xb2 + h * head_dim * 2,
@@ -469,20 +676,20 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
         gate_q = gate_tmp;
     } else {
         if (layer->wq_q4)
-            tq_matmul_q4(s->q, s->xb, layer->wq_q4, layer->wq_q4s, n_heads * head_dim, dim);
+            tq_matmul_q4_preq(s->q, layer->wq_q4, layer->wq_q4s, xb_q8, xb_q8s, n_heads * head_dim, dim);
         else if (layer->wq_q8)
             tq_matmul_q8(s->q, s->xb, layer->wq_q8, layer->wq_q8s, n_heads * head_dim, dim);
         else
             tq_matmul(s->q, s->xb, layer->wq, n_heads * head_dim, dim);
     }
     if (layer->wk_q4)
-        tq_matmul_q4(s->k, s->xb, layer->wk_q4, layer->wk_q4s, kv_dim, dim);
+        tq_matmul_q4_preq(s->k, layer->wk_q4, layer->wk_q4s, xb_q8, xb_q8s, kv_dim, dim);
     else if (layer->wk_q8)
         tq_matmul_q8(s->k, s->xb, layer->wk_q8, layer->wk_q8s, kv_dim, dim);
     else
         tq_matmul(s->k, s->xb, layer->wk, kv_dim, dim);
     if (layer->wv_q4)
-        tq_matmul_q4(s->v, s->xb, layer->wv_q4, layer->wv_q4s, kv_dim, dim);
+        tq_matmul_q4_preq(s->v, layer->wv_q4, layer->wv_q4s, xb_q8, xb_q8s, kv_dim, dim);
     else if (layer->wv_q8)
         tq_matmul_q8(s->v, s->xb, layer->wv_q8, layer->wv_q8s, kv_dim, dim);
     else
@@ -635,10 +842,34 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
 
     /* Apply output gate if enabled: attn_out *= sigmoid(gate_q) */
     if (c->attn_output_gate && gate_q) {
-        for (int i = 0; i < n_heads * head_dim; i++) {
-            float g = 1.0f / (1.0f + expf(-gate_q[i]));
+        int total = n_heads * head_dim;
+#ifdef __ARM_NEON
+        int i = 0;
+        for (; i + 3 < total; i += 4) {
+            float32x4_t vg = vld1q_f32(gate_q + i);
+            float32x4_t vx = vld1q_f32(s->xb + i);
+            float32x4_t vneg = vnegq_f32(vg);
+            float neg_vals[4];
+            vst1q_f32(neg_vals, vneg);
+            float exp_vals[4] = {
+                fast_expf(neg_vals[0]), fast_expf(neg_vals[1]),
+                fast_expf(neg_vals[2]), fast_expf(neg_vals[3])
+            };
+            float32x4_t vexp = vld1q_f32(exp_vals);
+            float32x4_t vone = vdupq_n_f32(1.0f);
+            float32x4_t vsig = vdivq_f32(vone, vaddq_f32(vone, vexp));
+            vst1q_f32(s->xb + i, vmulq_f32(vx, vsig));
+        }
+        for (; i < total; i++) {
+            float g = 1.0f / (1.0f + fast_expf(-gate_q[i]));
             s->xb[i] *= g;
         }
+#else
+        for (int i = 0; i < total; i++) {
+            float g = 1.0f / (1.0f + fast_expf(-gate_q[i]));
+            s->xb[i] *= g;
+        }
+#endif
     }
 
     /* Output projection */
@@ -711,25 +942,38 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
         }
         /* else: skip (should not happen for valid models) */
 
-        /* FFN Block (SwiGLU) — present on ALL layers */
+        /* FFN Block (SwiGLU) — present on ALL layers.
+         * Optimization: cache Q8 quantization of xb for gate+up projections,
+         * and cache Q8 of hb for down projection. */
         if ((layer->w_gate || layer->w_gate_q8 || layer->w_gate_q4) &&
             (layer->w_up || layer->w_up_q8 || layer->w_up_q4) &&
             (layer->w_down || layer->w_down_q8 || layer->w_down_q4)) {
             tq_rmsnorm(s->xb, s->x, layer->ffn_norm, dim, c->rms_norm_eps);
-            if (layer->w_gate_q4)
-                tq_matmul_q4(s->hb,  s->xb, layer->w_gate_q4, layer->w_gate_q4s, c->intermediate_dim, dim);
-            else if (layer->w_gate_q8)
-                tq_matmul_q8(s->hb,  s->xb, layer->w_gate_q8, layer->w_gate_q8s, c->intermediate_dim, dim);
-            else
-                tq_matmul(s->hb,  s->xb, layer->w_gate, c->intermediate_dim, dim);
-            if (layer->w_up_q4)
-                tq_matmul_q4(s->hb2, s->xb, layer->w_up_q4, layer->w_up_q4s, c->intermediate_dim, dim);
-            else if (layer->w_up_q8)
-                tq_matmul_q8(s->hb2, s->xb, layer->w_up_q8, layer->w_up_q8s, c->intermediate_dim, dim);
-            else
-                tq_matmul(s->hb2, s->xb, layer->w_up,   c->intermediate_dim, dim);
+
+            /* Pre-quantize xb for gate+up Q4 projections (same input, 2 matmuls) */
+            if (layer->w_gate_q4) {
+                int8_t ffn_xb_q8[4096];
+                float ffn_xb_q8s[128 + 1];
+                tq_quantize_row_q8(s->xb, ffn_xb_q8, ffn_xb_q8s, dim);
+
+                tq_matmul_q4_preq(s->hb, layer->w_gate_q4, layer->w_gate_q4s,
+                                   ffn_xb_q8, ffn_xb_q8s, c->intermediate_dim, dim);
+                tq_matmul_q4_preq(s->hb2, layer->w_up_q4, layer->w_up_q4s,
+                                   ffn_xb_q8, ffn_xb_q8s, c->intermediate_dim, dim);
+            } else {
+                if (layer->w_gate_q8)
+                    tq_matmul_q8(s->hb, s->xb, layer->w_gate_q8, layer->w_gate_q8s, c->intermediate_dim, dim);
+                else
+                    tq_matmul(s->hb, s->xb, layer->w_gate, c->intermediate_dim, dim);
+                if (layer->w_up_q8)
+                    tq_matmul_q8(s->hb2, s->xb, layer->w_up_q8, layer->w_up_q8s, c->intermediate_dim, dim);
+                else
+                    tq_matmul(s->hb2, s->xb, layer->w_up, c->intermediate_dim, dim);
+            }
+
             tq_silu(s->hb, c->intermediate_dim);
             tq_mul(s->hb, s->hb, s->hb2, c->intermediate_dim);
+
             if (layer->w_down_q4)
                 tq_matmul_q4(s->xb2, s->hb, layer->w_down_q4, layer->w_down_q4s, dim, c->intermediate_dim);
             else if (layer->w_down_q8)

@@ -550,6 +550,47 @@ void tq_matmul_q4(float* out, const float* x, const uint8_t* w_qs, const float* 
 }
 
 /* ============================================================
+ * Q4 matmul with pre-quantized activation (no redundant quantization).
+ *
+ * When the same activation vector x is multiplied by multiple weight
+ * matrices (e.g., QKV, Z, A, B projections in DeltaNet), we quantize
+ * x to Q8 once and reuse across all calls.
+ * ============================================================ */
+void tq_matmul_q4_preq(float* out, const uint8_t* w_qs, const float* w_scales,
+                        const int8_t* x_q8, const float* x_scales,
+                        int n, int d) {
+    int n_threads = g_n_threads;
+
+    if (n < 256 || n_threads <= 1) {
+        matmul_q4_rows(out, NULL, w_qs, w_scales, x_q8, x_scales, 0, n, d);
+        return;
+    }
+
+    if (n_threads > n) n_threads = n;
+    if (n_threads > 16) n_threads = 16;
+
+    pthread_t threads[16];
+    matmul_q4_task_t tasks[16];
+
+    int rows_per_thread = n / n_threads;
+    for (int t = 0; t < n_threads; t++) {
+        tasks[t].out = out;
+        tasks[t].x = NULL;
+        tasks[t].w_qs = w_qs;
+        tasks[t].w_scales = w_scales;
+        tasks[t].x_q8 = x_q8;
+        tasks[t].x_scales = x_scales;
+        tasks[t].d = d;
+        tasks[t].start_row = t * rows_per_thread;
+        tasks[t].end_row = (t == n_threads - 1) ? n : (t + 1) * rows_per_thread;
+        pthread_create(&threads[t], NULL, matmul_q4_worker, &tasks[t]);
+    }
+    for (int t = 0; t < n_threads; t++) {
+        pthread_join(threads[t], NULL);
+    }
+}
+
+/* ============================================================
  * BF16 matmul worker helpers
  * ============================================================ */
 typedef struct {
@@ -756,7 +797,6 @@ void tq_rope(float* q, float* k, int pos, int head_dim,
 void tq_silu(float* x, int n) {
 #ifdef __ARM_NEON
     int i = 0;
-    float32x4_t one = vdupq_n_f32(1.0f);
     for (; i + 3 < n; i += 4) {
         float32x4_t vx = vld1q_f32(x + i);
         /* sigmoid(x) = 1/(1+exp(-x)) — compute per-lane */

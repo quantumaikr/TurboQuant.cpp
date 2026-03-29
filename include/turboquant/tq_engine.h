@@ -257,6 +257,8 @@ void tq_quantize_row_q8(const float* src, int8_t* dst_qs, float* dst_scales, int
 void tq_quantize_weights(tq_model_t* model);
 void tq_matmul_q4(float* out, const float* x, const uint8_t* w_qs, const float* w_scales,
                    int n, int d);
+void tq_matmul_q4_preq(float* out, const uint8_t* w_qs, const float* w_scales,
+                        const int8_t* x_q8, const float* x_scales, int n, int d);
 void tq_quantize_row_q4(const float* src, uint8_t* dst_qs, float* dst_scales, int n);
 void tq_quantize_weights_q4(tq_model_t* model);
 void tq_rmsnorm(float* out, const float* x, const float* weight, int n, float eps);
