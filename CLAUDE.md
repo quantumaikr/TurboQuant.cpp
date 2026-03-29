@@ -99,6 +99,35 @@ Each module has exclusive file ownership. When working in parallel, agents must 
 | `bench` | `bench/**`, `spec/**`, `tests/reference/**` | all core |
 | `integration` | `integrations/**`, `bindings/**`, `examples/**` | all |
 
+## Agent Team & Skills (Harness Architecture)
+
+이 프로젝트는 [Harness](https://github.com/revfactory/harness) 패턴을 적용한 에이전트 팀 구조를 사용한다.
+
+### Agents (.claude/agents/)
+
+| Agent | Role | Subagent Type |
+|-------|------|---------------|
+| `architect` | 기술 리더, 작업 분해/위임, Merge Gate | Leader |
+| `core-dev` | 알고리즘 구현, 테스트 작성 | general-purpose |
+| `perf-dev` | SIMD/GPU 최적화, 벤치마크 | general-purpose |
+| `qa` | 경계면 교차 비교, 통합 정합성 검증 | general-purpose |
+
+### Skills (.claude/skills/)
+
+| Skill | Trigger | Description |
+|-------|---------|-------------|
+| `orchestrate` | "개발 시작", "하네스 실행" | 팀 구성 → 위임 → Merge Gate → 루프 |
+| `develop` | "다음 항목", 모듈명 | Karpathy 루프: score → implement → verify |
+| `score` | "점수", "현재 상태" | 5차원 자동 평가 + 병목 분석 |
+| `qa` | "검증", 머지 전 | 경계면 교차 비교 (5대 경계면) |
+
+### QA 원칙 (from refs/harness)
+
+- **경계면 집중**: 단일 함수가 아니라 함수 간/모듈 간 데이터 흐름 검증
+- **점진적 QA**: 전체 완성 후 1회가 아닌, 모듈 완성 직후 즉시 검증
+- **교차 비교**: API 출력과 실제 블록 데이터를 동시에 읽고 비교
+- **회귀 방지**: 발견된 버그는 반드시 테스트로 영구 방어
+
 ## Development Methodology: Hierarchical Harness
 
 This project uses a **Hierarchical Harness** that combines two methodologies:
