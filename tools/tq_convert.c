@@ -14,19 +14,21 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
+#include <dirent.h>
 
 static void print_usage(const char* prog) {
     fprintf(stderr, "TQM Converter — Pre-quantize models for instant loading\n\n");
-    fprintf(stderr, "Usage: %s <model.safetensors> [tokenizer.json] -o <output.tqm>\n\n", prog);
+    fprintf(stderr, "Usage: %s [model.safetensors] [tokenizer.json] [-o output.tqm]\n\n", prog);
+    fprintf(stderr, "  All arguments are optional — auto-detects Qwen3.5-0.8B from HuggingFace cache.\n\n");
     fprintf(stderr, "Options:\n");
-    fprintf(stderr, "  -o <path>     Output .tqm file path (required)\n");
-    fprintf(stderr, "  -j <threads>  Number of threads for quantization (default: 4)\n");
+    fprintf(stderr, "  -o <path>     Output file (default: model.tqm)\n");
+    fprintf(stderr, "  -j <threads>  Threads for quantization (default: 4)\n");
     fprintf(stderr, "  -h, --help    Show this help\n");
-    fprintf(stderr, "\nThe converter:\n");
-    fprintf(stderr, "  1. Loads the safetensors model (BF16/FP32)\n");
-    fprintf(stderr, "  2. Quantizes all weights to Q4 (4-bit, ~6x reduction)\n");
-    fprintf(stderr, "  3. Writes a .tqm file with the tokenizer embedded\n");
-    fprintf(stderr, "  4. The .tqm file can be mmap'd directly — no conversion needed\n");
+    fprintf(stderr, "\nExamples:\n");
+    fprintf(stderr, "  %s                              # auto-detect + convert\n", prog);
+    fprintf(stderr, "  %s -o qwen.tqm                  # auto-detect, custom output\n", prog);
+    fprintf(stderr, "  %s model.safetensors tok.json -o out.tqm  # explicit paths\n", prog);
 }
 
 int main(int argc, char** argv) {
@@ -57,15 +59,71 @@ int main(int argc, char** argv) {
         }
     }
 
+    /* Auto-detect model from HuggingFace cache if not specified */
     if (!model_path) {
-        fprintf(stderr, "Error: model path required\n");
-        print_usage(argv[0]);
+        const char* home = getenv("HOME");
+        if (home) {
+            static char auto_model[1024];
+            static char auto_tok[1024];
+            /* Try common Qwen3.5-0.8B cache locations */
+            const char* base = "/.cache/huggingface/hub/models--Qwen--Qwen3.5-0.8B/snapshots";
+            snprintf(auto_model, sizeof(auto_model), "%s%s", home, base);
+            /* Find snapshot directory */
+            DIR* dir = opendir(auto_model);
+            if (dir) {
+                struct dirent* ent;
+                while ((ent = readdir(dir)) != NULL) {
+                    if (ent->d_name[0] == '.') continue;
+                    char try_path[2048];
+                    /* Try single-file safetensors */
+                    snprintf(try_path, sizeof(try_path), "%s/%s/model.safetensors",
+                             auto_model, ent->d_name);
+                    if (access(try_path, R_OK) == 0) {
+                        snprintf(auto_model, sizeof(auto_model), "%s", try_path);
+                        model_path = auto_model;
+                    }
+                    /* Try multi-shard */
+                    if (!model_path) {
+                        snprintf(try_path, sizeof(try_path),
+                                 "%s/%s/model.safetensors-00001-of-00001.safetensors",
+                                 auto_model, ent->d_name);
+                        /* auto_model was overwritten, reconstruct */
+                        snprintf(auto_model, sizeof(auto_model), "%s%s", home, base);
+                        snprintf(try_path, sizeof(try_path),
+                                 "%s/%s/model.safetensors-00001-of-00001.safetensors",
+                                 auto_model, ent->d_name);
+                        if (access(try_path, R_OK) == 0) {
+                            snprintf(auto_model, sizeof(auto_model), "%s", try_path);
+                            model_path = auto_model;
+                        }
+                    }
+                    /* Auto-detect tokenizer too */
+                    if (model_path && !tokenizer_path) {
+                        char* last_slash = strrchr(auto_model, '/');
+                        if (last_slash) {
+                            size_t dir_len = last_slash - auto_model;
+                            snprintf(auto_tok, sizeof(auto_tok), "%.*s/tokenizer.json",
+                                     (int)dir_len, auto_model);
+                            if (access(auto_tok, R_OK) == 0) {
+                                tokenizer_path = auto_tok;
+                            }
+                        }
+                    }
+                    if (model_path) break;
+                }
+                closedir(dir);
+            }
+        }
+    }
+
+    if (!model_path) {
+        fprintf(stderr, "Error: model not found.\n");
+        fprintf(stderr, "  Auto-detect searched ~/.cache/huggingface/hub/models--Qwen--Qwen3.5-0.8B/\n");
+        fprintf(stderr, "  Specify manually: %s <model.safetensors> [tokenizer.json] -o output.tqm\n", argv[0]);
         return 1;
     }
     if (!output_path) {
-        fprintf(stderr, "Error: output path required (-o)\n");
-        print_usage(argv[0]);
-        return 1;
+        output_path = "model.tqm"; /* default output name */
     }
 
     tq_set_threads(n_threads);
