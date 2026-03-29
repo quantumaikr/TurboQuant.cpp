@@ -89,8 +89,10 @@ void tq_polar_quantize_ref(const float* src, void* dst, int n) {
     for (int i = 0; i < pairs; i++) {
         int tq = (int)roundf((thetas[i] - tmin) / tscale);
         int rq = (int)roundf((radii[i] - rmin) / rscale);
-        if (tq < 0) tq = 0; if (tq > 3) tq = 3;
-        if (rq < 0) rq = 0; if (rq > 3) rq = 3;
+        if (tq < 0) { tq = 0; }
+        if (tq > 3) { tq = 3; }
+        if (rq < 0) { rq = 0; }
+        if (rq > 3) { rq = 3; }
 
         /* Pack: rho in upper 2 bits, theta in lower 2 bits = 4 bits per pair */
         uint8_t packed = (uint8_t)((rq << 2) | tq);

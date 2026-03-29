@@ -4,6 +4,13 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* Cross-language static assert: works in both C11 and C++11/17 */
+#ifdef __cplusplus
+#define TQ_STATIC_ASSERT(cond, msg) static_assert(cond, msg)
+#else
+#define TQ_STATIC_ASSERT(cond, msg) TQ_STATIC_ASSERT(cond, msg)
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -52,8 +59,7 @@ typedef struct {
     uint8_t  indices[TQ_BK / 2];    /* packed rho|theta (64B for BK=128) */
 } block_tq_polar;
 
-_Static_assert(sizeof(block_tq_polar) == 8 + TQ_BK / 2,
-               "block_tq_polar size mismatch");
+/* size verified after extern "C" block */
 
 /* QJL block: 1-bit Johnson-Lindenstrauss sign hash
  * sign(key @ projection) packed into bits
@@ -65,8 +71,7 @@ typedef struct {
     uint8_t  outlier_idx[TQ_OUTLIERS];        /* outlier dimension indices (4B) */
 } block_tq_qjl;
 
-_Static_assert(sizeof(block_tq_qjl) == 4 + TQ_SKETCH_DIM / 8 + TQ_OUTLIERS,
-               "block_tq_qjl size mismatch");
+/* size verified after extern "C" block */
 
 /* TurboQuant composite: PolarQuant stage + QJL residual correction */
 typedef struct {
@@ -74,8 +79,7 @@ typedef struct {
     block_tq_qjl   residual;
 } block_tq_turbo;
 
-_Static_assert(sizeof(block_tq_turbo) == sizeof(block_tq_polar) + sizeof(block_tq_qjl),
-               "block_tq_turbo size mismatch");
+/* size verified after extern "C" block */
 
 /* Uniform min-max quantization block (baseline) */
 typedef struct {
@@ -84,8 +88,7 @@ typedef struct {
     uint8_t  qs[TQ_BK / 2];         /* 4-bit: 2 values/byte, LSB-first */
 } block_tq_uniform_4b;
 
-_Static_assert(sizeof(block_tq_uniform_4b) == 4 + TQ_BK / 2,
-               "block_tq_uniform_4b size mismatch");
+/* size verified after extern "C" block */
 
 typedef struct {
     uint16_t scale;
@@ -93,8 +96,7 @@ typedef struct {
     uint8_t  qs[TQ_BK / 4];         /* 2-bit: 4 values/byte, LSB-first */
 } block_tq_uniform_2b;
 
-_Static_assert(sizeof(block_tq_uniform_2b) == 4 + TQ_BK / 4,
-               "block_tq_uniform_2b size mismatch");
+/* size verified after extern "C" block */
 
 /* ============================================================
  * Type traits — O(1) dispatch table
@@ -145,5 +147,17 @@ typedef struct {
 #ifdef __cplusplus
 }
 #endif
+
+/* ============================================================
+ * Block size verification (compile-time, C/C++ compatible)
+ * Uses negative-size array trick for universal compatibility.
+ * ============================================================ */
+#define TQ_CHECK_SIZE(type, expected) \
+    typedef char tq_check_##type[(sizeof(type) == (expected)) ? 1 : -1]
+
+TQ_CHECK_SIZE(block_tq_polar,      8 + TQ_BK / 2);
+TQ_CHECK_SIZE(block_tq_qjl,        4 + TQ_SKETCH_DIM / 8 + TQ_OUTLIERS);
+TQ_CHECK_SIZE(block_tq_uniform_4b, 4 + TQ_BK / 2);
+TQ_CHECK_SIZE(block_tq_uniform_2b, 4 + TQ_BK / 4);
 
 #endif /* TQ_TYPES_H */
