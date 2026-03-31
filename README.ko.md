@@ -2,14 +2,22 @@
 
 ![TurboQuant Hero](docs/assets/hero.png)
 
-**순수 C LLM 추론 엔진. 82 tok/s. 외부 의존성 없음.**
+**멀티 아키텍처 LLM 추론 엔진. 순수 C. 외부 의존성 없음.**
 
-로드 → 생성 → 끝. Python 없이. GPU 없이. 바이너리 하나로.
+Qwen3.5 + Gemma 3 지원. Gemma 4 대응 준비 완료.
 
 [![Build](https://img.shields.io/badge/build-passing-brightgreen)]()
 [![Tests](https://img.shields.io/badge/tests-70%2B%20pass-brightgreen)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)]()
-[![Speed](https://img.shields.io/badge/82%20tok%2Fs%20(Q4)-Qwen3.5--0.8B-blue)]()
+[![Qwen3.5](https://img.shields.io/badge/Qwen3.5--0.8B-82%20tok%2Fs-blue)]()
+[![Gemma3](https://img.shields.io/badge/Gemma3--270M-176%20tok%2Fs-blue)]()
+
+### 지원 모델
+
+| 모델 | 파라미터 | 속도 (Q4, 6T) | 검증 |
+|------|----------|---------------|------|
+| **Qwen3.5-0.8B** | 752M | 82 tok/s | PyTorch 대비 코사인 0.999 |
+| **Gemma 3 270M** | 270M | 176 tok/s | PyTorch 대비 레이어별 일치 |
 
 ### llama.cpp vs TurboQuant — Q4 공정 벤치마크
 
@@ -174,14 +182,13 @@ scores = tq.attention(query, compressed, seq_len, dim, TurboQuant.UNIFORM_4B)
 
 ## 기술 상세
 
-- **8,500줄 이상의 C** — 완전한 추론 엔진, 래퍼 아님
+- **멀티 아키텍처** — Qwen3.5 (DeltaNet 하이브리드) + Gemma 3 (슬라이딩 윈도우), Gemma 4 대응
+- **9,000줄 이상의 C** — 완전한 추론 엔진, 래퍼 아님
 - **8개 양자화 타입** — Uniform, Mixed Precision, PolarQuant, QJL, TurboQuant
 - **TQM 포맷** — 사전 양자화 바이너리, mmap 즉시 로딩
-- **DeltaNet + Self-Attention** — Qwen3.5 하이브리드 아키텍처 순수 C
-- **BPE 토크나이저** — HuggingFace 호환 (248K 어휘, TQM 내장)
+- **듀얼 토크나이저** — GPT2 바이트 BPE + SentencePiece 자동 감지
 - **Q4×Q8 정수 attention** — ARM vdotq_s32, float 역양자화 없음
 - **스레드 풀** — 제로 오버헤드 디스패치 + NEON 2-row 배치
-- **반복 방지** — repetition penalty로 퇴화 방지
 - **20 테스트 스위트, 70+ 테스트** — ASan + UBSan + TSan 클린
 
 ---
@@ -193,11 +200,12 @@ scores = tq.attention(query, compressed, seq_len, dim, TurboQuant.UNIFORM_4B)
 1일차 오후:   KV 캐시 압축 라이브러리 (8개 타입, A/B 테스트)
 1일차 저녁:   완전한 추론 엔진 (모델 로드 → 텍스트 생성)
 1일차 밤:    82 tok/s, llama.cpp 단일 스레드 동등
+2일차:       Gemma 3 지원, 멀티 아키텍처 엔진
 
-C 코드:       8,500줄 이상
+C 코드:       9,000줄 이상
 테스트:       20개 스위트 (70+ 테스트)
-커밋:         55+개
-속도:         0.8 → 82 tok/s (Q4, llama.cpp 동등)
+아키텍처:     Qwen3.5 + Gemma 3 (Gemma 4 대응)
+속도:         82 tok/s (Qwen3.5), 176 tok/s (Gemma3)
 ```
 
 ---

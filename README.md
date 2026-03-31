@@ -2,14 +2,22 @@
 
 ![TurboQuant Hero](docs/assets/hero.png)
 
-**LLM inference engine in pure C. 82 tok/s. Zero dependencies.**
+**Multi-architecture LLM inference engine in pure C. Zero dependencies.**
 
-Load → Generate → Done. No Python. No GPU. Just one binary.
+Qwen3.5 + Gemma 3 supported. Gemma 4 ready.
 
 [![Build](https://img.shields.io/badge/build-passing-brightgreen)]()
 [![Tests](https://img.shields.io/badge/tests-70%2B%20pass-brightgreen)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)]()
-[![Speed](https://img.shields.io/badge/82%20tok%2Fs%20(Q4)-Qwen3.5--0.8B-blue)]()
+[![Qwen3.5](https://img.shields.io/badge/Qwen3.5--0.8B-82%20tok%2Fs-blue)]()
+[![Gemma3](https://img.shields.io/badge/Gemma3--270M-176%20tok%2Fs-blue)]()
+
+### Supported Models
+
+| Model | Params | Speed (Q4, 6T) | Verified |
+|-------|--------|----------------|----------|
+| **Qwen3.5-0.8B** | 752M | 82 tok/s | logits 0.999 cosine vs PyTorch |
+| **Gemma 3 270M** | 270M | 176 tok/s | per-layer exact match vs PyTorch |
 
 ### llama.cpp vs TurboQuant — Fair Q4 Benchmark
 
@@ -82,15 +90,14 @@ that uses artificial neural networks to learn complex patterns...
 │  tq_run                                              │
 │    TQM → mmap load → forward → stream tokens        │
 │                                                      │
-│    ┌─── Forward Pass ────────────────────────────┐  │
-│    │  DeltaNet (18 layers, recurrent)            │  │
-│    │  Self-Attention (6 layers, GQA + RoPE)      │  │
-│    │  SwiGLU FFN (all 24 layers)                 │  │
+│    ┌─── Architecture Dispatch ─────────────────┐   │
+│    │  Qwen3.5: DeltaNet + Self-Attention + SwiGLU│  │
+│    │  Gemma 3: Sliding Window + GQA + GeGLU      │  │
 │    │  KV Cache: TurboQuant Q4 quantized          │  │
 │    │  Attention: Integer Q4×Q8 (2.9x vs FP32)   │  │
 │    └─────────────────────────────────────────────┘  │
 │                                                      │
-│    Q4 Weights ─── NEON matmul ─── Multi-threaded    │
+│    Q4 Weights ─── NEON matmul ─── Thread pool       │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -106,13 +113,18 @@ that uses artificial neural networks to learn complex patterns...
 
 ### Real Model Validated
 
-Tested on [Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B) — actual inference, not synthetic:
+Both architectures verified against PyTorch — actual inference, not synthetic:
 
 ```
-"1+1="                      → "2"                    ✓
-"The capital of France is"  → "Paris"                ✓
-"What is deep learning?"    → correct paragraph      ✓
-Logits cosine vs PyTorch    → 0.999                  ✓
+Qwen3.5-0.8B:
+  "1+1="                    → "2"                    ✓
+  "What is deep learning?"  → correct paragraph      ✓
+  Logits cosine vs PyTorch  → 0.999                  ✓
+
+Gemma 3 270M:
+  "1+1="                    → "2"                    ✓
+  Forward pass              → per-layer exact match   ✓
+  176 tok/s (Q4, 6 threads)                           ✓
 ```
 
 ---
@@ -175,14 +187,13 @@ scores = tq.attention(query, compressed, seq_len, dim, TurboQuant.UNIFORM_4B)
 
 ## Under the Hood
 
-- **8,500+ lines of C** — complete inference engine, no wrappers
+- **Multi-architecture** — Qwen3.5 (DeltaNet hybrid) + Gemma 3 (sliding window), Gemma 4 ready
+- **9,000+ lines of C** — complete inference engine, no wrappers
 - **8 quantization types** — Uniform, Mixed Precision, PolarQuant, QJL, TurboQuant
 - **TQM format** — pre-quantized binary model, mmap instant load
-- **DeltaNet + Self-Attention** — Qwen3.5 hybrid architecture in pure C
-- **BPE tokenizer** — HuggingFace compatible (248K vocab, embedded in TQM)
+- **Dual tokenizer** — GPT2 byte-level BPE + SentencePiece auto-detect
 - **Q4×Q8 integer attention** — ARM vdotq_s32, no float dequantization
 - **Thread pool** — zero-overhead dispatch with NEON 2-row batching
-- **Repetition penalty** — prevents degenerate output loops
 - **20 test suites, 70+ tests** — ASan + UBSan + TSan clean
 
 ---
@@ -194,11 +205,12 @@ Day 1 morning:   Empty directory
 Day 1 noon:      KV cache compression library (8 types, A/B tested)
 Day 1 evening:   Full inference engine (model load → generate)
 Day 1 night:     82 tok/s, matching llama.cpp on single-thread
+Day 2:           Gemma 3 support, multi-architecture engine
 
-Lines of C:      8,500+
+Lines of C:      9,000+
 Test suites:     20 (70+ tests)
-Commits:         55+
-Speed:           0.8 → 82 tok/s (Q4, llama.cpp parity)
+Architectures:   Qwen3.5 + Gemma 3 (Gemma 4 ready)
+Speed:           82 tok/s (Qwen3.5), 176 tok/s (Gemma3)
 ```
 
 ---
