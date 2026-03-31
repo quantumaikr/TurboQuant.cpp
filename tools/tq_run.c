@@ -11,7 +11,8 @@
  *   -T <temperature> Sampling temperature (default: 0.7)
  *   -P <top_p>       Top-p nucleus sampling (default: 0.9)
  *   -k <kv_type>     KV cache type: fp32, uniform_4b, uniform_2b,
- *                     polar_3b, polar_4b, turbo_3b, turbo_4b (default: uniform_4b)
+ *                     polar_3b, polar_4b, turbo_3b, turbo_4b,
+ *                     turbo_kv_3b, turbo_kv_4b (default: uniform_4b)
  *   -j <threads>     Number of threads for matmul (default: 4)
  *   -s <seed>        Random seed (default: 42)
  *   --info           Print model info and exit
@@ -42,6 +43,8 @@ static tq_type parse_kv_type(const char* s) {
     if (strcmp(s, "polar_4b") == 0)   return TQ_TYPE_POLAR_4B;
     if (strcmp(s, "turbo_3b") == 0)   return TQ_TYPE_TURBO_3B;
     if (strcmp(s, "turbo_4b") == 0)   return TQ_TYPE_TURBO_4B;
+    if (strcmp(s, "turbo_kv_3b") == 0) return TQ_TYPE_TURBO_KV_3B;
+    if (strcmp(s, "turbo_kv_4b") == 0) return TQ_TYPE_TURBO_KV_4B;
     if (strcmp(s, "qjl_1b") == 0)     return TQ_TYPE_QJL_1B;
     if (strcmp(s, "mixed_4b8") == 0)  return TQ_TYPE_MIXED_4B8;
     fprintf(stderr, "Unknown KV type: %s (using uniform_4b)\n", s);
