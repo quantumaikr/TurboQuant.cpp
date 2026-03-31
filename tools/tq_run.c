@@ -12,7 +12,7 @@
  *   -P <top_p>       Top-p nucleus sampling (default: 0.9)
  *   -k <kv_type>     KV cache type: fp32, uniform_4b, uniform_2b,
  *                     polar_3b, polar_4b, turbo_3b, turbo_4b,
- *                     turbo_kv_3b, turbo_kv_4b (default: uniform_4b)
+ *                     turbo_kv_1b, turbo_kv_3b, turbo_kv_4b (default: uniform_4b)
  *   -j <threads>     Number of threads for matmul (default: 4)
  *   -s <seed>        Random seed (default: 42)
  *   --info           Print model info and exit
@@ -45,6 +45,7 @@ static tq_type parse_kv_type(const char* s) {
     if (strcmp(s, "turbo_4b") == 0)   return TQ_TYPE_TURBO_4B;
     if (strcmp(s, "turbo_kv_3b") == 0) return TQ_TYPE_TURBO_KV_3B;
     if (strcmp(s, "turbo_kv_4b") == 0) return TQ_TYPE_TURBO_KV_4B;
+    if (strcmp(s, "turbo_kv_1b") == 0) return TQ_TYPE_TURBO_KV_1B;
     if (strcmp(s, "qjl_1b") == 0)     return TQ_TYPE_QJL_1B;
     if (strcmp(s, "mixed_4b8") == 0)  return TQ_TYPE_MIXED_4B8;
     fprintf(stderr, "Unknown KV type: %s (using uniform_4b)\n", s);
@@ -63,7 +64,8 @@ static void print_usage(const char* prog) {
     fprintf(stderr, "  -k <kv_type>     KV cache quantization type\n");
     fprintf(stderr, "  -j <threads>     Number of threads for matmul (default: 4)\n");
     fprintf(stderr, "  -s <seed>        Random seed (default: 42)\n");
-    fprintf(stderr, "  -q <type>        Quantize weights: q4 (4-bit, ~6x reduction, default),\n");
+    fprintf(stderr, "  -q <type>        Quantize weights: q2 (2-bit Lloyd-Max, ~12x reduction),\n");
+    fprintf(stderr, "                   q4 (4-bit, ~6x reduction, default),\n");
     fprintf(stderr, "                   q8 (int8, ~3.5x reduction), or none (FP32)\n");
     fprintf(stderr, "  --info           Print model info and exit\n");
     fprintf(stderr, "  -M, --memory     Print KV cache memory stats after generation\n");
@@ -84,7 +86,7 @@ int main(int argc, char** argv) {
     float top_p = 0.9f;
     tq_type kv_type = TQ_TYPE_UNIFORM_4B;
     int n_threads = 4;
-    int quant_mode = 0;   /* 0 = none (default), 4 = Q4, 8 = Q8 */
+    int quant_mode = 0;   /* 0 = none (default), 2 = Q2, 4 = Q4, 8 = Q8 */
     int info_only = 0;
     int show_memory = 0;
 
@@ -108,7 +110,9 @@ int main(int argc, char** argv) {
         } else if (strcmp(argv[i], "-q") == 0) {
             if (i + 1 < argc && argv[i + 1][0] != '-') {
                 const char* qarg = argv[++i];
-                if (strcmp(qarg, "q4") == 0 || strcmp(qarg, "4") == 0) {
+                if (strcmp(qarg, "q2") == 0 || strcmp(qarg, "2") == 0) {
+                    quant_mode = 2;
+                } else if (strcmp(qarg, "q4") == 0 || strcmp(qarg, "4") == 0) {
                     quant_mode = 4;
                 } else if (strcmp(qarg, "q8") == 0 || strcmp(qarg, "8") == 0) {
                     quant_mode = 8;
@@ -153,7 +157,10 @@ int main(int argc, char** argv) {
     fprintf(stderr, "KV cache type: %s\n",
             kv_type < TQ_TYPE_COUNT ? tq_type_name(kv_type) : "fp32");
 
-    if (quant_mode == 4) {
+    if (quant_mode == 2) {
+        fprintf(stderr, "Quantizing weights to Q2 (2-bit Lloyd-Max codebook)...\n");
+        tq_quantize_weights_q2(model);
+    } else if (quant_mode == 4) {
         fprintf(stderr, "Quantizing weights to Q4 (4-bit)...\n");
         tq_quantize_weights_q4(model);
     } else if (quant_mode == 8) {
@@ -214,7 +221,7 @@ int main(int argc, char** argv) {
     fprintf(stderr, "\n---\n");
     if (n_generated > 0 && elapsed > 0.0) {
         double tok_per_sec = (double)n_generated / elapsed;
-        const char* wq_name = model->use_q4_weights ? "Q4" : (model->use_q8_weights ? "Q8" : "FP32");
+        const char* wq_name = model->use_q2_weights ? "Q2" : (model->use_q4_weights ? "Q4" : (model->use_q8_weights ? "Q8" : "FP32"));
         fprintf(stderr, "%d tokens in %.1fs (%.1f tok/s, %d threads, weights=%s, kv=%s)\n",
                 n_generated, elapsed, tok_per_sec, tq_get_threads(), wq_name,
                 kv_type < TQ_TYPE_COUNT ? tq_type_name(kv_type) : "fp32");

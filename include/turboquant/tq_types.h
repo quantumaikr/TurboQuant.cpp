@@ -51,7 +51,8 @@ typedef enum {
     TQ_TYPE_MIXED_4B8 = 7,   /* Mixed: 4-bit base + fp16 outliers */
     TQ_TYPE_TURBO_KV_3B = 8, /* TurboQuant KV: 2-bit codebook + 1-bit QJL residual */
     TQ_TYPE_TURBO_KV_4B = 9, /* TurboQuant KV: 3-bit codebook + 1-bit QJL residual */
-    TQ_TYPE_COUNT     = 10
+    TQ_TYPE_TURBO_KV_1B = 10,/* TurboQuant KV: 1-bit Hamming (sign only)           */
+    TQ_TYPE_COUNT     = 11
 } tq_type;
 
 /* ============================================================
@@ -202,6 +203,19 @@ typedef struct {
     uint8_t  qjl_signs[TQ_BK / 8];        /* 1-bit QJL sign hash on residual (16B) */
 } block_tq_turbo_kv_4b;
 
+/* TurboQuant KV cache block: 1-bit Hamming attention
+ * Pure sign-bit quantization for extreme compression.
+ * Pipeline: normalize -> RHT -> sign extraction (1 bit per dim).
+ * Attention uses XOR + popcount for Hamming distance.
+ * For dim=128: 2 + 2 + 4 + 16 = 24 bytes per key (vs 256 bytes FP16 = 10.7x compression).
+ */
+typedef struct {
+    uint16_t norm;              /* L2 norm of original vector (fp16)  */
+    uint16_t _pad;              /* alignment padding                  */
+    uint32_t rht_seed;          /* RHT random seed for this block     */
+    uint8_t  signs[TQ_BK / 8]; /* 1 bit per dim = 16 bytes for 128   */
+} block_tq_turbo_kv_1b;
+
 /* ============================================================
  * Block size verification (compile-time, C/C++ compatible)
  * Uses negative-size array trick for universal compatibility.
@@ -216,5 +230,6 @@ TQ_CHECK_SIZE(block_tq_uniform_2b, 4 + TQ_BK / 4);
 TQ_CHECK_SIZE(block_tq_mixed_4b8, 4 + TQ_MIXED_OUTLIERS + TQ_MIXED_OUTLIERS * 2 + TQ_BK / 2);
 TQ_CHECK_SIZE(block_tq_turbo_kv_3b, 8 + TQ_BK / 4 + TQ_BK / 8);
 TQ_CHECK_SIZE(block_tq_turbo_kv_4b, 8 + TQ_BK * 3 / 8 + TQ_BK / 8);
+TQ_CHECK_SIZE(block_tq_turbo_kv_1b, 8 + TQ_BK / 8);
 
 #endif /* TQ_TYPES_H */

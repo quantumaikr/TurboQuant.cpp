@@ -1144,6 +1144,286 @@ void tq_mul(float* out, const float* a, const float* b, int n) {
 }
 
 /* ============================================================
+ * Q2_0 quantization: float -> packed 2-bit + per-block scale (block_size=32)
+ *
+ * Uses Lloyd-Max optimal codebook for Gaussian data:
+ *   4 centroids: {-1.5104, -0.4528, 0.4528, 1.5104} (indices 0,1,2,3)
+ * For each block of 32 values:
+ *   scale = amax / 1.5104  (normalize so max maps to outermost centroid)
+ *   q_i = nearest centroid index (0..3)
+ * Packed: four 2-bit values per byte, LSB-first.
+ * Block layout: 8 bytes packed + 4 bytes float scale = 12 bytes per 32 values.
+ * This is ~1.7x more compact than Q4_0 (20 bytes per 32 values).
+ * ============================================================ */
+
+/* Lloyd-Max centroids for N(0,1) at 2 bits */
+static const float Q2_CENTROIDS[4] = {-1.5104f, -0.4528f, 0.4528f, 1.5104f};
+
+void tq_quantize_row_q2(const float* src, uint8_t* dst_qs, float* dst_scales, int n) {
+    int n_blocks = n / 32;
+    for (int b = 0; b < n_blocks; b++) {
+        const float* block = src + b * 32;
+        float amax = 0.0f;
+#ifdef __ARM_NEON
+        float32x4_t vmax = vdupq_n_f32(0.0f);
+        for (int j = 0; j < 32; j += 4) {
+            float32x4_t v = vld1q_f32(block + j);
+            vmax = vmaxq_f32(vmax, vabsq_f32(v));
+        }
+        amax = vmaxvq_f32(vmax);
+#else
+        for (int j = 0; j < 32; j++) {
+            float a = fabsf(block[j]);
+            if (a > amax) amax = a;
+        }
+#endif
+        /* Scale: normalize so amax maps to centroid 1.5104 */
+        float d = amax / 1.5104f;
+        dst_scales[b] = d;
+        float id = (d > 1e-10f) ? 1.0f / d : 0.0f;
+
+        /* Quantize and pack 4 values per byte */
+        uint8_t* qb = dst_qs + b * 8;
+        memset(qb, 0, 8);
+        for (int j = 0; j < 32; j++) {
+            float x = block[j] * id;
+            /* Find nearest centroid (linear search, only 4 entries) */
+            int best = 0;
+            float best_dist = fabsf(x - Q2_CENTROIDS[0]);
+            for (int c = 1; c < 4; c++) {
+                float dist = fabsf(x - Q2_CENTROIDS[c]);
+                if (dist < best_dist) {
+                    best_dist = dist;
+                    best = c;
+                }
+            }
+            /* Pack: 4 values per byte, 2 bits each, LSB-first */
+            int byte_idx = j / 4;
+            int bit_pos  = (j % 4) * 2;
+            qb[byte_idx] |= (uint8_t)((best & 0x03) << bit_pos);
+        }
+    }
+    /* Handle remainder */
+    int remainder = n - n_blocks * 32;
+    if (remainder > 0) {
+        const float* block = src + n_blocks * 32;
+        float amax = 0.0f;
+        for (int j = 0; j < remainder; j++) {
+            float a = fabsf(block[j]);
+            if (a > amax) amax = a;
+        }
+        float d = amax / 1.5104f;
+        dst_scales[n_blocks] = d;
+        float id = (d > 1e-10f) ? 1.0f / d : 0.0f;
+        uint8_t* qb = dst_qs + n_blocks * 8;
+        int rem_bytes = (remainder + 3) / 4;
+        memset(qb, 0, (size_t)rem_bytes);
+        for (int j = 0; j < remainder; j++) {
+            float x = block[j] * id;
+            int best = 0;
+            float best_dist = fabsf(x - Q2_CENTROIDS[0]);
+            for (int c = 1; c < 4; c++) {
+                float dist = fabsf(x - Q2_CENTROIDS[c]);
+                if (dist < best_dist) { best_dist = dist; best = c; }
+            }
+            int byte_idx = j / 4;
+            int bit_pos  = (j % 4) * 2;
+            qb[byte_idx] |= (uint8_t)((best & 0x03) << bit_pos);
+        }
+    }
+}
+
+/* ============================================================
+ * Q2 matmul: w is Q2_0 [n, d], x is Q8 [d], out is FP32 [n]
+ *
+ * For each row, unpack 2-bit indices, dequantize via centroid lookup,
+ * then dot with Q8-quantized activation.
+ *
+ * Block layout: 8 bytes Q2 packed + float scale per 32 values.
+ * To compute dot product efficiently we convert Q2 indices to signed
+ * integer representatives and compute integer dot product with Q8 values:
+ *   centroid_int[4] = {-3, -1, 1, 3} (scaled centroids * 2)
+ *   dot = sum(centroid_int[qi] * x_q8[i]) * w_scale * x_scale * 0.5
+ * This avoids float conversion in the inner loop.
+ * ============================================================ */
+
+/* Integer representatives for Q2 centroids: round(centroid * 2) */
+static const int8_t Q2_INT_MAP[4] = {-3, -1, 1, 3};
+
+typedef struct {
+    float* out;
+    const uint8_t* w_qs;
+    const float* w_scales;
+    const int8_t* x_q8;
+    const float* x_scales;
+    int start_row;
+    int end_row;
+    int d;
+} matmul_q2_task_t;
+
+static void matmul_q2_rows(float* out,
+                            const uint8_t* w_qs, const float* w_scales,
+                            const int8_t* x_q8, const float* x_scales,
+                            int start_row, int end_row, int d) {
+    int n_blocks = d / 32;
+    for (int i = start_row; i < end_row; i++) {
+        const uint8_t* wi = w_qs + (size_t)i * n_blocks * 8;
+        const float* si = w_scales + (size_t)i * n_blocks;
+        float sum = 0.0f;
+#ifdef __ARM_NEON
+        for (int b = 0; b < n_blocks; b++) {
+            const uint8_t* qb = wi + b * 8;
+            const int8_t* xb = x_q8 + b * 32;
+            /* Unpack 8 bytes of Q2 into 32 int8 centroid values.
+             * For each byte, extract 4 x 2-bit indices, map to {-3,-1,1,3}. */
+            int8_t q2_vals[32];
+            for (int j = 0; j < 8; j++) {
+                uint8_t packed = qb[j];
+                q2_vals[j * 4 + 0] = Q2_INT_MAP[(packed >> 0) & 0x03];
+                q2_vals[j * 4 + 1] = Q2_INT_MAP[(packed >> 2) & 0x03];
+                q2_vals[j * 4 + 2] = Q2_INT_MAP[(packed >> 4) & 0x03];
+                q2_vals[j * 4 + 3] = Q2_INT_MAP[(packed >> 6) & 0x03];
+            }
+            /* Integer dot product using NEON sdot or widening multiply */
+            int8x16_t vq0 = vld1q_s8(q2_vals);
+            int8x16_t vq1 = vld1q_s8(q2_vals + 16);
+            int8x16_t vx0 = vld1q_s8(xb);
+            int8x16_t vx1 = vld1q_s8(xb + 16);
+            int32x4_t acc = vdupq_n_s32(0);
+#if defined(__ARM_FEATURE_DOTPROD)
+            acc = vdotq_s32(acc, vq0, vx0);
+            acc = vdotq_s32(acc, vq1, vx1);
+#else
+            acc = vaddq_s32(acc, vpaddlq_s16(vmull_s8(vget_low_s8(vq0), vget_low_s8(vx0))));
+            acc = vaddq_s32(acc, vpaddlq_s16(vmull_s8(vget_high_s8(vq0), vget_high_s8(vx0))));
+            acc = vaddq_s32(acc, vpaddlq_s16(vmull_s8(vget_low_s8(vq1), vget_low_s8(vx1))));
+            acc = vaddq_s32(acc, vpaddlq_s16(vmull_s8(vget_high_s8(vq1), vget_high_s8(vx1))));
+#endif
+            int32_t isum = vaddvq_s32(acc);
+            /* Scale: centroid_int = centroid * 2 / 1.5104, so multiply by 0.5 * 1.5104 = 0.7552 */
+            sum += (float)isum * si[b] * x_scales[b] * 0.7552f;
+        }
+#else
+        for (int b = 0; b < n_blocks; b++) {
+            const uint8_t* qb = wi + b * 8;
+            const int8_t* xb = x_q8 + b * 32;
+            int32_t isum = 0;
+            for (int j = 0; j < 8; j++) {
+                uint8_t packed = qb[j];
+                isum += Q2_INT_MAP[(packed >> 0) & 0x03] * (int)xb[j * 4 + 0];
+                isum += Q2_INT_MAP[(packed >> 2) & 0x03] * (int)xb[j * 4 + 1];
+                isum += Q2_INT_MAP[(packed >> 4) & 0x03] * (int)xb[j * 4 + 2];
+                isum += Q2_INT_MAP[(packed >> 6) & 0x03] * (int)xb[j * 4 + 3];
+            }
+            sum += (float)isum * si[b] * x_scales[b] * 0.7552f;
+        }
+#endif
+        out[i] = sum;
+    }
+}
+
+static void* matmul_q2_worker(void* arg) {
+    matmul_q2_task_t* t = (matmul_q2_task_t*)arg;
+    matmul_q2_rows(t->out, t->w_qs, t->w_scales,
+                    t->x_q8, t->x_scales,
+                    t->start_row, t->end_row, t->d);
+    return NULL;
+}
+
+/* Q2 matmul: quantize activation x to Q8 once, then Q2xQ8 integer dot products */
+void tq_matmul_q2(float* out, const float* x, const uint8_t* w_qs, const float* w_scales,
+                   int n, int d) {
+    /* Quantize activation x to Q8 (reuse global buffer) */
+    if (d > g_q8_cap) {
+        free(g_q8_buf); free(g_q8_scales);
+        g_q8_buf = (int8_t*)malloc((size_t)d * sizeof(int8_t));
+        g_q8_scales = (float*)malloc((size_t)(d / 32 + 2) * sizeof(float));
+        g_q8_cap = d;
+    }
+    int8_t* x_q8 = g_q8_buf;
+    float* x_scales = g_q8_scales;
+    if (!x_q8 || !x_scales) return;
+    tq_quantize_row_q8(x, x_q8, x_scales, d);
+
+    int n_threads = g_n_threads;
+
+    if (n < 256 || n_threads <= 1) {
+        matmul_q2_rows(out, w_qs, w_scales, x_q8, x_scales, 0, n, d);
+        return;
+    }
+
+    if (n_threads > n) n_threads = n;
+    if (n_threads > TP_MAX) n_threads = TP_MAX;
+
+    matmul_q2_task_t tasks[TP_MAX];
+    void* ptrs[TP_MAX];
+
+    int rows_per_thread = n / n_threads;
+    for (int t = 0; t < n_threads; t++) {
+        tasks[t].out = out;
+        tasks[t].w_qs = w_qs;
+        tasks[t].w_scales = w_scales;
+        tasks[t].x_q8 = x_q8;
+        tasks[t].x_scales = x_scales;
+        tasks[t].d = d;
+        tasks[t].start_row = t * rows_per_thread;
+        tasks[t].end_row = (t == n_threads - 1) ? n : (t + 1) * rows_per_thread;
+        ptrs[t] = &tasks[t];
+    }
+
+    if (g_tp.active && n_threads == g_tp.n_workers) {
+        tp_run(matmul_q2_worker, ptrs, n_threads);
+    } else {
+        pthread_t threads[TP_MAX];
+        for (int t = 0; t < n_threads; t++)
+            pthread_create(&threads[t], NULL, matmul_q2_worker, &tasks[t]);
+        for (int t = 0; t < n_threads; t++)
+            pthread_join(threads[t], NULL);
+    }
+}
+
+/* Q2 matmul with pre-quantized activation (no redundant Q8 quantization) */
+void tq_matmul_q2_preq(float* out, const uint8_t* w_qs, const float* w_scales,
+                        const int8_t* x_q8, const float* x_scales,
+                        int n, int d) {
+    int n_threads = g_n_threads;
+
+    if (n < 256 || n_threads <= 1) {
+        matmul_q2_rows(out, w_qs, w_scales, x_q8, x_scales, 0, n, d);
+        return;
+    }
+
+    if (n_threads > n) n_threads = n;
+    if (n_threads > TP_MAX) n_threads = TP_MAX;
+
+    matmul_q2_task_t tasks[TP_MAX];
+    void* ptrs[TP_MAX];
+
+    int rows_per_thread = n / n_threads;
+    for (int t = 0; t < n_threads; t++) {
+        tasks[t].out = out;
+        tasks[t].w_qs = w_qs;
+        tasks[t].w_scales = w_scales;
+        tasks[t].x_q8 = x_q8;
+        tasks[t].x_scales = x_scales;
+        tasks[t].d = d;
+        tasks[t].start_row = t * rows_per_thread;
+        tasks[t].end_row = (t == n_threads - 1) ? n : (t + 1) * rows_per_thread;
+        ptrs[t] = &tasks[t];
+    }
+
+    if (g_tp.active && n_threads == g_tp.n_workers) {
+        tp_run(matmul_q2_worker, ptrs, n_threads);
+    } else {
+        pthread_t threads[TP_MAX];
+        for (int t = 0; t < n_threads; t++)
+            pthread_create(&threads[t], NULL, matmul_q2_worker, &tasks[t]);
+        for (int t = 0; t < n_threads; t++)
+            pthread_join(threads[t], NULL);
+    }
+}
+
+/* ============================================================
  * Default generation config
  * ============================================================ */
 tq_gen_config_t tq_default_gen_config(void) {

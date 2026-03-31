@@ -359,22 +359,27 @@ static void deltanet_forward(tq_model_t* model, tq_state_t* s, int l) {
     float* state = s->delta_state + (size_t)l * dn * dk * dv;
     float* conv_st = s->conv_state + (size_t)l * qkv_dim * conv_buf_len;
 
-    /* Pre-quantize activation to Q8 once for all Q4 projections in this layer.
-     * This eliminates 4 redundant tq_quantize_row_q8 + malloc/free cycles. */
-    int has_q4 = (layer->delta_in_proj_qkv_q4 != NULL);
-    if (has_q4) {
+    /* Pre-quantize activation to Q8 once for all Q2/Q4 projections in this layer.
+     * This eliminates redundant tq_quantize_row_q8 + malloc/free cycles. */
+    int dn_has_q2 = (layer->delta_in_proj_qkv_q2 != NULL);
+    int dn_has_q4 = (layer->delta_in_proj_qkv_q4 != NULL);
+    if (dn_has_q2 || dn_has_q4) {
         tq_quantize_row_q8(s->xb, s->xb_q8, s->xb_q8s, dim);
     }
 
     /* Step 1: Project input through QKV and Z */
-    if (layer->delta_in_proj_qkv_q4)
+    if (layer->delta_in_proj_qkv_q2)
+        tq_matmul_q2_preq(s->delta_qkv, layer->delta_in_proj_qkv_q2, layer->delta_in_proj_qkv_q2s, s->xb_q8, s->xb_q8s, qkv_dim, dim);
+    else if (layer->delta_in_proj_qkv_q4)
         tq_matmul_q4_preq(s->delta_qkv, layer->delta_in_proj_qkv_q4, layer->delta_in_proj_qkv_q4s, s->xb_q8, s->xb_q8s, qkv_dim, dim);
     else if (layer->delta_in_proj_qkv_q8)
         tq_matmul_q8(s->delta_qkv, s->xb, layer->delta_in_proj_qkv_q8, layer->delta_in_proj_qkv_q8s, qkv_dim, dim);
     else
         tq_matmul(s->delta_qkv, s->xb, layer->delta_in_proj_qkv, qkv_dim, dim);
 
-    if (layer->delta_in_proj_z_q4)
+    if (layer->delta_in_proj_z_q2)
+        tq_matmul_q2_preq(s->delta_z, layer->delta_in_proj_z_q2, layer->delta_in_proj_z_q2s, s->xb_q8, s->xb_q8s, z_dim, dim);
+    else if (layer->delta_in_proj_z_q4)
         tq_matmul_q4_preq(s->delta_z, layer->delta_in_proj_z_q4, layer->delta_in_proj_z_q4s, s->xb_q8, s->xb_q8s, z_dim, dim);
     else if (layer->delta_in_proj_z_q8)
         tq_matmul_q8(s->delta_z, s->xb, layer->delta_in_proj_z_q8, layer->delta_in_proj_z_q8s, z_dim, dim);
@@ -383,7 +388,9 @@ static void deltanet_forward(tq_model_t* model, tq_state_t* s, int l) {
 
     /* Step 2: Project alpha and beta */
     /* alpha = in_proj_a @ x  -> [dn] */
-    if (layer->delta_in_proj_a_q4)
+    if (layer->delta_in_proj_a_q2)
+        tq_matmul_q2_preq(s->delta_ab, layer->delta_in_proj_a_q2, layer->delta_in_proj_a_q2s, s->xb_q8, s->xb_q8s, dn, dim);
+    else if (layer->delta_in_proj_a_q4)
         tq_matmul_q4_preq(s->delta_ab, layer->delta_in_proj_a_q4, layer->delta_in_proj_a_q4s, s->xb_q8, s->xb_q8s, dn, dim);
     else if (layer->delta_in_proj_a_q8)
         tq_matmul_q8(s->delta_ab, s->xb, layer->delta_in_proj_a_q8, layer->delta_in_proj_a_q8s, dn, dim);
@@ -391,7 +398,9 @@ static void deltanet_forward(tq_model_t* model, tq_state_t* s, int l) {
         tq_matmul(s->delta_ab, s->xb, layer->delta_in_proj_a, dn, dim);
 
     /* beta = sigmoid(in_proj_b @ x) -> [dn] */
-    if (layer->delta_in_proj_b_q4)
+    if (layer->delta_in_proj_b_q2)
+        tq_matmul_q2_preq(s->delta_ab + dn, layer->delta_in_proj_b_q2, layer->delta_in_proj_b_q2s, s->xb_q8, s->xb_q8s, dn, dim);
+    else if (layer->delta_in_proj_b_q4)
         tq_matmul_q4_preq(s->delta_ab + dn, layer->delta_in_proj_b_q4, layer->delta_in_proj_b_q4s, s->xb_q8, s->xb_q8s, dn, dim);
     else if (layer->delta_in_proj_b_q8)
         tq_matmul_q8(s->delta_ab + dn, s->xb, layer->delta_in_proj_b_q8, layer->delta_in_proj_b_q8s, dn, dim);
@@ -634,7 +643,9 @@ static void deltanet_forward(tq_model_t* model, tq_state_t* s, int l) {
     }
 
     /* Output projection: [dim, z_dim] @ delta_out[z_dim] -> xb2[dim] */
-    if (layer->delta_out_proj_q4)
+    if (layer->delta_out_proj_q2)
+        tq_matmul_q2(s->xb2, s->delta_out, layer->delta_out_proj_q2, layer->delta_out_proj_q2s, dim, z_dim);
+    else if (layer->delta_out_proj_q4)
         tq_matmul_q4(s->xb2, s->delta_out, layer->delta_out_proj_q4, layer->delta_out_proj_q4s, dim, z_dim);
     else if (layer->delta_out_proj_q8)
         tq_matmul_q8(s->xb2, s->delta_out, layer->delta_out_proj_q8, layer->delta_out_proj_q8s, dim, z_dim);
@@ -659,10 +670,11 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
     int kv_mul = n_heads / n_kv_heads;
     size_t kv_layer_stride = (size_t)c->max_seq_len * kv_dim;
 
-    /* Pre-quantize activation to Q8 once for all Q4 projections in this layer.
-     * This eliminates redundant tq_quantize_row_q8 + malloc/free in each matmul_q4 call. */
+    /* Pre-quantize activation to Q8 once for all Q2/Q4 projections in this layer.
+     * This eliminates redundant tq_quantize_row_q8 + malloc/free in each matmul call. */
+    int has_q2 = (layer->wq_q2 != NULL);
     int has_q4 = (layer->wq_q4 != NULL);
-    if (has_q4) {
+    if (has_q2 || has_q4) {
         tq_quantize_row_q8(s->xb, s->xb_q8, s->xb_q8s, dim);
     }
 
@@ -672,7 +684,9 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
     float* gate_q = NULL;
     if (c->attn_output_gate) {
         int qg_dim = n_heads * head_dim * 2;
-        if (layer->wq_q4) {
+        if (layer->wq_q2) {
+            tq_matmul_q2_preq(s->xb2, layer->wq_q2, layer->wq_q2s, s->xb_q8, s->xb_q8s, qg_dim, dim);
+        } else if (layer->wq_q4) {
             tq_matmul_q4_preq(s->xb2, layer->wq_q4, layer->wq_q4s, s->xb_q8, s->xb_q8s, qg_dim, dim);
         } else if (layer->wq_q8) {
             tq_matmul_q8(s->xb2, s->xb, layer->wq_q8, layer->wq_q8s, qg_dim, dim);
@@ -692,7 +706,9 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
         }
         gate_q = gate_tmp;
     } else {
-        if (layer->wq_q4) {
+        if (layer->wq_q2) {
+            tq_matmul_q2_preq(s->q, layer->wq_q2, layer->wq_q2s, s->xb_q8, s->xb_q8s, n_heads * head_dim, dim);
+        } else if (layer->wq_q4) {
             tq_matmul_q4_preq(s->q, layer->wq_q4, layer->wq_q4s, s->xb_q8, s->xb_q8s, n_heads * head_dim, dim);
         } else if (layer->wq_q8) {
             tq_matmul_q8(s->q, s->xb, layer->wq_q8, layer->wq_q8s, n_heads * head_dim, dim);
@@ -700,14 +716,18 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
             tq_matmul(s->q, s->xb, layer->wq, n_heads * head_dim, dim);
         }
     }
-    if (layer->wk_q4) {
+    if (layer->wk_q2) {
+        tq_matmul_q2_preq(s->k, layer->wk_q2, layer->wk_q2s, s->xb_q8, s->xb_q8s, kv_dim, dim);
+    } else if (layer->wk_q4) {
         tq_matmul_q4_preq(s->k, layer->wk_q4, layer->wk_q4s, s->xb_q8, s->xb_q8s, kv_dim, dim);
     } else if (layer->wk_q8) {
         tq_matmul_q8(s->k, s->xb, layer->wk_q8, layer->wk_q8s, kv_dim, dim);
     } else {
         tq_matmul(s->k, s->xb, layer->wk, kv_dim, dim);
     }
-    if (layer->wv_q4) {
+    if (layer->wv_q2) {
+        tq_matmul_q2_preq(s->v, layer->wv_q2, layer->wv_q2s, s->xb_q8, s->xb_q8s, kv_dim, dim);
+    } else if (layer->wv_q4) {
         tq_matmul_q4_preq(s->v, layer->wv_q4, layer->wv_q4s, s->xb_q8, s->xb_q8s, kv_dim, dim);
     } else if (layer->wv_q8) {
         tq_matmul_q8(s->v, s->xb, layer->wv_q8, layer->wv_q8s, kv_dim, dim);
@@ -922,7 +942,9 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
     }
 
     /* Output projection */
-    if (layer->wo_q4)
+    if (layer->wo_q2)
+        tq_matmul_q2(s->xb2, s->xb, layer->wo_q2, layer->wo_q2s, dim, n_heads * head_dim);
+    else if (layer->wo_q4)
         tq_matmul_q4(s->xb2, s->xb, layer->wo_q4, layer->wo_q4s, dim, n_heads * head_dim);
     else if (layer->wo_q8)
         tq_matmul_q8(s->xb2, s->xb, layer->wo_q8, layer->wo_q8s, dim, n_heads * head_dim);
@@ -1030,9 +1052,9 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
         /* FFN Block — SwiGLU (Qwen3.5) or GeGLU (Gemma3).
          * Optimization: cache Q8 quantization of xb for gate+up projections,
          * and cache Q8 of hb for down projection. */
-        if ((layer->w_gate || layer->w_gate_q8 || layer->w_gate_q4) &&
-            (layer->w_up || layer->w_up_q8 || layer->w_up_q4) &&
-            (layer->w_down || layer->w_down_q8 || layer->w_down_q4)) {
+        if ((layer->w_gate || layer->w_gate_q8 || layer->w_gate_q4 || layer->w_gate_q2) &&
+            (layer->w_up || layer->w_up_q8 || layer->w_up_q4 || layer->w_up_q2) &&
+            (layer->w_down || layer->w_down_q8 || layer->w_down_q4 || layer->w_down_q2)) {
 
             /* Pre-FFN norm: Gemma3 uses pre_feedforward_layernorm,
              * Qwen3.5 uses post_attention_layernorm (stored as ffn_norm) */
@@ -1042,8 +1064,15 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
             }
             tq_rmsnorm(s->xb, s->x, ffn_norm_w, dim, c->rms_norm_eps);
 
-            /* Pre-quantize xb for gate+up Q4 projections (same input, 2 matmuls) */
-            if (layer->w_gate_q4) {
+            /* Pre-quantize xb for gate+up Q2/Q4 projections (same input, 2 matmuls) */
+            if (layer->w_gate_q2) {
+                tq_quantize_row_q8(s->xb, s->xb_q8, s->xb_q8s, dim);
+
+                tq_matmul_q2_preq(s->hb, layer->w_gate_q2, layer->w_gate_q2s,
+                                   s->xb_q8, s->xb_q8s, c->intermediate_dim, dim);
+                tq_matmul_q2_preq(s->hb2, layer->w_up_q2, layer->w_up_q2s,
+                                   s->xb_q8, s->xb_q8s, c->intermediate_dim, dim);
+            } else if (layer->w_gate_q4) {
                 tq_quantize_row_q8(s->xb, s->xb_q8, s->xb_q8s, dim);
 
                 tq_matmul_q4_preq(s->hb, layer->w_gate_q4, layer->w_gate_q4s,
@@ -1071,7 +1100,9 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
             }
             tq_mul(s->hb, s->hb, s->hb2, c->intermediate_dim);
 
-            if (layer->w_down_q4) {
+            if (layer->w_down_q2) {
+                tq_matmul_q2(s->xb2, s->hb, layer->w_down_q2, layer->w_down_q2s, dim, c->intermediate_dim);
+            } else if (layer->w_down_q4) {
                 tq_matmul_q4(s->xb2, s->hb, layer->w_down_q4, layer->w_down_q4s, dim, c->intermediate_dim);
             } else if (layer->w_down_q8) {
                 tq_matmul_q8(s->xb2, s->hb, layer->w_down_q8, layer->w_down_q8s, dim, c->intermediate_dim);

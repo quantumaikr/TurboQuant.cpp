@@ -493,7 +493,7 @@ void tq_turbo_kv_4b_dequantize_ref(const void* src, float* dst, int n) {
 
 void tq_turbo_kv_4b_attention_ref(const float* query, const void* kv_cache,
                                     float* scores, int seq_len, int head_dim) {
-    const block_tq_turbo_kv_4b* blocks = (const block_tq_turbo_kv_4b*)kv_cache;
+    const block_tq_turbo_kv_4b* blocks_4b = (const block_tq_turbo_kv_4b*)kv_cache;
     int dim = head_dim;
     if (dim > TQ_BK) dim = TQ_BK;
 
@@ -517,7 +517,7 @@ void tq_turbo_kv_4b_attention_ref(const float* query, const void* kv_cache,
     }
 
     for (int seq = 0; seq < seq_len; seq++) {
-        const block_tq_turbo_kv_4b* block = &blocks[seq];
+        const block_tq_turbo_kv_4b* block = &blocks_4b[seq];
         float norm = tkv_fp16_to_fp32(block->norm);
         float r_norm = tkv_fp16_to_fp32(block->residual_norm);
 
@@ -602,5 +602,174 @@ void tq_turbo_kv_4b_attention_ref(const float* query, const void* kv_cache,
         qjl_correction *= qjl_scale * r_norm;
 
         scores[seq] = norm * mse_dot + norm * qjl_correction;
+    }
+}
+
+/* ============================================================
+ * TurboQuant KV 1-bit: quantize
+ *
+ * Extreme compression: normalize -> RHT -> sign extraction.
+ * Each dimension is stored as a single sign bit.
+ * For dim=128: 24 bytes total (8 header + 16 sign bytes).
+ * Compression ratio: 128*4 / 24 = 21.3x vs FP32.
+ * ============================================================ */
+
+void tq_turbo_kv_1b_quantize_ref(const float* src, void* dst, int n) {
+    block_tq_turbo_kv_1b* block = (block_tq_turbo_kv_1b*)dst;
+    int dim = n;
+    if (dim > TQ_BK) dim = TQ_BK;
+
+    /* Step 1: Compute L2 norm */
+    float norm_sq = 0.0f;
+    for (int i = 0; i < dim; i++) {
+        norm_sq += src[i] * src[i];
+    }
+    float norm = sqrtf(norm_sq);
+    block->norm = tkv_fp32_to_fp16(norm);
+    block->_pad = 0;
+
+    /* Step 2: Normalize and copy to working buffer */
+    float rotated[TQ_BK];
+    float inv_norm = (norm > 1e-10f) ? (1.0f / norm) : 0.0f;
+    for (int i = 0; i < dim; i++) {
+        rotated[i] = src[i] * inv_norm;
+    }
+    for (int i = dim; i < TQ_BK; i++) {
+        rotated[i] = 0.0f;
+    }
+
+    /* Step 3: Apply RHT (in-place on rotated) */
+    uint32_t seed = TKV_DEFAULT_SEED;
+    block->rht_seed = seed;
+    tq_rht_transform(rotated, dim, seed);
+
+    /* Step 4: Extract sign bits -- 1 bit per dimension */
+    int sign_bytes = dim / 8;
+    memset(block->signs, 0, (size_t)sign_bytes);
+    for (int i = 0; i < dim; i++) {
+        if (rotated[i] >= 0.0f) {
+            block->signs[i / 8] |= (uint8_t)(1 << (i % 8));
+        }
+    }
+}
+
+/* ============================================================
+ * TurboQuant KV 1-bit: dequantize (rough reconstruction)
+ *
+ * Reconstruct: sign * (norm / sqrt(dim)) then inverse RHT.
+ * This is a very rough reconstruction -- the real value of 1-bit
+ * is in Hamming attention, not point-wise dequant.
+ * ============================================================ */
+
+void tq_turbo_kv_1b_dequantize_ref(const void* src, float* dst, int n) {
+    const block_tq_turbo_kv_1b* block = (const block_tq_turbo_kv_1b*)src;
+    int dim = n;
+    if (dim > TQ_BK) dim = TQ_BK;
+
+    float norm = tkv_fp16_to_fp32(block->norm);
+    uint32_t seed = block->rht_seed;
+
+    /* Reconstruct sign vector in rotated space.
+     * After RHT, coordinates are ~N(0, 1/sqrt(dim)).
+     * Expected |x| for half-normal = sqrt(2/pi) * sigma = sqrt(2/pi) / sqrt(dim).
+     * So sign * sqrt(2/pi) / sqrt(dim) is the expected reconstruction. */
+    float scale = sqrtf(2.0f / TQ_PI) / sqrtf((float)dim);
+    float rotated[TQ_BK];
+    for (int i = 0; i < dim; i++) {
+        int bit = (block->signs[i / 8] >> (i % 8)) & 1;
+        rotated[i] = bit ? scale : -scale;
+    }
+
+    /* Inverse RHT */
+    tq_rht_inverse(rotated, dim, seed);
+
+    /* Scale by original norm */
+    for (int i = 0; i < dim; i++) {
+        dst[i] = rotated[i] * norm;
+    }
+}
+
+/* ============================================================
+ * TurboQuant KV 1-bit: attention (XOR + popcount Hamming)
+ *
+ * Ultra-fast attention using bitwise operations:
+ *   1. RHT(query) computed ONCE
+ *   2. Extract query sign bits ONCE
+ *   3. Per key: XOR + popcount -> Hamming distance -> score
+ *
+ * The inner product estimator:
+ *   <q, k> ~ q_norm * k_norm * sqrt(pi/2) / dim * (2*agree - dim)
+ * where agree = dim - hamming_distance(q_signs, k_signs).
+ *
+ * NEON vectorization for popcount with scalar fallback.
+ * ============================================================ */
+
+void tq_turbo_kv_1b_attention_ref(const float* query, const void* kv_cache,
+                                    float* scores, int seq_len, int head_dim) {
+    const block_tq_turbo_kv_1b* blocks = (const block_tq_turbo_kv_1b*)kv_cache;
+    int dim = head_dim;
+    if (dim > TQ_BK) dim = TQ_BK;
+
+    float scale_factor = sqrtf(TQ_PI_2) / (float)dim;
+
+    /* Step 1: RHT(query) computed ONCE */
+    float q_rot[TQ_BK];
+    memcpy(q_rot, query, (size_t)dim * sizeof(float));
+    for (int i = dim; i < TQ_BK; i++) q_rot[i] = 0.0f;
+    tq_rht_transform(q_rot, dim, TKV_DEFAULT_SEED);
+
+    /* Step 2: Compute query L2 norm */
+    float q_norm_sq = 0.0f;
+    for (int i = 0; i < dim; i++) {
+        q_norm_sq += query[i] * query[i];
+    }
+    float q_norm = sqrtf(q_norm_sq);
+
+    /* Step 3: Extract query sign bits */
+    int sign_bytes = dim / 8;
+    uint8_t q_signs[TQ_BK / 8];
+    memset(q_signs, 0, (size_t)sign_bytes);
+    for (int i = 0; i < dim; i++) {
+        if (q_rot[i] >= 0.0f) {
+            q_signs[i / 8] |= (uint8_t)(1 << (i % 8));
+        }
+    }
+
+    /* Step 4: Per-key Hamming attention */
+    for (int seq = 0; seq < seq_len; seq++) {
+        const block_tq_turbo_kv_1b* blk = &blocks[seq];
+        float k_norm = tkv_fp16_to_fp32(blk->norm);
+
+        /* XOR + popcount to get Hamming distance */
+        int hamming = 0;
+#ifdef __ARM_NEON
+        if (sign_bytes == 16) {
+            /* Optimized path for dim=128 (16 sign bytes) */
+            uint8x16_t vq = vld1q_u8(q_signs);
+            uint8x16_t vk = vld1q_u8(blk->signs);
+            uint8x16_t vxor = veorq_u8(vq, vk);
+            /* Count bits: use NEON vcntq_u8 for byte-level popcount */
+            uint8x16_t vcnt = vcntq_u8(vxor);
+            /* Horizontal sum of all byte popcounts */
+            hamming = vaddlvq_u8(vcnt);
+        } else {
+            for (int b = 0; b < sign_bytes; b++) {
+                uint8_t xor_byte = q_signs[b] ^ blk->signs[b];
+                hamming += __builtin_popcount(xor_byte);
+            }
+        }
+#else
+        for (int b = 0; b < sign_bytes; b++) {
+            uint8_t xor_byte = q_signs[b] ^ blk->signs[b];
+            /* Portable popcount using Kernighan's bit trick */
+            int c = 0;
+            while (xor_byte) { c++; xor_byte &= xor_byte - 1; }
+            hamming += c;
+        }
+#endif
+
+        int agree = dim - hamming;
+        float score = q_norm * k_norm * scale_factor * (float)(2 * agree - dim);
+        scores[seq] = score;
     }
 }
