@@ -7,7 +7,7 @@
 [![Tests](https://img.shields.io/badge/tests-23%20suites-brightgreen)]()
 [![KV Quality](https://img.shields.io/badge/KV%20quality-30%2F30%20byte--identical-brightgreen)]()
 
-### 1-bit KV cache. 10.7x compression. Zero quality loss.
+### 1-bit KV cache. 10.7x compression. Quality preserved.
 
 ```
 Gemma 3 4B, greedy decode, 10 prompts × 100 tokens:
@@ -18,6 +18,11 @@ Gemma 3 4B, greedy decode, 10 prompts × 100 tokens:
   30/30 byte-identical matches across all prompts.
   bash bench/kv_quality_bench.sh gemma3-4b.tqm  ← reproduce it yourself
 ```
+
+> **Scope:** Key vectors are quantized; value vectors remain FP32. Greedy decode is
+> byte-identical up to ~120 tokens on Gemma 4B. Beyond that, outputs diverge but
+> remain coherent and comparable quality. This is expected — quantized attention
+> scores produce slightly different softmax distributions over longer contexts.
 
 ---
 

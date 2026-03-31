@@ -1,7 +1,12 @@
 #!/bin/bash
 # KV Cache Quality Benchmark — Reproducible verification
 #
-# Proves that 1-bit KV produces byte-identical output to 4-bit uniform.
+# Tests TurboQuant KV cache quality at short (100 tokens) and longer (200+) contexts.
+# Short context: typically byte-identical to uniform baseline.
+# Longer context: outputs diverge but remain coherent (expected behavior).
+#
+# Note: Only key vectors are quantized; value vectors remain FP32.
+#
 # Run: bash bench/kv_quality_bench.sh <model.tqm>
 #
 # Requirements: built tq_run binary in build/
