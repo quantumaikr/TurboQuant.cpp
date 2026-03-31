@@ -13,6 +13,8 @@
  *   -k <kv_type>     KV cache type: fp32, uniform_4b, uniform_2b,
  *                     polar_3b, polar_4b, turbo_3b, turbo_4b,
  *                     turbo_kv_1b, turbo_kv_3b, turbo_kv_4b (default: uniform_4b)
+ *   -v <vq>          Value cache quantization: q4 (4-bit), q2 (2-bit),
+ *                     or fp16 (default: fp16 when -k is set, fp32 otherwise)
  *   -j <threads>     Number of threads for matmul (default: 4)
  *   -s <seed>        Random seed (default: 42)
  *   --info           Print model info and exit
@@ -62,6 +64,7 @@ static void print_usage(const char* prog) {
     fprintf(stderr, "  -T <temperature> Sampling temperature (default: 0.7)\n");
     fprintf(stderr, "  -P <top_p>       Top-p sampling (default: 0.9)\n");
     fprintf(stderr, "  -k <kv_type>     KV cache quantization type\n");
+    fprintf(stderr, "  -v <vq>          Value cache quant: q4 (4-bit), q2 (2-bit), fp16 (default)\n");
     fprintf(stderr, "  -j <threads>     Number of threads for matmul (default: 4)\n");
     fprintf(stderr, "  -s <seed>        Random seed (default: 42)\n");
     fprintf(stderr, "  -q <type>        Quantize weights: q2 (2-bit Lloyd-Max, ~12x reduction),\n");
@@ -87,6 +90,7 @@ int main(int argc, char** argv) {
     tq_type kv_type = TQ_TYPE_UNIFORM_4B;
     int n_threads = 4;
     int quant_mode = 0;   /* 0 = none (default), 2 = Q2, 4 = Q4, 8 = Q8 */
+    int value_quant_bits = 0; /* 0 = FP16/FP32 (default), 4 = Q4, 2 = Q2 */
     int info_only = 0;
     int show_memory = 0;
 
@@ -105,6 +109,18 @@ int main(int argc, char** argv) {
             top_p = (float)atof(argv[++i]);
         } else if (strcmp(argv[i], "-k") == 0 && i + 1 < argc) {
             kv_type = parse_kv_type(argv[++i]);
+        } else if (strcmp(argv[i], "-v") == 0 && i + 1 < argc) {
+            const char* varg = argv[++i];
+            if (strcmp(varg, "q4") == 0 || strcmp(varg, "4") == 0) {
+                value_quant_bits = 4;
+            } else if (strcmp(varg, "q2") == 0 || strcmp(varg, "2") == 0) {
+                value_quant_bits = 2;
+            } else if (strcmp(varg, "fp16") == 0 || strcmp(varg, "none") == 0) {
+                value_quant_bits = 0;
+            } else {
+                fprintf(stderr, "Unknown value quant type: %s (using fp16)\n", varg);
+                value_quant_bits = 0;
+            }
         } else if (strcmp(argv[i], "-j") == 0 && i + 1 < argc) {
             n_threads = atoi(argv[++i]);
         } else if (strcmp(argv[i], "-q") == 0) {
@@ -154,8 +170,9 @@ int main(int argc, char** argv) {
     fprintf(stderr, "Model: %d layers, dim=%d, heads=%d/%d, head_dim=%d, vocab=%d, inter=%d\n",
             c->n_layers, c->hidden_dim, c->n_heads, c->n_kv_heads,
             c->head_dim, c->vocab_size, c->intermediate_dim);
-    fprintf(stderr, "KV cache type: %s\n",
-            kv_type < TQ_TYPE_COUNT ? tq_type_name(kv_type) : "fp32");
+    fprintf(stderr, "KV cache type: %s, V quant: %s\n",
+            kv_type < TQ_TYPE_COUNT ? tq_type_name(kv_type) : "fp32",
+            value_quant_bits == 4 ? "Q4" : (value_quant_bits == 2 ? "Q2" : "FP16"));
 
     if (quant_mode == 2) {
         fprintf(stderr, "Quantizing weights to Q2 (2-bit Lloyd-Max codebook)...\n");
@@ -198,6 +215,7 @@ int main(int argc, char** argv) {
     config.top_p = top_p;
     config.max_tokens = max_tokens;
     config.kv_type = kv_type;
+    config.value_quant_bits = value_quant_bits;
     config.on_token = print_token;
     config.user_data = NULL;
 
@@ -246,13 +264,28 @@ int main(int argc, char** argv) {
         if (type_size_bytes == 0) { type_size_bytes = sizeof(block_tq_uniform_4b); }
         size_t blocks_per_head = ((size_t)c->head_dim + block_size - 1) / block_size;
 
-        /* K (compressed) + V (FP16 when KV quant enabled, FP32 otherwise) per token */
+        /* K (compressed) + V (Q4/Q2/FP16/FP32) per token */
         size_t k_per_token = (size_t)c->n_layers * c->n_kv_heads
                             * blocks_per_head * type_size_bytes;
-        int v_fp16 = (kv_type < TQ_TYPE_COUNT);  /* V stored as FP16 when K is quantized */
-        size_t v_bytes_per_elem = v_fp16 ? sizeof(uint16_t) : sizeof(float);
-        size_t v_per_token = (size_t)c->n_layers * c->n_kv_heads
-                            * c->head_dim * v_bytes_per_elem;
+        size_t v_per_token;
+        const char* v_format_name;
+        if (value_quant_bits == 4) {
+            /* Q4 V: 16 packed bytes + 4 byte scale per block of 32 */
+            int v_blocks = (c->head_dim + 31) / 32;
+            v_per_token = (size_t)c->n_layers * c->n_kv_heads * v_blocks * (16 + sizeof(float));
+            v_format_name = "Q4";
+        } else if (value_quant_bits == 2) {
+            /* Q2 V: 8 packed bytes + 4 byte scale per block of 32 */
+            int v_blocks = (c->head_dim + 31) / 32;
+            v_per_token = (size_t)c->n_layers * c->n_kv_heads * v_blocks * (8 + sizeof(float));
+            v_format_name = "Q2";
+        } else if (kv_type < TQ_TYPE_COUNT) {
+            v_per_token = (size_t)c->n_layers * c->n_kv_heads * c->head_dim * sizeof(uint16_t);
+            v_format_name = "FP16";
+        } else {
+            v_per_token = (size_t)c->n_layers * c->n_kv_heads * c->head_dim * sizeof(float);
+            v_format_name = "FP32";
+        }
         size_t compressed_per_token = k_per_token + v_per_token;
 
         /* If kv_type is fp32 (sentinel), both key and value are FP32 */
@@ -277,7 +310,7 @@ int main(int argc, char** argv) {
                 kv_type < TQ_TYPE_COUNT ? tq_type_name(kv_type) : "fp32",
                 (double)k_per_token / 1024.0);
         fprintf(stderr, "Per-token V (%s):   %.2f KB\n",
-                v_fp16 ? "FP16" : "FP32",
+                v_format_name,
                 (double)v_per_token / 1024.0);
         fprintf(stderr, "Per-token K+V total:  %.2f KB\n",
                 (double)compressed_per_token / 1024.0);

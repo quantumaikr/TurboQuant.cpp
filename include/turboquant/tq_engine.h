@@ -216,6 +216,13 @@ typedef struct {
     tq_type kv_quant_type; /* quantization type for KV attention */
     size_t kv_cache_size;
 
+    /* Quantized value cache (Q4 or Q2, replaces FP16/FP32 V when enabled) */
+    int value_quant_bits;        /* 0=use FP16/FP32 (default), 4=Q4, 2=Q2 */
+    uint8_t* value_cache_qs;     /* packed quantized values [n_layers * max_seq * n_blocks_v * packed_bytes] */
+    float*   value_cache_scales; /* per-block scales [n_layers * max_seq * n_blocks_v] */
+    size_t   value_stride_qs;    /* bytes per position in value_cache_qs */
+    size_t   value_stride_scales;/* floats per position in value_cache_scales */
+
     /* DeltaNet recurrent state */
     float* delta_state;  /* [n_layers, delta_n_heads, key_head_dim, value_head_dim] */
     float* conv_state;   /* [n_layers, qkv_dim, conv_width-1] */
@@ -252,6 +259,7 @@ typedef struct {
     float top_p;
     int max_tokens;
     tq_type kv_type;     /* KV cache quantization type */
+    int value_quant_bits;/* V cache quantization: 0=FP16/FP32(default), 4=Q4, 2=Q2 */
     int n_threads;
     float rep_penalty;    /* repetition penalty (default: 1.1, 1.0 = disabled) */
     int rep_window;       /* how many recent tokens to penalize (default: 32) */
@@ -357,6 +365,7 @@ void tq_free_model(tq_model_t* model);
 
 /* State management */
 tq_state_t* tq_create_state(const tq_model_config_t* config, tq_type kv_type);
+tq_state_t* tq_create_state_ex(const tq_model_config_t* config, tq_type kv_type, int value_quant_bits);
 void tq_free_state(tq_state_t* state);
 
 /* Inference — returns pointer to logits (owned by state) */
@@ -393,12 +402,14 @@ void tq_matmul_q4(float* out, const float* x, const uint8_t* w_qs, const float* 
 void tq_matmul_q4_preq(float* out, const uint8_t* w_qs, const float* w_scales,
                         const int8_t* x_q8, const float* x_scales, int n, int d);
 void tq_quantize_row_q4(const float* src, uint8_t* dst_qs, float* dst_scales, int n);
+void tq_dequantize_row_q4(const uint8_t* qs, const float* scales, float* dst, int n);
 void tq_quantize_weights_q4(tq_model_t* model);
 void tq_matmul_q2(float* out, const float* x, const uint8_t* w_qs, const float* w_scales,
                    int n, int d);
 void tq_matmul_q2_preq(float* out, const uint8_t* w_qs, const float* w_scales,
                         const int8_t* x_q8, const float* x_scales, int n, int d);
 void tq_quantize_row_q2(const float* src, uint8_t* dst_qs, float* dst_scales, int n);
+void tq_dequantize_row_q2(const uint8_t* qs, const float* scales, float* dst, int n);
 void tq_quantize_weights_q2(tq_model_t* model);
 void tq_rmsnorm(float* out, const float* x, const float* weight, int n, float eps);
 void tq_rope(float* q, float* k, int pos, int head_dim,

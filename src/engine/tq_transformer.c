@@ -80,6 +80,10 @@ static void f32_to_fp16_vec(const float* src, uint16_t* dst, int n) {
  * ============================================================ */
 
 tq_state_t* tq_create_state(const tq_model_config_t* config, tq_type kv_type) {
+    return tq_create_state_ex(config, kv_type, 0);
+}
+
+tq_state_t* tq_create_state_ex(const tq_model_config_t* config, tq_type kv_type, int value_quant_bits) {
     if (!config) return NULL;
 
     int dim = config->hidden_dim;
@@ -123,17 +127,40 @@ tq_state_t* tq_create_state(const tq_model_config_t* config, tq_type kv_type) {
     size_t kv_layer_size = (size_t)max_seq * kv_dim;
     s->key_cache   = (float*)calloc((size_t)n_layers * kv_layer_size, sizeof(float));
 
-    /* Use FP16 value cache when KV key quantization is enabled (saves 2x V memory).
-     * FP16 has sufficient precision for value vectors (used in weighted sum, not scoring). */
-    if (kv_type < TQ_TYPE_COUNT) {
+    /* Value cache quantization: Q4 or Q2 for aggressive V compression.
+     * When value_quant_bits > 0, V is stored quantized instead of FP16/FP32.
+     * Q4: 16 packed bytes + 1 float scale per block of 32 = 20 bytes/32 values
+     * Q2: 8 packed bytes + 1 float scale per block of 32 = 12 bytes/32 values */
+    s->value_quant_bits = value_quant_bits;
+    if (value_quant_bits == 4 || value_quant_bits == 2) {
+        /* Quantized V cache */
+        int n_blocks_per_pos = (kv_dim + 31) / 32; /* blocks per position (all heads) */
+        size_t packed_per_block = (value_quant_bits == 4) ? 16 : 8;
+        s->value_stride_qs = (size_t)n_blocks_per_pos * packed_per_block;
+        s->value_stride_scales = (size_t)n_blocks_per_pos;
+        size_t total_qs = (size_t)n_layers * max_seq * s->value_stride_qs;
+        size_t total_scales = (size_t)n_layers * max_seq * s->value_stride_scales;
+        s->value_cache_qs = (uint8_t*)calloc(total_qs, 1);
+        s->value_cache_scales = (float*)calloc(total_scales, sizeof(float));
+        s->use_fp16_values = 0;
+        s->value_cache_fp16 = NULL;
+        s->value_cache = NULL;
+        s->kv_cache_size = total_qs + total_scales * sizeof(float);
+    } else if (kv_type < TQ_TYPE_COUNT) {
+        /* Use FP16 value cache when KV key quantization is enabled (saves 2x V memory).
+         * FP16 has sufficient precision for value vectors (used in weighted sum, not scoring). */
         s->use_fp16_values = 1;
         s->value_cache_fp16 = (uint16_t*)calloc((size_t)n_layers * kv_layer_size, sizeof(uint16_t));
         s->value_cache = NULL;
+        s->value_cache_qs = NULL;
+        s->value_cache_scales = NULL;
         s->kv_cache_size = (size_t)n_layers * kv_layer_size * sizeof(uint16_t);
     } else {
         s->use_fp16_values = 0;
         s->value_cache_fp16 = NULL;
         s->value_cache = (float*)calloc((size_t)n_layers * kv_layer_size, sizeof(float));
+        s->value_cache_qs = NULL;
+        s->value_cache_scales = NULL;
         s->kv_cache_size = (size_t)n_layers * kv_layer_size * sizeof(float);
     }
 
@@ -198,7 +225,14 @@ tq_state_t* tq_create_state(const tq_model_config_t* config, tq_type kv_type) {
     }
 
     /* Verify critical allocations */
-    int value_cache_ok = s->use_fp16_values ? (s->value_cache_fp16 != NULL) : (s->value_cache != NULL);
+    int value_cache_ok;
+    if (s->value_quant_bits == 4 || s->value_quant_bits == 2) {
+        value_cache_ok = (s->value_cache_qs != NULL && s->value_cache_scales != NULL);
+    } else if (s->use_fp16_values) {
+        value_cache_ok = (s->value_cache_fp16 != NULL);
+    } else {
+        value_cache_ok = (s->value_cache != NULL);
+    }
     if (!s->x || !s->xb || !s->xb2 || !s->q || !s->k || !s->v ||
         !s->att || !s->hb || !s->hb2 || !s->logits ||
         !s->key_cache || !value_cache_ok ||
@@ -225,6 +259,8 @@ void tq_free_state(tq_state_t* state) {
     free(state->key_cache);
     free(state->value_cache);
     free(state->value_cache_fp16);
+    free(state->value_cache_qs);
+    free(state->value_cache_scales);
     free(state->delta_state);
     free(state->conv_state);
     free(state->delta_qkv);
@@ -854,8 +890,21 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
     float* key_cache_layer = s->key_cache + l * kv_layer_stride;
     memcpy(key_cache_layer + (size_t)pos * kv_dim, s->k, kv_dim * sizeof(float));
 
-    /* Store V: FP16 if enabled, otherwise FP32 */
-    if (s->use_fp16_values) {
+    /* Store V: Q4/Q2 if enabled, FP16 if KV quant enabled, otherwise FP32 */
+    int max_seq = c->max_seq_len;
+    if (s->value_quant_bits == 4) {
+        size_t layer_off_qs = (size_t)l * max_seq * s->value_stride_qs;
+        size_t layer_off_sc = (size_t)l * max_seq * s->value_stride_scales;
+        uint8_t* vqs = s->value_cache_qs + layer_off_qs + (size_t)pos * s->value_stride_qs;
+        float*   vsc = s->value_cache_scales + layer_off_sc + (size_t)pos * s->value_stride_scales;
+        tq_quantize_row_q4(s->v, vqs, vsc, kv_dim);
+    } else if (s->value_quant_bits == 2) {
+        size_t layer_off_qs = (size_t)l * max_seq * s->value_stride_qs;
+        size_t layer_off_sc = (size_t)l * max_seq * s->value_stride_scales;
+        uint8_t* vqs = s->value_cache_qs + layer_off_qs + (size_t)pos * s->value_stride_qs;
+        float*   vsc = s->value_cache_scales + layer_off_sc + (size_t)pos * s->value_stride_scales;
+        tq_quantize_row_q2(s->v, vqs, vsc, kv_dim);
+    } else if (s->use_fp16_values) {
         uint16_t* val_fp16_layer = s->value_cache_fp16 + l * kv_layer_stride;
         f32_to_fp16_vec(s->v, val_fp16_layer + (size_t)pos * kv_dim, kv_dim);
     } else {
@@ -967,7 +1016,48 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
         /* Weighted sum of values */
         float* xbh = s->xb + h * head_dim;
         memset(xbh, 0, head_dim * sizeof(float));
-        if (s->use_fp16_values) {
+        if (s->value_quant_bits == 4 || s->value_quant_bits == 2) {
+            /* Quantized value path: dequantize V per position on the fly.
+             * We dequantize all kv_dim values for the position, then index into it.
+             * Use a stack buffer for the head_dim portion. */
+            float v_tmp[512]; /* max head_dim is 256, safe with margin */
+            size_t layer_off_qs = (size_t)l * max_seq * s->value_stride_qs;
+            size_t layer_off_sc = (size_t)l * max_seq * s->value_stride_scales;
+            int n_blocks_per_head = (head_dim + 31) / 32;
+            size_t packed_per_block = (s->value_quant_bits == 4) ? 16 : 8;
+            /* Offset within a position's quantized data to reach kv_h's head */
+            size_t head_qs_off = (size_t)kv_h * n_blocks_per_head * packed_per_block;
+            size_t head_sc_off = (size_t)kv_h * n_blocks_per_head;
+            for (int t = 0; t < seq_len; t++) {
+                float a = atth[t];
+                if (a == 0.0f) continue;
+                const uint8_t* vqs = s->value_cache_qs + layer_off_qs
+                    + (size_t)t * s->value_stride_qs + head_qs_off;
+                const float* vsc = s->value_cache_scales + layer_off_sc
+                    + (size_t)t * s->value_stride_scales + head_sc_off;
+                if (s->value_quant_bits == 4) {
+                    tq_dequantize_row_q4(vqs, vsc, v_tmp, head_dim);
+                } else {
+                    tq_dequantize_row_q2(vqs, vsc, v_tmp, head_dim);
+                }
+#ifdef __ARM_NEON
+                float32x4_t va = vdupq_n_f32(a);
+                int d = 0;
+                for (; d + 3 < head_dim; d += 4) {
+                    float32x4_t vv = vld1q_f32(v_tmp + d);
+                    float32x4_t vx = vld1q_f32(xbh + d);
+                    vst1q_f32(xbh + d, vfmaq_f32(vx, va, vv));
+                }
+                for (; d < head_dim; d++) {
+                    xbh[d] += a * v_tmp[d];
+                }
+#else
+                for (int d = 0; d < head_dim; d++) {
+                    xbh[d] += a * v_tmp[d];
+                }
+#endif
+            }
+        } else if (s->use_fp16_values) {
             /* FP16 value path: convert on the fly during weighted sum */
             const uint16_t* vfp16_layer = s->value_cache_fp16 + l * kv_layer_stride;
             for (int t = 0; t < seq_len; t++) {

@@ -150,7 +150,7 @@ int tq_generate(tq_model_t* model, tq_tokenizer_t* tokenizer,
                 char* output, int output_size) {
     if (!model || !config) return -1;
 
-    tq_state_t* state = tq_create_state(&model->config, config->kv_type);
+    tq_state_t* state = tq_create_state_ex(&model->config, config->kv_type, config->value_quant_bits);
     if (!state) {
         fprintf(stderr, "tq_generate: failed to allocate state\n");
         return -1;

@@ -513,6 +513,57 @@ void tq_quantize_row_q4(const float* src, uint8_t* dst_qs, float* dst_scales, in
 }
 
 /* ============================================================
+ * Q4 dequantize: packed 4-bit + per-block scale -> float
+ *
+ * Inverse of tq_quantize_row_q4. For each block of 32 values:
+ *   x_i = (q_i - 8) * scale
+ * where q_i is a 4-bit unsigned value [0,15].
+ * ============================================================ */
+void tq_dequantize_row_q4(const uint8_t* qs, const float* scales, float* dst, int n) {
+    int n_blocks = n / 32;
+    for (int b = 0; b < n_blocks; b++) {
+        const uint8_t* qb = qs + b * 16;
+        float d = scales[b];
+        float* out = dst + b * 32;
+#ifdef __ARM_NEON
+        /* Use scalar path for correctness — nibble interleaving
+         * requires lo/hi alternation that NEON can't easily vectorize */
+        for (int j = 0; j < 16; j++) {
+            int q0 = qb[j] & 0x0F;
+            int q1 = qb[j] >> 4;
+            out[2*j]     = (float)(q0 - 8) * d;
+            out[2*j + 1] = (float)(q1 - 8) * d;
+        }
+#else
+        for (int j = 0; j < 16; j++) {
+            int q0 = qb[j] & 0x0F;
+            int q1 = qb[j] >> 4;
+            out[2*j]     = (float)(q0 - 8) * d;
+            out[2*j + 1] = (float)(q1 - 8) * d;
+        }
+#endif
+    }
+    /* Handle remainder */
+    int remainder = n - n_blocks * 32;
+    if (remainder > 0) {
+        const uint8_t* qb = qs + n_blocks * 16;
+        float d = scales[n_blocks];
+        float* out = dst + n_blocks * 32;
+        int n_pairs = remainder / 2;
+        for (int j = 0; j < n_pairs; j++) {
+            int q0 = qb[j] & 0x0F;
+            int q1 = qb[j] >> 4;
+            out[2*j]     = (float)(q0 - 8) * d;
+            out[2*j + 1] = (float)(q1 - 8) * d;
+        }
+        if (remainder & 1) {
+            int q0 = qb[n_pairs] & 0x0F;
+            out[remainder - 1] = (float)(q0 - 8) * d;
+        }
+    }
+}
+
+/* ============================================================
  * Q4 matmul: w is Q4_0 [n, d], x is FP32 [d], out is FP32 [n]
  *
  * Strategy: quantize activation x to Q8 once, then compute
@@ -1229,6 +1280,41 @@ void tq_quantize_row_q2(const float* src, uint8_t* dst_qs, float* dst_scales, in
             int byte_idx = j / 4;
             int bit_pos  = (j % 4) * 2;
             qb[byte_idx] |= (uint8_t)((best & 0x03) << bit_pos);
+        }
+    }
+}
+
+/* ============================================================
+ * Q2 dequantize: packed 2-bit + per-block scale -> float
+ *
+ * Inverse of tq_quantize_row_q2. For each block of 32 values:
+ *   x_i = Q2_CENTROIDS[q_i] * scale
+ * where q_i is a 2-bit index [0,3].
+ * ============================================================ */
+void tq_dequantize_row_q2(const uint8_t* qs, const float* scales, float* dst, int n) {
+    int n_blocks = n / 32;
+    for (int b = 0; b < n_blocks; b++) {
+        const uint8_t* qb = qs + b * 8;
+        float d = scales[b];
+        float* out = dst + b * 32;
+        for (int j = 0; j < 32; j++) {
+            int byte_idx = j / 4;
+            int bit_pos  = (j % 4) * 2;
+            int qi = (qb[byte_idx] >> bit_pos) & 0x03;
+            out[j] = Q2_CENTROIDS[qi] * d;
+        }
+    }
+    /* Handle remainder */
+    int remainder = n - n_blocks * 32;
+    if (remainder > 0) {
+        const uint8_t* qb = qs + n_blocks * 8;
+        float d = scales[n_blocks];
+        float* out = dst + n_blocks * 32;
+        for (int j = 0; j < remainder; j++) {
+            int byte_idx = j / 4;
+            int bit_pos  = (j % 4) * 2;
+            int qi = (qb[byte_idx] >> bit_pos) & 0x03;
+            out[j] = Q2_CENTROIDS[qi] * d;
         }
     }
 }
