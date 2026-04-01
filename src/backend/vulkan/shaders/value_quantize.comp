@@ -1,0 +1,188 @@
+/**
+ * TurboQuant -- Value quantization Vulkan compute shader
+ *
+ * GLSL 450 + GL_KHR_shader_subgroup_arithmetic
+ * Ported from src/backend/cuda/tq_value.cu
+ *
+ * Group-wise min-max quantization for value vectors.
+ * Supports both 4-bit (16 levels) and 2-bit (4 levels) via specialization.
+ *
+ * Each workgroup processes one quantization block (TQ_BK=128 elements).
+ */
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : require
+
+/* ============================================================
+ * Constants
+ * ============================================================ */
+
+#define TQ_BK 128
+
+layout(local_size_x = 256) in;
+
+/* ============================================================
+ * Specialization constant: select 4-bit or 2-bit mode
+ * ============================================================ */
+
+layout(constant_id = 0) const uint QUANT_BITS = 4;
+
+/* ============================================================
+ * Push constants
+ * ============================================================ */
+
+layout(push_constant) uniform Params {
+    int n;
+    int num_blocks;
+    int quant_bits;
+    int _pad;
+};
+
+/* ============================================================
+ * Storage buffers
+ * ============================================================ */
+
+layout(std430, set = 0, binding = 0) readonly buffer InputBuf {
+    float values[];
+};
+
+/* Output: uniform blocks packed as uint32 array
+ * 4-bit: [scale:u16, zero:u16, qs[64]] = 68 bytes = 17 u32
+ * 2-bit: [scale:u16, zero:u16, qs[32]] = 36 bytes =  9 u32
+ */
+layout(std430, set = 0, binding = 1) buffer OutputBuf {
+    uint out_data[];
+};
+
+/* ============================================================
+ * Helpers
+ * ============================================================ */
+
+uint float_to_half(float f) {
+    uint bits = floatBitsToUint(f);
+    uint sign = (bits >> 16) & 0x8000u;
+    int  exp  = int((bits >> 23) & 0xFFu) - 127;
+    uint mant = bits & 0x7FFFFFu;
+    if (exp > 15) return sign | 0x7C00u;
+    if (exp < -14) return sign;
+    return sign | (uint(exp + 15) << 10) | (mant >> 13);
+}
+
+/* ============================================================
+ * Shared memory
+ * ============================================================ */
+
+shared float s_reduce[8];
+shared uint  s_quant[TQ_BK]; /* quantized values staging */
+
+float workgroupReduceMin(float val) {
+    float sg = subgroupMin(val);
+    if (subgroupElect()) s_reduce[gl_SubgroupID] = sg;
+    barrier();
+    if (gl_LocalInvocationID.x < gl_NumSubgroups) val = s_reduce[gl_LocalInvocationID.x];
+    else val = 1e30;
+    barrier();
+    if (gl_SubgroupID == 0) val = subgroupMin(val);
+    return val;
+}
+
+float workgroupReduceMax(float val) {
+    float sg = subgroupMax(val);
+    if (subgroupElect()) s_reduce[gl_SubgroupID] = sg;
+    barrier();
+    if (gl_LocalInvocationID.x < gl_NumSubgroups) val = s_reduce[gl_LocalInvocationID.x];
+    else val = -1e30;
+    barrier();
+    if (gl_SubgroupID == 0) val = subgroupMax(val);
+    return val;
+}
+
+/* ============================================================
+ * Main: Value quantize (4-bit or 2-bit)
+ * ============================================================ */
+
+void main() {
+    uint block_idx  = gl_WorkGroupID.x;
+    uint tid        = gl_LocalInvocationID.x;
+    uint base       = block_idx * TQ_BK;
+    uint global_idx = base + tid;
+
+    /* Load value */
+    float val = 0.0;
+    bool valid = (tid < TQ_BK) && (global_idx < uint(n));
+    if (valid) {
+        val = values[global_idx];
+    }
+
+    /* Find block min/max */
+    float for_min = valid ? val :  1e30;
+    float for_max = valid ? val : -1e30;
+    float gmin = workgroupReduceMin(for_min);
+    float gmax = workgroupReduceMax(for_max);
+
+    /* Broadcast from thread 0 */
+    shared float s_minmax[2];
+    if (tid == 0u) {
+        s_minmax[0] = gmin;
+        s_minmax[1] = gmax;
+    }
+    barrier();
+    gmin = s_minmax[0];
+    gmax = s_minmax[1];
+
+    float range   = max(gmax - gmin, 1e-8);
+    uint  max_val = (1u << uint(quant_bits)) - 1u;
+    float scale   = range / float(max_val);
+
+    /* Determine output layout based on quant_bits */
+    uint block_u32s;
+    if (quant_bits == 4) {
+        block_u32s = 17u; /* 68 bytes */
+    } else {
+        block_u32s = 9u;  /* 36 bytes */
+    }
+    uint block_base = block_idx * block_u32s;
+
+    /* Write header */
+    if (tid == 0u) {
+        uint scale_h = float_to_half(scale);
+        uint zero_h  = float_to_half(gmin);
+        out_data[block_base] = scale_h | (zero_h << 16u);
+    }
+
+    /* Quantize each element */
+    if (valid) {
+        int q = int(floor((val - gmin) / scale));
+        q = clamp(q, 0, int(max_val));
+        s_quant[tid] = uint(q);
+    }
+    barrier();
+
+    /* Pack quantized values */
+    if (quant_bits == 4) {
+        /* 4-bit: 2 values per byte, LSB-first */
+        if (tid < TQ_BK / 2u) {
+            uint lo = s_quant[2u * tid];
+            uint hi = (2u * tid + 1u < TQ_BK) ? s_quant[2u * tid + 1u] : 0u;
+            uint byte_val = (hi << 4u) | lo;
+
+            /* Pack into uint32: 4 bytes per u32 */
+            uint u32_idx     = tid / 4u;
+            uint byte_in_u32 = tid % 4u;
+            atomicOr(out_data[block_base + 1u + u32_idx],
+                     byte_val << (byte_in_u32 * 8u));
+        }
+    } else {
+        /* 2-bit: 4 values per byte, LSB-first */
+        if (tid < TQ_BK / 4u) {
+            uint byte_val = s_quant[4u * tid];
+            if (4u * tid + 1u < TQ_BK) byte_val |= s_quant[4u * tid + 1u] << 2u;
+            if (4u * tid + 2u < TQ_BK) byte_val |= s_quant[4u * tid + 2u] << 4u;
+            if (4u * tid + 3u < TQ_BK) byte_val |= s_quant[4u * tid + 3u] << 6u;
+
+            uint u32_idx     = tid / 4u;
+            uint byte_in_u32 = tid % 4u;
+            atomicOr(out_data[block_base + 1u + u32_idx],
+                     byte_val << (byte_in_u32 * 8u));
+        }
+    }
+}

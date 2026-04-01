@@ -1,0 +1,260 @@
+/**
+ * TurboQuant -- PolarQuant Vulkan compute shader
+ *
+ * GLSL 450 + GL_KHR_shader_subgroup_arithmetic
+ * Ported from src/backend/cuda/tq_polar.cu
+ *
+ * Quantize: Each workgroup processes one block of TQ_BK elements.
+ *   Converts pairs to polar coords, finds min/max via subgroup ops,
+ *   quantizes and packs into PolarQuant block format.
+ *
+ * Attention: Each workgroup computes one dot(query, dequant(key[s])).
+ */
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : require
+
+/* ============================================================
+ * Constants
+ * ============================================================ */
+
+#define TQ_BK       128
+#define TQ_PAIRS    64
+#define PI          3.14159265358979323846
+
+layout(local_size_x = 256) in;
+
+/* ============================================================
+ * Push constants
+ * ============================================================ */
+
+layout(push_constant) uniform Params {
+    int n;
+    int head_dim;
+    int num_blocks;
+    int _pad;
+};
+
+/* ============================================================
+ * Storage buffers
+ * ============================================================ */
+
+/* Binding 0: input keys (float array) */
+layout(std430, set = 0, binding = 0) readonly buffer InputBuf {
+    float keys[];
+};
+
+/* Binding 1: output polar blocks (byte array, manually packed) */
+layout(std430, set = 0, binding = 1) buffer OutputBuf {
+    uint out_data[];
+};
+
+/* ============================================================
+ * FP16 conversion helpers (IEEE 754 half-precision)
+ * ============================================================ */
+
+uint float_to_half(float f) {
+    uint bits = floatBitsToUint(f);
+    uint sign = (bits >> 16) & 0x8000u;
+    int  exp  = int((bits >> 23) & 0xFFu) - 127;
+    uint mant = bits & 0x7FFFFFu;
+
+    if (exp > 15) {
+        return sign | 0x7C00u; /* inf */
+    } else if (exp < -14) {
+        return sign; /* zero / denorm flush */
+    }
+    uint h_exp  = uint(exp + 15) << 10;
+    uint h_mant = mant >> 13;
+    return sign | h_exp | h_mant;
+}
+
+/* ============================================================
+ * Shared memory
+ * ============================================================ */
+
+shared float s_keys[TQ_BK];
+shared float s_theta[TQ_PAIRS];
+shared float s_radius[TQ_PAIRS];
+shared float s_params[4]; /* tmin, tmax, rmin, rmax */
+shared uint  s_packed_u32[TQ_PAIRS / 4]; /* 16 uint32s = 64 bytes */
+
+/* ============================================================
+ * Workgroup-level min/max reduction using subgroup ops
+ * ============================================================ */
+
+shared float s_reduce[8]; /* max 8 subgroups in 256 threads */
+
+float workgroupReduceMin(float val) {
+    float sg_min = subgroupMin(val);
+    if (subgroupElect()) {
+        s_reduce[gl_SubgroupID] = sg_min;
+    }
+    barrier();
+    if (gl_LocalInvocationID.x < gl_NumSubgroups) {
+        val = s_reduce[gl_LocalInvocationID.x];
+    } else {
+        val = 1e30;
+    }
+    barrier();
+    if (gl_SubgroupID == 0) {
+        val = subgroupMin(val);
+    }
+    return val;
+}
+
+float workgroupReduceMax(float val) {
+    float sg_max = subgroupMax(val);
+    if (subgroupElect()) {
+        s_reduce[gl_SubgroupID] = sg_max;
+    }
+    barrier();
+    if (gl_LocalInvocationID.x < gl_NumSubgroups) {
+        val = s_reduce[gl_LocalInvocationID.x];
+    } else {
+        val = -1e30;
+    }
+    barrier();
+    if (gl_SubgroupID == 0) {
+        val = subgroupMax(val);
+    }
+    return val;
+}
+
+float workgroupReduceAdd(float val) {
+    float sg_sum = subgroupAdd(val);
+    if (subgroupElect()) {
+        s_reduce[gl_SubgroupID] = sg_sum;
+    }
+    barrier();
+    if (gl_LocalInvocationID.x < gl_NumSubgroups) {
+        val = s_reduce[gl_LocalInvocationID.x];
+    } else {
+        val = 0.0;
+    }
+    barrier();
+    if (gl_SubgroupID == 0) {
+        val = subgroupAdd(val);
+    }
+    return val;
+}
+
+/* ============================================================
+ * Main: PolarQuant quantize
+ *
+ * One workgroup = one quantization block (TQ_BK=128 elements)
+ * ============================================================ */
+
+void main() {
+    uint block_idx = gl_WorkGroupID.x;
+    uint tid       = gl_LocalInvocationID.x;
+    uint base      = block_idx * TQ_BK;
+
+    /* --- Load key block into shared memory --- */
+    if (tid < TQ_PAIRS) {
+        uint g0 = base + 2u * tid;
+        uint g1 = base + 2u * tid + 1u;
+        s_keys[2u * tid]      = (g0 < uint(n)) ? keys[g0] : 0.0;
+        s_keys[2u * tid + 1u] = (g1 < uint(n)) ? keys[g1] : 0.0;
+    }
+    barrier();
+
+    /* --- Polar coordinate conversion --- */
+    float theta  = 0.0;
+    float radius = 0.0;
+    if (tid < TQ_PAIRS) {
+        float x = s_keys[2u * tid];
+        float y = s_keys[2u * tid + 1u];
+        radius = sqrt(x * x + y * y);
+        theta  = atan(y, x); /* [-pi, pi] */
+        if (theta < 0.0) theta += float(2.0 * PI);
+
+        s_theta[tid]  = theta;
+        s_radius[tid] = radius;
+    }
+    barrier();
+
+    /* --- Min/max reduction --- */
+    float t_for_min = (tid < TQ_PAIRS) ? theta  :  1e30;
+    float r_for_min = (tid < TQ_PAIRS) ? radius :  1e30;
+    float tmin_v = workgroupReduceMin(t_for_min);
+    float rmin_v = workgroupReduceMin(r_for_min);
+
+    float t_for_max = (tid < TQ_PAIRS) ? theta  : -1e30;
+    float r_for_max = (tid < TQ_PAIRS) ? radius : -1e30;
+    float tmax_v = workgroupReduceMax(t_for_max);
+    float rmax_v = workgroupReduceMax(r_for_max);
+
+    if (tid == 0u) {
+        s_params[0] = tmin_v;
+        s_params[1] = tmax_v;
+        s_params[2] = rmin_v;
+        s_params[3] = rmax_v;
+    }
+    barrier();
+
+    float tmin = s_params[0];
+    float tmax = s_params[1];
+    float rmin = s_params[2];
+    float rmax = s_params[3];
+
+    float trange = max(tmax - tmin, 1e-8);
+    float rrange = max(rmax - rmin, 1e-8);
+    float tscale = trange / 4.0;
+    float rscale = rrange / 4.0;
+
+    /* --- Write block header (thread 0) ---
+     * Layout: [rscale:u16, rmn:u16, tscale:u16, tmn:u16, indices[64]]
+     * = 8 + 64 = 72 bytes = 18 uint32s
+     */
+    uint block_base = block_idx * 18u; /* 72 bytes / 4 */
+
+    if (tid == 0u) {
+        uint rscale_h = float_to_half(rscale);
+        uint rmn_h    = float_to_half(rmin);
+        uint tscale_h = float_to_half(tscale);
+        uint tmn_h    = float_to_half(tmin);
+
+        out_data[block_base + 0u] = rscale_h | (rmn_h << 16u);
+        out_data[block_base + 1u] = tscale_h | (tmn_h << 16u);
+    }
+
+    /* --- Quantize and pack via shared staging ---
+     * Each pair -> 4-bit nibble: (rq << 2) | tq
+     * Two pairs per byte, LSB-first (even=lo, odd=hi)
+     */
+    if (tid < TQ_PAIRS) {
+        float t = s_theta[tid];
+        float r = s_radius[tid];
+
+        int tq = int(floor((t - tmin) / tscale));
+        int rq = int(floor((r - rmin) / rscale));
+        tq = clamp(tq, 0, 3);
+        rq = clamp(rq, 0, 3);
+
+        uint packed = uint((rq << 2) | tq);
+
+        /* Pack into shared u32 array:
+         * 4 pairs per uint32 (8 nibbles = 4 bytes)
+         * tid/4 -> which u32
+         * (tid%4) * 8 + even/odd*4 -> bit position
+         * tid%2 == 0 -> lo nibble of byte, tid%2 == 1 -> hi nibble
+         */
+        uint byte_idx = tid / 2u;
+        uint u32_idx  = byte_idx / 4u;
+        uint byte_in_u32 = byte_idx % 4u;
+
+        /* Even thread sets lo nibble, odd thread sets hi nibble */
+        uint shift = byte_in_u32 * 8u + ((tid % 2u) * 4u);
+
+        /* Atomic to avoid race between lo/hi nibble writers */
+        atomicAnd(s_packed_u32[u32_idx], ~(0xFu << shift));
+        atomicOr(s_packed_u32[u32_idx], packed << shift);
+    }
+    barrier();
+
+    /* --- Store packed indices to global memory --- */
+    uint idx_u32s = TQ_PAIRS / 4; /* 16 */
+    if (tid < idx_u32s) {
+        out_data[block_base + 2u + tid] = s_packed_u32[tid];
+    }
+}

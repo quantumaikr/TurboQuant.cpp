@@ -1,0 +1,219 @@
+/**
+ * TurboQuant -- QJL (Quantized Johnson-Lindenstrauss) Vulkan compute shader
+ *
+ * GLSL 450 + GL_KHR_shader_subgroup_arithmetic
+ * Ported from src/backend/cuda/tq_qjl.cu
+ *
+ * Performs 1-bit sign hash quantization with outlier detection.
+ * Each workgroup processes one key vector.
+ *
+ * CUDA warp ops replaced with subgroupAdd.
+ * atomicOr on packed hash bytes replaces CUDA atomicOr.
+ */
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : require
+
+/* ============================================================
+ * Constants
+ * ============================================================ */
+
+#define TQ_SKETCH_DIM  256
+#define TQ_OUTLIERS    4
+#define TQ_EMB_MAX     256
+
+layout(local_size_x = 256) in;
+
+/* ============================================================
+ * Push constants
+ * ============================================================ */
+
+layout(push_constant) uniform Params {
+    int num_keys;
+    int emb_dim;
+    int sketch_dim;
+    int _pad;
+};
+
+/* ============================================================
+ * Storage buffers
+ * ============================================================ */
+
+layout(std430, set = 0, binding = 0) readonly buffer InputBuf {
+    float keys[];
+};
+
+/* Output: QJL blocks packed as uint32 array
+ * Layout per block: [norm:u16, outlier_norm:u16, hash[32], outlier_idx[4]]
+ * = 4 + 32 + 4 = 40 bytes = 10 uint32s
+ */
+layout(std430, set = 0, binding = 1) buffer OutputBuf {
+    uint out_data[];
+};
+
+/* ============================================================
+ * Deterministic pseudo-random projection entry (Rademacher)
+ * Matches CPU reference in tq_cuda_common.cuh
+ * ============================================================ */
+
+float random_entry(int dim_idx, int sketch_idx) {
+    uint h = uint(dim_idx) * 2654435761u + uint(sketch_idx) * 340573321u;
+    h ^= h >> 16;
+    h *= 0x45d9f3bu;
+    h ^= h >> 16;
+    return ((h & 1u) != 0u) ? 1.0 : -1.0;
+}
+
+/* ============================================================
+ * FP16 conversion
+ * ============================================================ */
+
+uint float_to_half(float f) {
+    uint bits = floatBitsToUint(f);
+    uint sign = (bits >> 16) & 0x8000u;
+    int  exp  = int((bits >> 23) & 0xFFu) - 127;
+    uint mant = bits & 0x7FFFFFu;
+
+    if (exp > 15) return sign | 0x7C00u;
+    if (exp < -14) return sign;
+    uint h_exp  = uint(exp + 15) << 10;
+    uint h_mant = mant >> 13;
+    return sign | h_exp | h_mant;
+}
+
+/* ============================================================
+ * Shared memory
+ * ============================================================ */
+
+shared float s_key[TQ_EMB_MAX];
+shared float s_reduce[8]; /* for workgroup reduction */
+
+/* ============================================================
+ * Workgroup reduction using subgroup ops
+ * ============================================================ */
+
+float workgroupReduceAdd(float val) {
+    float sg_sum = subgroupAdd(val);
+    if (subgroupElect()) {
+        s_reduce[gl_SubgroupID] = sg_sum;
+    }
+    barrier();
+    if (gl_LocalInvocationID.x < gl_NumSubgroups) {
+        val = s_reduce[gl_LocalInvocationID.x];
+    } else {
+        val = 0.0;
+    }
+    barrier();
+    if (gl_SubgroupID == 0) {
+        val = subgroupAdd(val);
+    }
+    return val;
+}
+
+/* ============================================================
+ * Main: QJL quantize kernel
+ *
+ * One workgroup = one key vector.
+ * All 256 threads cooperate to compute sketch projections,
+ * L2 norm, and outlier detection.
+ * ============================================================ */
+
+void main() {
+    uint key_idx = gl_WorkGroupID.x;
+    uint tid     = gl_LocalInvocationID.x;
+
+    if (key_idx >= uint(num_keys)) return;
+
+    /* Load key into shared memory */
+    if (tid < uint(emb_dim)) {
+        s_key[tid] = keys[key_idx * uint(emb_dim) + tid];
+    }
+    barrier();
+
+    uint block_base = key_idx * 10u; /* 40 bytes / 4 */
+
+    /* --- Compute QJL sign hash ---
+     * Each thread handles a subset of sketch dimensions.
+     * Each sketch dim: dot(key, random_proj) -> sign bit
+     * Pack 8 bits per byte, 32 bytes total for 256 sketch dims.
+     */
+    uint sketches_per_thread = (TQ_SKETCH_DIM + 255u) / 256u; /* ceil div */
+    for (uint si = 0u; si < sketches_per_thread; si++) {
+        uint sketch_idx = tid * sketches_per_thread + si;
+        if (sketch_idx >= TQ_SKETCH_DIM) break;
+
+        /* Compute dot product: key[d] * random(d, sketch_idx) */
+        float proj = 0.0;
+        for (uint d = 0u; d < uint(emb_dim); d++) {
+            proj += s_key[d] * random_entry(int(d), int(sketch_idx));
+        }
+
+        /* Set sign bit in output hash */
+        if (proj > 0.0) {
+            uint byte_idx = sketch_idx / 8u;
+            uint bit_pos  = sketch_idx % 8u;
+
+            /* Pack into uint32: hash starts at offset 1 (after norm words) */
+            uint u32_idx   = byte_idx / 4u;
+            uint byte_in_u32 = byte_idx % 4u;
+            uint shift = byte_in_u32 * 8u + bit_pos;
+
+            atomicOr(out_data[block_base + 1u + u32_idx], 1u << shift);
+        }
+    }
+    barrier();
+
+    /* --- L2 norm computation (all threads cooperate) --- */
+    float norm_partial = 0.0;
+    for (uint d = tid; d < uint(emb_dim); d += 256u) {
+        float v = s_key[d];
+        norm_partial += v * v;
+    }
+    float norm_sq = workgroupReduceAdd(norm_partial);
+
+    /* --- Outlier detection (thread 0 only) --- */
+    if (tid == 0u) {
+        /* Write norm */
+        uint norm_h = float_to_half(sqrt(norm_sq));
+
+        /* Find top-k outliers */
+        float abs_max[TQ_OUTLIERS];
+        uint  max_idx[TQ_OUTLIERS];
+        for (int o = 0; o < TQ_OUTLIERS; o++) {
+            abs_max[o] = -1.0;
+            max_idx[o] = 0u;
+        }
+
+        int dim = min(emb_dim, 256);
+        for (int d = 0; d < dim; d++) {
+            float av = abs(s_key[d]);
+            for (int o = 0; o < TQ_OUTLIERS; o++) {
+                if (av > abs_max[o]) {
+                    /* Shift down */
+                    for (int j = TQ_OUTLIERS - 1; j > o; j--) {
+                        abs_max[j] = abs_max[j - 1];
+                        max_idx[j] = max_idx[j - 1];
+                    }
+                    abs_max[o] = av;
+                    max_idx[o] = uint(d);
+                    break;
+                }
+            }
+        }
+
+        float outlier_norm_sq = 0.0;
+        uint packed_outliers = 0u;
+        for (int o = 0; o < TQ_OUTLIERS; o++) {
+            packed_outliers |= (max_idx[o] & 0xFFu) << (o * 8u);
+            float v = s_key[max_idx[o]];
+            outlier_norm_sq += v * v;
+        }
+
+        uint outlier_norm_h = float_to_half(sqrt(outlier_norm_sq));
+
+        /* Write header: [norm:u16 | outlier_norm:u16] at word 0 */
+        out_data[block_base + 0u] = norm_h | (outlier_norm_h << 16u);
+
+        /* Write outlier indices at word 9 (bytes 36-39) */
+        out_data[block_base + 9u] = packed_outliers;
+    }
+}

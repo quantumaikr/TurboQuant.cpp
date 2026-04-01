@@ -1,0 +1,306 @@
+/**
+ * TurboQuant -- Composite (PolarQuant + QJL residual) Vulkan compute shader
+ *
+ * GLSL 450 + GL_KHR_shader_subgroup_arithmetic
+ * Ported from src/backend/cuda/tq_turbo.cu
+ *
+ * Two-stage quantization in a single dispatch:
+ *   Stage 1: PolarQuant quantization of key vectors
+ *   Stage 2: QJL sign hash of the residual (original - polar_reconstruction)
+ *
+ * Each workgroup processes one block of TQ_BK=128 elements.
+ */
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : require
+
+/* ============================================================
+ * Constants
+ * ============================================================ */
+
+#define TQ_BK          128
+#define TQ_PAIRS       64
+#define TQ_SKETCH_DIM  256
+#define TQ_OUTLIERS    4
+#define PI             3.14159265358979323846
+
+layout(local_size_x = 256) in;
+
+/* ============================================================
+ * Push constants
+ * ============================================================ */
+
+layout(push_constant) uniform Params {
+    int n;
+    int head_dim;
+    int num_blocks;
+    int _pad;
+};
+
+/* ============================================================
+ * Storage buffers
+ * ============================================================ */
+
+layout(std430, set = 0, binding = 0) readonly buffer InputBuf {
+    float keys[];
+};
+
+/* Output: TurboQuant blocks = polar block + QJL block
+ * Polar: 72 bytes = 18 u32
+ * QJL:   40 bytes = 10 u32
+ * Total: 112 bytes = 28 u32
+ */
+layout(std430, set = 0, binding = 1) buffer OutputBuf {
+    uint out_data[];
+};
+
+/* ============================================================
+ * Helpers
+ * ============================================================ */
+
+uint float_to_half(float f) {
+    uint bits = floatBitsToUint(f);
+    uint sign = (bits >> 16) & 0x8000u;
+    int  exp  = int((bits >> 23) & 0xFFu) - 127;
+    uint mant = bits & 0x7FFFFFu;
+    if (exp > 15) return sign | 0x7C00u;
+    if (exp < -14) return sign;
+    return sign | (uint(exp + 15) << 10) | (mant >> 13);
+}
+
+float random_entry(int dim_idx, int sketch_idx) {
+    uint h = uint(dim_idx) * 2654435761u + uint(sketch_idx) * 340573321u;
+    h ^= h >> 16;
+    h *= 0x45d9f3bu;
+    h ^= h >> 16;
+    return ((h & 1u) != 0u) ? 1.0 : -1.0;
+}
+
+/* ============================================================
+ * Shared memory
+ * ============================================================ */
+
+shared float s_keys[TQ_BK];
+shared float s_theta[TQ_PAIRS];
+shared float s_radius[TQ_PAIRS];
+shared float s_params[4];
+shared float s_residual[TQ_BK];
+shared uint  s_packed_u32[TQ_PAIRS / 4];
+shared float s_reduce[8];
+
+/* ============================================================
+ * Workgroup reductions
+ * ============================================================ */
+
+float workgroupReduceMin(float val) {
+    float sg = subgroupMin(val);
+    if (subgroupElect()) s_reduce[gl_SubgroupID] = sg;
+    barrier();
+    if (gl_LocalInvocationID.x < gl_NumSubgroups) val = s_reduce[gl_LocalInvocationID.x];
+    else val = 1e30;
+    barrier();
+    if (gl_SubgroupID == 0) val = subgroupMin(val);
+    return val;
+}
+
+float workgroupReduceMax(float val) {
+    float sg = subgroupMax(val);
+    if (subgroupElect()) s_reduce[gl_SubgroupID] = sg;
+    barrier();
+    if (gl_LocalInvocationID.x < gl_NumSubgroups) val = s_reduce[gl_LocalInvocationID.x];
+    else val = -1e30;
+    barrier();
+    if (gl_SubgroupID == 0) val = subgroupMax(val);
+    return val;
+}
+
+float workgroupReduceAdd(float val) {
+    float sg = subgroupAdd(val);
+    if (subgroupElect()) s_reduce[gl_SubgroupID] = sg;
+    barrier();
+    if (gl_LocalInvocationID.x < gl_NumSubgroups) val = s_reduce[gl_LocalInvocationID.x];
+    else val = 0.0;
+    barrier();
+    if (gl_SubgroupID == 0) val = subgroupAdd(val);
+    return val;
+}
+
+/* ============================================================
+ * Main: TurboQuant quantize
+ * ============================================================ */
+
+void main() {
+    uint block_idx = gl_WorkGroupID.x;
+    uint tid       = gl_LocalInvocationID.x;
+    uint base      = block_idx * TQ_BK;
+
+    /* --- Load key block --- */
+    if (tid < TQ_PAIRS) {
+        uint g0 = base + 2u * tid;
+        uint g1 = base + 2u * tid + 1u;
+        s_keys[2u * tid]      = (g0 < uint(n)) ? keys[g0] : 0.0;
+        s_keys[2u * tid + 1u] = (g1 < uint(n)) ? keys[g1] : 0.0;
+    }
+    barrier();
+
+    /* === Stage 1: PolarQuant === */
+
+    float theta  = 0.0;
+    float radius = 0.0;
+    if (tid < TQ_PAIRS) {
+        float x = s_keys[2u * tid];
+        float y = s_keys[2u * tid + 1u];
+        radius = sqrt(x * x + y * y);
+        theta  = atan(y, x);
+        if (theta < 0.0) theta += float(2.0 * PI);
+        s_theta[tid]  = theta;
+        s_radius[tid] = radius;
+    }
+    barrier();
+
+    /* Min/max reduction */
+    float tmin_v = workgroupReduceMin((tid < TQ_PAIRS) ? theta  :  1e30);
+    float rmin_v = workgroupReduceMin((tid < TQ_PAIRS) ? radius :  1e30);
+    float tmax_v = workgroupReduceMax((tid < TQ_PAIRS) ? theta  : -1e30);
+    float rmax_v = workgroupReduceMax((tid < TQ_PAIRS) ? radius : -1e30);
+
+    if (tid == 0u) {
+        s_params[0] = tmin_v; s_params[1] = tmax_v;
+        s_params[2] = rmin_v; s_params[3] = rmax_v;
+    }
+    barrier();
+
+    float tmin = s_params[0], tmax = s_params[1];
+    float rmin = s_params[2], rmax = s_params[3];
+    float trange = max(tmax - tmin, 1e-8);
+    float rrange = max(rmax - rmin, 1e-8);
+    float tscale = trange / 4.0;
+    float rscale = rrange / 4.0;
+
+    /* Output layout: polar(18 u32) + qjl(10 u32) = 28 u32 per block */
+    uint polar_base = block_idx * 28u;
+    uint qjl_base   = polar_base + 18u;
+
+    /* Write polar header */
+    if (tid == 0u) {
+        out_data[polar_base + 0u] = float_to_half(rscale) | (float_to_half(rmin) << 16u);
+        out_data[polar_base + 1u] = float_to_half(tscale) | (float_to_half(tmin) << 16u);
+    }
+
+    /* Clear packed staging */
+    if (tid < TQ_PAIRS / 4u) {
+        s_packed_u32[tid] = 0u;
+    }
+    barrier();
+
+    /* Quantize and pack */
+    if (tid < TQ_PAIRS) {
+        float t = s_theta[tid];
+        float r = s_radius[tid];
+        int tq = clamp(int(floor((t - tmin) / tscale)), 0, 3);
+        int rq = clamp(int(floor((r - rmin) / rscale)), 0, 3);
+        uint packed = uint((rq << 2) | tq);
+
+        uint byte_idx    = tid / 2u;
+        uint u32_idx     = byte_idx / 4u;
+        uint byte_in_u32 = byte_idx % 4u;
+        uint shift       = byte_in_u32 * 8u + ((tid % 2u) * 4u);
+        atomicOr(s_packed_u32[u32_idx], packed << shift);
+    }
+    barrier();
+
+    /* Store packed indices */
+    if (tid < TQ_PAIRS / 4u) {
+        out_data[polar_base + 2u + tid] = s_packed_u32[tid];
+    }
+
+    /* --- Compute reconstruction and residual --- */
+    if (tid < TQ_PAIRS) {
+        uint byte_idx    = tid / 2u;
+        uint u32_idx     = byte_idx / 4u;
+        uint byte_in_u32 = byte_idx % 4u;
+        uint shift       = byte_in_u32 * 8u + ((tid % 2u) * 4u);
+        uint pk = (s_packed_u32[u32_idx] >> shift) & 0xFu;
+        int tqi = int(pk & 0x3u);
+        int rqi = int((pk >> 2) & 0x3u);
+
+        float recon_theta  = tmin + (float(tqi) + 0.5) * tscale;
+        float recon_radius = rmin + (float(rqi) + 0.5) * rscale;
+        float recon_x = recon_radius * cos(recon_theta);
+        float recon_y = recon_radius * sin(recon_theta);
+
+        s_residual[2u * tid]      = s_keys[2u * tid]      - recon_x;
+        s_residual[2u * tid + 1u] = s_keys[2u * tid + 1u] - recon_y;
+    }
+    barrier();
+
+    /* === Stage 2: QJL sign hash of residual === */
+
+    int dim = min(int(TQ_BK), head_dim);
+
+    /* Residual norm and outliers (thread 0) */
+    if (tid == 0u) {
+        float norm_sq = 0.0;
+        for (int d = 0; d < dim; d++) {
+            norm_sq += s_residual[d] * s_residual[d];
+        }
+        uint norm_h = float_to_half(sqrt(norm_sq));
+
+        /* Outlier detection */
+        float abs_max_vals[TQ_OUTLIERS];
+        uint  abs_max_idx[TQ_OUTLIERS];
+        for (int o = 0; o < TQ_OUTLIERS; o++) {
+            abs_max_vals[o] = -1.0;
+            abs_max_idx[o]  = 0u;
+        }
+
+        for (int d = 0; d < dim; d++) {
+            float av = abs(s_residual[d]);
+            for (int o = 0; o < TQ_OUTLIERS; o++) {
+                if (av > abs_max_vals[o]) {
+                    for (int j = TQ_OUTLIERS - 1; j > o; j--) {
+                        abs_max_vals[j] = abs_max_vals[j - 1];
+                        abs_max_idx[j]  = abs_max_idx[j - 1];
+                    }
+                    abs_max_vals[o] = av;
+                    abs_max_idx[o]  = uint(d);
+                    break;
+                }
+            }
+        }
+
+        float outlier_norm_sq = 0.0;
+        uint packed_outliers = 0u;
+        for (int o = 0; o < TQ_OUTLIERS; o++) {
+            packed_outliers |= (abs_max_idx[o] & 0xFFu) << (o * 8u);
+            float v = s_residual[abs_max_idx[o]];
+            outlier_norm_sq += v * v;
+        }
+        uint outlier_norm_h = float_to_half(sqrt(outlier_norm_sq));
+
+        out_data[qjl_base + 0u] = norm_h | (outlier_norm_h << 16u);
+        out_data[qjl_base + 9u] = packed_outliers;
+    }
+
+    /* QJL hash: each thread handles subset of sketch dimensions */
+    uint sketches_per_thread = (TQ_SKETCH_DIM + TQ_PAIRS - 1u) / TQ_PAIRS;
+    if (tid < TQ_PAIRS) {
+        for (uint si = 0u; si < sketches_per_thread; si++) {
+            uint sketch_idx = tid * sketches_per_thread + si;
+            if (sketch_idx >= TQ_SKETCH_DIM) break;
+
+            float proj = 0.0;
+            for (int d = 0; d < dim; d++) {
+                proj += s_residual[d] * random_entry(d, int(sketch_idx));
+            }
+
+            if (proj > 0.0) {
+                uint byte_idx    = sketch_idx / 8u;
+                uint bit_pos     = sketch_idx % 8u;
+                uint u32_idx     = byte_idx / 4u;
+                uint byte_in_u32 = byte_idx % 4u;
+                uint shift       = byte_in_u32 * 8u + bit_pos;
+                atomicOr(out_data[qjl_base + 1u + u32_idx], 1u << shift);
+            }
+        }
+    }
+}
