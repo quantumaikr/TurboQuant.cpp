@@ -40,7 +40,7 @@ ctest --test-dir build   # 31/31 should pass
 
 | Model | Params | Format | Speed (6T) | KV Verified |
 |-------|--------|--------|------------|-------------|
-| **Qwen3.5-35B-A3B** | 35B (3B active) | GGUF IQ2_XXS | 0.4 tok/s | 1-bit K ✓ |
+| **Qwen3.5-35B-A3B** | 35B (3B active) | GGUF IQ2_XXS | 3.0 tok/s | 1-bit K ✓ (byte-identical) |
 | **Gemma 3 4B** | 4B | TQM | 20.2 tok/s | PPL +0.03%, all KV types ✓ |
 | **Qwen3.5-0.8B** | 752M | TQM/GGUF | 80.1 tok/s | all KV types ✓ |
 | **Gemma 3 270M** | 270M | TQM | 176 tok/s | all KV types ✓ |
@@ -138,7 +138,13 @@ Every NEON path verified against scalar reference (`test_neon_scalar`). A Q4 deq
 147 ns per 128-dim vector (NEON-vectorized). 1-bit attention: 1.2 ns/key. Compared to matmul (~1ms/layer), negligible. See `bench/bench_kv_overhead.cpp`.
 
 **Q: "Only small models?"**
-The engine and KV compression are architecture-independent. Verified from 270M to 4B with perplexity measurement. Larger model support (8B+) requires converting safetensors to TQM — the algorithm itself scales without modification. GGUF Q8_0 loading works; K-quant/IQ2 dequantization is being stabilized.
+No. Verified from 270M to 35B. Qwen3.5-35B-A3B MoE (IQ2_XXS, 9.9GB) loads and runs on a 16GB Mac Air M3 with RSS ~4.7GB via mmap demand-paging. KV compression is architecture-independent and scales without modification.
+
+**Q: "AMD GPU support?"**
+Yes. Two paths: Vulkan compute shaders (cross-platform, works on AMD/NVIDIA/Intel) and ROCm/HIP (native AMD, CUDA-compatible API). Build with `-DTQ_BUILD_VULKAN=ON` or `-DTQ_BUILD_ROCM=ON`.
+
+**Q: "What GGUF formats work?"**
+Q8_0 produces coherent output (verified). Q5_K/Q6_K work for non-recurrent layers. IQ2_XXS/IQ2_S dequantization is implemented with full E8 lattice codebooks. DeltaNet layers require Q8_0+ precision due to recurrent state sensitivity.
 
 ---
 
