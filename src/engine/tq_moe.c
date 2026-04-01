@@ -15,6 +15,74 @@
 #include <stdio.h>
 #include <stdint.h>
 
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+#include <arm_neon.h>
+#define TQ_MOE_HAS_NEON 1
+#else
+#define TQ_MOE_HAS_NEON 0
+#endif
+
+/* ============================================================
+ * Fast SiLU (Swish) approximation
+ *
+ * silu(x) = x / (1 + exp(-x))
+ *
+ * Uses Schraudolph's fast exp approximation (~1% accuracy for |x|<10).
+ * Called 270 times/token with expert_dim=512, so ~138K calls saved
+ * vs. standard expf per token.
+ * ============================================================ */
+static inline float fast_expf_moe(float x) {
+    if (x < -20.0f) return 0.0f;
+    if (x > 20.0f) return expf(x);
+    union { float f; int32_t i; } v;
+    v.i = (int32_t)(12102203.0f * x + 1065353216.0f);
+    return v.f;
+}
+
+/* Vectorized SwiGLU: hb[i] = silu(hb[i]) * hb2[i] */
+static void swiglu_fused(float* restrict hb, const float* restrict hb2, int n) {
+#if TQ_MOE_HAS_NEON
+    int i = 0;
+    float32x4_t vone = vdupq_n_f32(1.0f);
+    for (; i + 7 < n; i += 8) {
+        /* Process 8 elements: 2x float32x4_t */
+        float32x4_t vg0 = vld1q_f32(hb + i);
+        float32x4_t vg1 = vld1q_f32(hb + i + 4);
+        float32x4_t vu0 = vld1q_f32(hb2 + i);
+        float32x4_t vu1 = vld1q_f32(hb2 + i + 4);
+
+        /* Fast sigmoid via Schraudolph: exp(-x) approx */
+        float neg0[4], neg1[4];
+        vst1q_f32(neg0, vnegq_f32(vg0));
+        vst1q_f32(neg1, vnegq_f32(vg1));
+        float32x4_t vexp0 = {fast_expf_moe(neg0[0]), fast_expf_moe(neg0[1]),
+                              fast_expf_moe(neg0[2]), fast_expf_moe(neg0[3])};
+        float32x4_t vexp1 = {fast_expf_moe(neg1[0]), fast_expf_moe(neg1[1]),
+                              fast_expf_moe(neg1[2]), fast_expf_moe(neg1[3])};
+        /* sigmoid = 1 / (1 + exp(-x)) */
+        float32x4_t vsig0 = vrecpeq_f32(vaddq_f32(vone, vexp0));
+        vsig0 = vmulq_f32(vsig0, vrecpsq_f32(vaddq_f32(vone, vexp0), vsig0));
+        float32x4_t vsig1 = vrecpeq_f32(vaddq_f32(vone, vexp1));
+        vsig1 = vmulq_f32(vsig1, vrecpsq_f32(vaddq_f32(vone, vexp1), vsig1));
+        /* silu = x * sigmoid(x) */
+        float32x4_t vsilu0 = vmulq_f32(vg0, vsig0);
+        float32x4_t vsilu1 = vmulq_f32(vg1, vsig1);
+        /* silu * up */
+        vst1q_f32(hb + i, vmulq_f32(vsilu0, vu0));
+        vst1q_f32(hb + i + 4, vmulq_f32(vsilu1, vu1));
+    }
+    for (; i < n; i++) {
+        float g = hb[i];
+        hb[i] = (g / (1.0f + fast_expf_moe(-g))) * hb2[i];
+    }
+#else
+    for (int i = 0; i < n; i++) {
+        float g = hb[i];
+        hb[i] = (g / (1.0f + fast_expf_moe(-g))) * hb2[i];
+    }
+#endif
+}
+
 #ifndef _WIN32
 #include <sys/mman.h>
 #endif
@@ -374,10 +442,7 @@ void tq_moe_forward(const tq_moe_layer_t* layer,
                              expert_dim, hidden_dim);
 
                 /* SwiGLU activation: hb = silu(gate) * up */
-                for (int i = 0; i < expert_dim; i++) {
-                    float g = state->expert_hb[i];
-                    state->expert_hb[i] = (g / (1.0f + expf(-g))) * state->expert_hb2[i];
-                }
+                swiglu_fused(state->expert_hb, state->expert_hb2, expert_dim);
 
                 tq_matmul_q4(state->expert_out, state->expert_hb,
                              ce->down_q4_qs, ce->down_q4_scales,
@@ -401,10 +466,7 @@ void tq_moe_forward(const tq_moe_layer_t* layer,
                          expert_dim, hidden_dim);
 
             /* SwiGLU activation: hb = silu(gate) * up */
-            for (int i = 0; i < expert_dim; i++) {
-                float g = state->expert_hb[i];
-                state->expert_hb[i] = (g / (1.0f + expf(-g))) * state->expert_hb2[i];
-            }
+            swiglu_fused(state->expert_hb, state->expert_hb2, expert_dim);
 
             tq_matmul_q4(state->expert_out, state->expert_hb,
                          exp->down_q4_qs, exp->down_q4_scales,
@@ -427,10 +489,7 @@ void tq_moe_forward(const tq_moe_layer_t* layer,
             tq_metal_batch_flush_if_available();
 
             /* SwiGLU activation: hb = silu(gate) * up */
-            for (int i = 0; i < expert_dim; i++) {
-                float g = state->expert_hb[i];
-                state->expert_hb[i] = (g / (1.0f + expf(-g))) * state->expert_hb2[i];
-            }
+            swiglu_fused(state->expert_hb, state->expert_hb2, expert_dim);
 
             /* down = hb @ w_down^T   -> [hidden_dim] */
             tq_matmul_gguf(state->expert_out, state->expert_hb,
@@ -454,7 +513,7 @@ void tq_moe_forward(const tq_moe_layer_t* layer,
             float dot = 0.0f;
             for (int j = 0; j < hidden_dim; j++)
                 dot += input[j] * layer->shared_gate[j];
-            shared_gate_val = 1.0f / (1.0f + expf(-dot)); /* sigmoid */
+            shared_gate_val = 1.0f / (1.0f + fast_expf_moe(-dot)); /* sigmoid */
         }
 
         if (layer->shared_expert.q4_converted) {
@@ -467,10 +526,7 @@ void tq_moe_forward(const tq_moe_layer_t* layer,
                          layer->shared_expert.up_q4_qs, layer->shared_expert.up_q4_scales,
                          shared_dim, hidden_dim);
 
-            for (int i = 0; i < shared_dim; i++) {
-                float g = state->expert_hb[i];
-                state->expert_hb[i] = (g / (1.0f + expf(-g))) * state->expert_hb2[i];
-            }
+            swiglu_fused(state->expert_hb, state->expert_hb2, shared_dim);
 
             tq_matmul_q4(state->expert_out, state->expert_hb,
                          layer->shared_expert.down_q4_qs, layer->shared_expert.down_q4_scales,
@@ -489,10 +545,7 @@ void tq_moe_forward(const tq_moe_layer_t* layer,
 
             tq_metal_batch_flush_if_available();
 
-            for (int i = 0; i < shared_dim; i++) {
-                float g = state->expert_hb[i];
-                state->expert_hb[i] = (g / (1.0f + expf(-g))) * state->expert_hb2[i];
-            }
+            swiglu_fused(state->expert_hb, state->expert_hb2, shared_dim);
 
             tq_matmul_gguf(state->expert_out, state->expert_hb,
                            layer->shared_expert.w_down, layer->shared_expert.down_type,

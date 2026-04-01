@@ -1208,8 +1208,7 @@ static float fused_dot_iq2_xxs_neon(const void* row, const float* x, int n) {
                 const uint8_t signs = ksigns_iq2xs[(aux32[1] >> (7 * l)) & 127];
                 const float* xp = xb + l * 8;
 
-                /* Dequant 8 values and dot with input, all in NEON registers */
-                /* Load 8 grid bytes, expand to float, apply signs, dot with x */
+                /* Load 8 grid bytes, expand to float */
                 uint8x8_t vgrid = vld1_u8(grid);
                 int16x8_t vgrid16 = vreinterpretq_s16_u16(vmovl_u8(vgrid));
                 int32x4_t vg_lo = vmovl_s16(vget_low_s16(vgrid16));
@@ -1217,17 +1216,22 @@ static float fused_dot_iq2_xxs_neon(const void* row, const float* x, int n) {
                 float32x4_t vf_lo = vcvtq_f32_s32(vg_lo);
                 float32x4_t vf_hi = vcvtq_f32_s32(vg_hi);
 
-                /* Apply signs: if bit set, negate.
-                 * Build sign multiplier: +1.0 or -1.0 */
-                float sign_mul[8];
-                for (int j = 0; j < 8; j++) {
-                    sign_mul[j] = (signs & kmask_iq2xs[j]) ? -1.0f : 1.0f;
-                }
-                float32x4_t vs_lo = vld1q_f32(sign_mul);
-                float32x4_t vs_hi = vld1q_f32(sign_mul + 4);
-
-                vf_lo = vmulq_f32(vf_lo, vs_lo);
-                vf_hi = vmulq_f32(vf_hi, vs_hi);
+                /* Apply signs via float bit XOR: set sign bit where signs bit is 1.
+                 * Expand each sign bit to a 32-bit mask with only the float sign bit set. */
+                uint32x4_t sign_lo = {
+                    (uint32_t)((signs >> 0) & 1) << 31,
+                    (uint32_t)((signs >> 1) & 1) << 31,
+                    (uint32_t)((signs >> 2) & 1) << 31,
+                    (uint32_t)((signs >> 3) & 1) << 31
+                };
+                uint32x4_t sign_hi = {
+                    (uint32_t)((signs >> 4) & 1) << 31,
+                    (uint32_t)((signs >> 5) & 1) << 31,
+                    (uint32_t)((signs >> 6) & 1) << 31,
+                    (uint32_t)((signs >> 7) & 1) << 31
+                };
+                vf_lo = vreinterpretq_f32_u32(veorq_u32(vreinterpretq_u32_f32(vf_lo), sign_lo));
+                vf_hi = vreinterpretq_f32_u32(veorq_u32(vreinterpretq_u32_f32(vf_hi), sign_hi));
 
                 /* Dot with input */
                 float32x4_t vx_lo = vld1q_f32(xp);
@@ -1675,6 +1679,10 @@ void tq_matmul_gguf(float* out, const float* x,
 
     /* ---- Multi-threaded dispatch ---- */
     int n_threads = tq_get_threads();
+
+    /* Note: single-thread for small matmuls was tested and was SLOWER
+     * (538ms vs 251ms MoE). Multi-threading benefits IQ2_XXS fused dot
+     * even at out_dim=512. Keep multi-threaded. */
 
     /* For small matrices or single-thread config, skip thread overhead */
     if (n_threads <= 1 || out_dim < n_threads) {
