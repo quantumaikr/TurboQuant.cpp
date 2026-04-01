@@ -2699,14 +2699,36 @@ tq_model_t* tq_load_gguf(const char* path) {
             t = find_gguf_tensor(gguf, tname);
             if (t) { layer->gguf_delta_b = t->data; layer->gguf_delta_b_type = t->type; }
 
-            /* Large DeltaNet projections: GGUF on-the-fly dequant */
+            /* Large DeltaNet projections: dequant to FP32 for recurrent
+             * state precision.  Q5_K (5-bit) introduces too much error in
+             * the recurrent state that accumulates across time steps.
+             * ~24 MB/layer × 30 layers ≈ 720 MB — fits in 16 GB. */
             snprintf(tname, sizeof(tname), "blk.%d.attn_qkv.weight", l);
             t = find_gguf_tensor(gguf, tname);
-            if (t) { layer->gguf_delta_qkv = t->data; layer->gguf_delta_qkv_type = t->type; }
+            if (t) {
+                if (t->type == TQ_GGML_TYPE_Q5_K || t->type == TQ_GGML_TYPE_IQ2_XXS ||
+                    t->type == TQ_GGML_TYPE_IQ3_XXS || t->type == TQ_GGML_TYPE_IQ4_XS) {
+                    /* Low-precision: dequant to FP32 for recurrent accuracy */
+                    layer->delta_in_proj_qkv = dequant_tensor_fp32(t);
+                    fprintf(stderr, "tq_load_gguf: layer %d attn_qkv dequant to FP32 (was type %d)\n", l, t->type);
+                } else {
+                    layer->gguf_delta_qkv = t->data;
+                    layer->gguf_delta_qkv_type = t->type;
+                }
+            }
 
             snprintf(tname, sizeof(tname), "blk.%d.attn_gate.weight", l);
             t = find_gguf_tensor(gguf, tname);
-            if (t) { layer->gguf_delta_z = t->data; layer->gguf_delta_z_type = t->type; }
+            if (t) {
+                if (t->type == TQ_GGML_TYPE_Q5_K || t->type == TQ_GGML_TYPE_IQ2_XXS ||
+                    t->type == TQ_GGML_TYPE_IQ3_XXS || t->type == TQ_GGML_TYPE_IQ4_XS) {
+                    layer->delta_in_proj_z = dequant_tensor_fp32(t);
+                    fprintf(stderr, "tq_load_gguf: layer %d attn_gate dequant to FP32 (was type %d)\n", l, t->type);
+                } else {
+                    layer->gguf_delta_z = t->data;
+                    layer->gguf_delta_z_type = t->type;
+                }
+            }
 
             snprintf(tname, sizeof(tname), "blk.%d.ssm_norm.weight", l);
             t = find_gguf_tensor(gguf, tname);

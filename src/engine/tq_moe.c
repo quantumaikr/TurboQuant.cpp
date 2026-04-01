@@ -79,32 +79,55 @@ void tq_moe_route(const float* hidden, const float* router_weight,
         logits[e] = sum;
     }
 
-    /* Step 2: Top-K selection via partial sort (K passes, K << num_experts) */
+    /* Step 2: Top-K selection via partial sort (K passes, K << num_experts)
+     *
+     * Use >= for tie-breaking so that when multiple experts have equal logits,
+     * the first unused one always wins. Also guard against NaN logits (NaN
+     * comparisons return false, so without >= the loop could leave best == -1).
+     */
     uint8_t* used = (uint8_t*)calloc((size_t)num_experts, sizeof(uint8_t));
     if (!used) { free(logits); return; }
 
+    int n_valid = 0;
     for (int k = 0; k < num_active; k++) {
         int best = -1;
-        float best_val = -1e30f;
+        float best_val = -HUGE_VALF;
         for (int e = 0; e < num_experts; e++) {
-            if (!used[e] && logits[e] > best_val) {
+            if (!used[e] && logits[e] >= best_val) {
                 best_val = logits[e];
                 best = e;
             }
         }
         out_expert_ids[k] = best;
-        if (best >= 0) used[best] = 1;
+        if (best >= 0) {
+            used[best] = 1;
+            n_valid++;
+        } else {
+            out_expert_weights[k] = 0.0f;
+        }
     }
 
     /* Step 3: Softmax over selected experts (renormalize top-K) */
-    float max_val = -1e30f;
+    if (n_valid == 0) {
+        /* All experts invalid (NaN logits or num_experts=0) — uniform fallback */
+        for (int k = 0; k < num_active; k++) {
+            out_expert_weights[k] = 0.0f;
+        }
+        free(used);
+        free(logits);
+        return;
+    }
+
+    float max_val = -HUGE_VALF;
     for (int k = 0; k < num_active; k++) {
+        if (out_expert_ids[k] < 0) continue;
         float v = logits[out_expert_ids[k]];
         if (v > max_val) max_val = v;
     }
 
     float sum_exp = 0.0f;
     for (int k = 0; k < num_active; k++) {
+        if (out_expert_ids[k] < 0) { out_expert_weights[k] = 0.0f; continue; }
         float e = expf(logits[out_expert_ids[k]] - max_val);
         out_expert_weights[k] = e;
         sum_exp += e;
