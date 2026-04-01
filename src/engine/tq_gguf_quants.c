@@ -1607,6 +1607,17 @@ void tq_matmul_gguf(float* out, const float* x,
                     const void* weight, tq_ggml_dtype weight_type,
                     int out_dim, int in_dim)
 {
+#ifdef TQ_HAS_METAL
+    /* Try GPU-accelerated path first (IQ2_XXS, Q8_0, Q4_K) */
+    extern int tq_metal_available(void);
+    extern int tq_metal_matmul_gguf(float* out, const float* x, const void* weight,
+                                     tq_ggml_dtype weight_type, int out_dim, int in_dim);
+    if (tq_metal_available() &&
+        tq_metal_matmul_gguf(out, x, weight, weight_type, out_dim, in_dim) == 0) {
+        return; /* GPU handled it */
+    }
+#endif
+
     const size_t block_bytes = tq_ggml_type_size(weight_type);
     const int    block_elems = tq_ggml_type_blck(weight_type);
 

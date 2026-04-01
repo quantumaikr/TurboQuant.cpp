@@ -40,6 +40,81 @@ set_target_properties(turboquant_shared PROPERTIES
     OUTPUT_NAME turboquant
     POSITION_INDEPENDENT_CODE ON)
 
+# Metal backend (Apple Silicon GPU)
+if(TQ_BUILD_METAL AND APPLE)
+    enable_language(OBJC)
+
+    # Compile .metal shaders to .metallib (requires Xcode metal compiler)
+    execute_process(
+        COMMAND xcrun --find metal
+        OUTPUT_VARIABLE TQ_METAL_COMPILER
+        ERROR_QUIET
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE TQ_METAL_COMPILER_FOUND
+    )
+
+    file(GLOB TQ_METAL_SHADERS src/backend/metal/*.metal)
+    set(TQ_METALLIB "${CMAKE_BINARY_DIR}/turboquant.metallib")
+
+    if(TQ_METAL_COMPILER_FOUND EQUAL 0 AND TQ_METAL_COMPILER)
+        # Build individual .air files then link into .metallib
+        set(TQ_METAL_AIR_FILES "")
+        foreach(shader ${TQ_METAL_SHADERS})
+            get_filename_component(shader_name ${shader} NAME_WE)
+            set(air_file "${CMAKE_BINARY_DIR}/${shader_name}.air")
+            add_custom_command(
+                OUTPUT ${air_file}
+                COMMAND xcrun -sdk macosx metal -c ${shader} -o ${air_file}
+                        -std=metal3.0 -O2
+                DEPENDS ${shader}
+                COMMENT "Compiling Metal shader: ${shader_name}.metal"
+            )
+            list(APPEND TQ_METAL_AIR_FILES ${air_file})
+        endforeach()
+
+        add_custom_command(
+            OUTPUT ${TQ_METALLIB}
+            COMMAND xcrun -sdk macosx metallib ${TQ_METAL_AIR_FILES} -o ${TQ_METALLIB}
+            DEPENDS ${TQ_METAL_AIR_FILES}
+            COMMENT "Linking Metal library: turboquant.metallib"
+        )
+        add_custom_target(turboquant_metallib ALL DEPENDS ${TQ_METALLIB})
+    else()
+        message(WARNING "TurboQuant: Metal shader compiler not found (need Xcode). "
+                        "Shaders will not be compiled — runtime .metallib loading will fail. "
+                        "Obj-C dispatch code will still be built.")
+        add_custom_target(turboquant_metallib)  # no-op target
+    endif()
+
+    # Compile Objective-C dispatch files
+    file(GLOB TQ_METAL_OBJ_SOURCES src/backend/metal/*.m)
+    target_sources(turboquant PRIVATE ${TQ_METAL_OBJ_SOURCES})
+    target_sources(turboquant_shared PRIVATE ${TQ_METAL_OBJ_SOURCES})
+
+    # Set Objective-C ARC for .m files
+    set_source_files_properties(${TQ_METAL_OBJ_SOURCES} PROPERTIES
+        COMPILE_FLAGS "-fobjc-arc"
+    )
+
+    # Link Metal and Foundation frameworks
+    target_link_libraries(turboquant PRIVATE
+        "-framework Metal" "-framework Foundation"
+    )
+    target_link_libraries(turboquant_shared PRIVATE
+        "-framework Metal" "-framework Foundation"
+    )
+
+    # Define TQ_HAS_METAL for conditional compilation
+    target_compile_definitions(turboquant PRIVATE TQ_HAS_METAL=1)
+    target_compile_definitions(turboquant_shared PRIVATE TQ_HAS_METAL=1)
+
+    # Ensure metallib is built before the library
+    add_dependencies(turboquant turboquant_metallib)
+    add_dependencies(turboquant_shared turboquant_metallib)
+
+    message(STATUS "TurboQuant: Metal backend enabled — shaders: ${TQ_METALLIB}")
+endif()
+
 # Compiler warnings
 target_compile_options(turboquant PRIVATE
     -Wall -Wextra -Wpedantic -Wno-unused-parameter
