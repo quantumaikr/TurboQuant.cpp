@@ -125,21 +125,6 @@ Multi-architecture: Qwen3.5 (DeltaNet hybrid) + Gemma 3 (sliding window). Gemma 
 
 ---
 
-## The Journey
-
-```
-Day 1:  Empty → KV compression library → inference engine → 82 tok/s
-Day 2:  Gemma 3 (270M+4B) → TurboQuant algorithm → 1-bit K → V quantization
-
-Lines of C:      10,000+
-Test suites:     23
-Models:          3 (Gemma 4B, Qwen 0.8B, Gemma 270M)
-Best K+V:        7.1x total compression (1-bit K + Q2 V)
-32K savings:     3.7 GB vs FP16
-```
-
----
-
 ## Benchmarks & Validation
 
 ### Ablation: Does TurboQuant Actually Help?
