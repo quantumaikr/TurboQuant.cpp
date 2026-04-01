@@ -61,6 +61,8 @@ extern void tq_uniform_4b_dequantize_avx2(const void* src, float* dst, int n);
 extern void tq_polar_quantize_avx2(const float* src, void* dst, int n);
 extern void tq_polar_dequantize_avx2(const void* src, float* dst, int n);
 extern void tq_qjl_quantize_avx2(const float* src, void* dst, int n);
+extern void tq_qjl_attention_avx2(const float* q, const void* kv,
+                                   float* s, int seq, int hd);
 #endif
 
 /* ================================================================
@@ -127,7 +129,8 @@ void tq_cpu_dispatch_init(void) {
     tq_dispatch_table[TQ_TYPE_POLAR_4B].quantize   = tq_polar_quantize_avx2;
     tq_dispatch_table[TQ_TYPE_POLAR_4B].dequantize = tq_polar_dequantize_avx2;
 
-    tq_dispatch_table[TQ_TYPE_QJL_1B].quantize = tq_qjl_quantize_avx2;
+    tq_dispatch_table[TQ_TYPE_QJL_1B].quantize  = tq_qjl_quantize_avx2;
+    tq_dispatch_table[TQ_TYPE_QJL_1B].attention = tq_qjl_attention_avx2;
 #elif defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
     /* Runtime detection for x86 when not compiled with -mavx2 */
     /* Only swap if AVX2 is available at runtime.
