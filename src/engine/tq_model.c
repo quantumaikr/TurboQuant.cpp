@@ -1915,6 +1915,8 @@ static size_t calc_q4_buffer_size(const tq_model_t* model) {
     int dim = c->hidden_dim;
     int q_dim = c->n_heads * c->head_dim;
     int kv_dim = c->n_kv_heads * c->head_dim;
+    int full_kv_dim = (c->full_n_kv_heads > 0 && c->full_head_dim > 0)
+        ? c->full_n_kv_heads * c->full_head_dim : kv_dim;
     int inter = c->intermediate_dim;
     int qg_dim = c->attn_output_gate ? q_dim * 2 : q_dim;
 
@@ -1926,6 +1928,7 @@ static size_t calc_q4_buffer_size(const tq_model_t* model) {
 
     for (int l = 0; l < c->n_layers; l++) {
         const tq_layer_weights_t* layer = &model->layers[l];
+        int lkv = (model->layer_is_sliding && !model->layer_is_sliding[l]) ? full_kv_dim : kv_dim;
 
         /* Self-attention weights */
         if (layer->wq) {
@@ -1935,13 +1938,13 @@ static size_t calc_q4_buffer_size(const tq_model_t* model) {
         }
         if (layer->wk) {
             int nb = (dim + 31) / 32;
-            total += (size_t)kv_dim * nb * 16;
-            total += (size_t)kv_dim * nb * 4;
+            total += (size_t)lkv * nb * 16;
+            total += (size_t)lkv * nb * 4;
         }
         if (layer->wv) {
             int nb = (dim + 31) / 32;
-            total += (size_t)kv_dim * nb * 16;
-            total += (size_t)kv_dim * nb * 4;
+            total += (size_t)lkv * nb * 16;
+            total += (size_t)lkv * nb * 4;
         }
         if (layer->wo) {
             int nb = (q_dim + 31) / 32;
@@ -2003,6 +2006,8 @@ void tq_quantize_weights_q4(tq_model_t* model) {
     int dim = c->hidden_dim;
     int q_dim = c->n_heads * c->head_dim;
     int kv_dim = c->n_kv_heads * c->head_dim;
+    int full_kv_dim = (c->full_n_kv_heads > 0 && c->full_head_dim > 0)
+        ? c->full_n_kv_heads * c->full_head_dim : kv_dim;
     int inter = c->intermediate_dim;
     int qg_dim = c->attn_output_gate ? q_dim * 2 : q_dim;
 
@@ -2023,17 +2028,18 @@ void tq_quantize_weights_q4(tq_model_t* model) {
 
     for (int l = 0; l < c->n_layers; l++) {
         tq_layer_weights_t* layer = &model->layers[l];
+        int lkv = (model->layer_is_sliding && !model->layer_is_sliding[l]) ? full_kv_dim : kv_dim;
 
         /* Self-attention */
         quantize_matrix_q4(layer->wq, qg_dim, dim,
                             &layer->wq_q4, &layer->wq_q4s, &buf, &used);
         if (layer->wq_q4) layer->wq = NULL;
 
-        quantize_matrix_q4(layer->wk, kv_dim, dim,
+        quantize_matrix_q4(layer->wk, lkv, dim,
                             &layer->wk_q4, &layer->wk_q4s, &buf, &used);
         if (layer->wk_q4) layer->wk = NULL;
 
-        quantize_matrix_q4(layer->wv, kv_dim, dim,
+        quantize_matrix_q4(layer->wv, lkv, dim,
                             &layer->wv_q4, &layer->wv_q4s, &buf, &used);
         if (layer->wv_q4) layer->wv = NULL;
 
@@ -3246,34 +3252,59 @@ tq_model_t* tq_load_gguf(const char* path) {
     }
 
     /* Set up layer_is_sliding for Gemma hybrid attention.
-     * Detect from Q tensor shape: sliding layers have smaller Q output dim. */
+     * Detect from K tensor shape: sliding layers have LARGER kv_dim (more kv_heads),
+     * full layers have SMALLER kv_dim (fewer kv_heads, larger head_dim).
+     * Q tensor shapes can be identical for both types, so K is the reliable signal. */
     if (c->sliding_window > 0 && c->model_type == 1) {
         model->layer_is_sliding = (int*)calloc((size_t)c->n_layers, sizeof(int));
         if (model->layer_is_sliding) {
-            /* Find the smallest Q output dim (sliding) */
-            int min_q = 999999;
+            /* Find the largest K output dim (sliding layers have more kv_heads) */
+            int max_k = 0;
             for (int l = 0; l < c->n_layers; l++) {
                 char tname[128];
-                snprintf(tname, sizeof(tname), "blk.%d.attn_q.weight", l);
-                const tq_gguf_tensor_t* qt = tq_gguf_find_tensor(gguf, tname);
-                if (qt && (int)qt->shape[1] < min_q) min_q = (int)qt->shape[1];
+                snprintf(tname, sizeof(tname), "blk.%d.attn_k.weight", l);
+                const tq_gguf_tensor_t* kt = tq_gguf_find_tensor(gguf, tname);
+                if (kt && (int)kt->shape[1] > max_k) max_k = (int)kt->shape[1];
             }
             int n_sliding = 0, n_full = 0;
+            int full_kv_dim = 0;
             for (int l = 0; l < c->n_layers; l++) {
                 char tname[128];
-                snprintf(tname, sizeof(tname), "blk.%d.attn_q.weight", l);
-                const tq_gguf_tensor_t* qt = tq_gguf_find_tensor(gguf, tname);
-                if (qt && (int)qt->shape[1] == min_q) {
+                snprintf(tname, sizeof(tname), "blk.%d.attn_k.weight", l);
+                const tq_gguf_tensor_t* kt = tq_gguf_find_tensor(gguf, tname);
+                int k_out = kt ? (int)kt->shape[1] : max_k;
+                if (k_out == max_k) {
                     model->layer_is_sliding[l] = 1;
                     n_sliding++;
                 } else {
                     model->layer_is_sliding[l] = 0;
                     n_full++;
+                    full_kv_dim = k_out;
                 }
             }
-            if (n_full > 0) {
-                fprintf(stderr, "tq_load_gguf: Gemma hybrid — %d sliding + %d full attention layers\n",
-                        n_sliding, n_full);
+            if (n_full > 0 && full_kv_dim > 0) {
+                /* Compute full layer dimensions from kv_dim and Q/K shapes */
+                c->full_head_dim = c->head_dim * 2; /* Gemma 4: 256 → 512 */
+                /* Verify by checking if full_kv_dim / full_head_dim is integer */
+                if (full_kv_dim % c->full_head_dim == 0) {
+                    c->full_n_kv_heads = full_kv_dim / c->full_head_dim;
+                } else {
+                    /* Try the metadata key_length as full head_dim */
+                    int meta_hd = tq_gguf_get_i32(gguf, GGUF_KEY("attention.key_length"), 0);
+                    if (meta_hd > 0 && full_kv_dim % meta_hd == 0) {
+                        c->full_head_dim = meta_hd;
+                        c->full_n_kv_heads = full_kv_dim / meta_hd;
+                    } else {
+                        c->full_head_dim = c->head_dim;
+                        c->full_n_kv_heads = c->n_kv_heads;
+                    }
+                }
+                /* Q dim is n_heads * head_dim (NOT hidden_dim). It's constant across layers. */
+                c->full_n_heads = (c->n_heads * c->head_dim) / c->full_head_dim;
+                fprintf(stderr, "tq_load_gguf: Gemma hybrid — %d sliding (hd=%d, kv=%d) + "
+                        "%d full (hd=%d, kv=%d, heads=%d) attention layers\n",
+                        n_sliding, c->head_dim, c->n_kv_heads,
+                        n_full, c->full_head_dim, c->full_n_kv_heads, c->full_n_heads);
             }
         }
     }
@@ -3335,6 +3366,8 @@ tq_model_t* tq_load_gguf(const char* path) {
         int dim = c->hidden_dim;
         int q_dim = c->n_heads * c->head_dim;
         int kv_dim = c->n_kv_heads * c->head_dim;
+        int full_kv_dim = (c->full_n_kv_heads > 0 && c->full_head_dim > 0)
+            ? c->full_n_kv_heads * c->full_head_dim : kv_dim;
         int inter = c->intermediate_dim;
         int qg_dim = c->attn_output_gate ? q_dim * 2 : q_dim;
         int delta_nkv = c->delta_n_kv_heads > 0 ? c->delta_n_kv_heads : c->delta_n_heads;
@@ -3346,12 +3379,13 @@ tq_model_t* tq_load_gguf(const char* path) {
         size_t est_fp32 = 0;
         for (int l = 0; l < c->n_layers; l++) {
             const tq_layer_weights_t* layer = &model->layers[l];
+            int lkv = (model->layer_is_sliding && !model->layer_is_sliding[l]) ? full_kv_dim : kv_dim;
             if (layer->gguf_wq)
                 est_fp32 += (size_t)qg_dim * dim * sizeof(float);
             if (layer->gguf_wk)
-                est_fp32 += (size_t)kv_dim * dim * sizeof(float);
+                est_fp32 += (size_t)lkv * dim * sizeof(float);
             if (layer->gguf_wv)
-                est_fp32 += (size_t)kv_dim * dim * sizeof(float);
+                est_fp32 += (size_t)lkv * dim * sizeof(float);
             if (layer->gguf_wo)
                 est_fp32 += (size_t)dim * q_dim * sizeof(float);
             /* Dense FFN weights (not present in MoE layers) */
@@ -3409,7 +3443,8 @@ tq_model_t* tq_load_gguf(const char* path) {
                     }
                 }
                 if (layer->gguf_wk) {
-                    int n = kv_dim * dim;
+                    int lkv = (model->layer_is_sliding && !model->layer_is_sliding[l]) ? full_kv_dim : kv_dim;
+                    int n = lkv * dim;
                     float* fp = (float*)malloc((size_t)n * sizeof(float));
                     if (fp) {
                         tq_dequant_row_gguf(layer->gguf_wk_type, layer->gguf_wk, fp, n);
@@ -3419,7 +3454,8 @@ tq_model_t* tq_load_gguf(const char* path) {
                     }
                 }
                 if (layer->gguf_wv) {
-                    int n = kv_dim * dim;
+                    int lkv = (model->layer_is_sliding && !model->layer_is_sliding[l]) ? full_kv_dim : kv_dim;
+                    int n = lkv * dim;
                     float* fp = (float*)malloc((size_t)n * sizeof(float));
                     if (fp) {
                         tq_dequant_row_gguf(layer->gguf_wv_type, layer->gguf_wv, fp, n);

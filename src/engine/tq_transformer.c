@@ -862,18 +862,13 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
     int n_kv_heads = c->n_kv_heads;
 
     /* Gemma 4 hybrid: full attention layers use different head_dim and kv_heads.
-     * Sliding layers: head_dim=256, kv_heads=8 (stored in config)
-     * Full layers:    head_dim=512, kv_heads=2
-     * Infer full dimensions: total Q/K stays same, head_dim doubles, heads halve. */
-    if (model->layer_is_sliding && !model->layer_is_sliding[l]) {
-        /* Full attention layer: head_dim is 2x sliding, kv_heads is sliding/2.
-         * Query pre-attn scalar (Gemma) also changes with head_dim. */
-        int global_head_dim = c->head_dim * 2;  /* 256 → 512 */
-        int global_kv_heads = c->n_kv_heads * c->head_dim / global_head_dim;
-        if (global_kv_heads < 1) global_kv_heads = 1;
-        head_dim = global_head_dim;
-        n_kv_heads = global_kv_heads;
-        n_heads = n_heads; /* Q heads stay same count but with larger head_dim */
+     * Sliding layers: head_dim=256, n_heads=16, kv_heads=8 (stored in config)
+     * Full layers:    head_dim=512, n_heads=8,  kv_heads=2 (stored in full_* fields)
+     * Q output dim is always hidden_dim; K/V output dim differs per layer. */
+    if (model->layer_is_sliding && !model->layer_is_sliding[l] && c->full_head_dim > 0) {
+        head_dim = c->full_head_dim;
+        n_heads = c->full_n_heads;
+        n_kv_heads = c->full_n_kv_heads;
     }
 
     int kv_dim = n_kv_heads * head_dim;
@@ -1028,7 +1023,9 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
     int use_quant_kv = (s->kv_quant_type < TQ_TYPE_COUNT && s->quant_key_cache != NULL);
     float* key_cache_layer = s->key_cache + l * kv_layer_stride;
     if (!use_quant_kv) {
-        memcpy(key_cache_layer + (size_t)pos * kv_dim, s->k, kv_dim * sizeof(float));
+        /* Use cache_kv_dim for position stride (cache allocated with sliding dims).
+         * Full layers write fewer floats (kv_dim < cache_kv_dim) but at correct stride. */
+        memcpy(key_cache_layer + (size_t)pos * cache_kv_dim, s->k, kv_dim * sizeof(float));
     }
 
     /* KV profiling: accumulate pre/post-RHT statistics for this layer's keys */
@@ -1068,9 +1065,9 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
         /* Also store FP16 copy in highres window for recent tokens */
         if (s->v_highres_window > 0 && s->value_highres_fp16) {
             int win_idx = pos % s->v_highres_window;
-            size_t hr_layer_stride = (size_t)s->v_highres_window * kv_dim;
+            size_t hr_layer_stride = (size_t)s->v_highres_window * cache_kv_dim;
             uint16_t* hr_dst = s->value_highres_fp16
-                + (size_t)l * hr_layer_stride + (size_t)win_idx * kv_dim;
+                + (size_t)l * hr_layer_stride + (size_t)win_idx * cache_kv_dim;
             f32_to_fp16_vec(s->v, hr_dst, kv_dim);
         }
     } else if (s->value_quant_bits == 2) {
@@ -1082,17 +1079,17 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
         /* Also store FP16 copy in highres window for recent tokens */
         if (s->v_highres_window > 0 && s->value_highres_fp16) {
             int win_idx = pos % s->v_highres_window;
-            size_t hr_layer_stride = (size_t)s->v_highres_window * kv_dim;
+            size_t hr_layer_stride = (size_t)s->v_highres_window * cache_kv_dim;
             uint16_t* hr_dst = s->value_highres_fp16
-                + (size_t)l * hr_layer_stride + (size_t)win_idx * kv_dim;
+                + (size_t)l * hr_layer_stride + (size_t)win_idx * cache_kv_dim;
             f32_to_fp16_vec(s->v, hr_dst, kv_dim);
         }
     } else if (s->use_fp16_values) {
         uint16_t* val_fp16_layer = s->value_cache_fp16 + l * kv_layer_stride;
-        f32_to_fp16_vec(s->v, val_fp16_layer + (size_t)pos * kv_dim, kv_dim);
+        f32_to_fp16_vec(s->v, val_fp16_layer + (size_t)pos * cache_kv_dim, kv_dim);
     } else {
         float* val_cache_layer = s->value_cache + l * kv_layer_stride;
-        memcpy(val_cache_layer + (size_t)pos * kv_dim, s->v, kv_dim * sizeof(float));
+        memcpy(val_cache_layer + (size_t)pos * cache_kv_dim, s->v, kv_dim * sizeof(float));
     }
 
     /* Quantize the new key into the quantized cache for integer attention.
@@ -1102,15 +1099,23 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
      * at least 128 bits for small head_dim (QJL paper: m/d >= 2), so no
      * fallback is needed. */
     int use_int_attn = use_quant_kv;
+    /* Quantized KV cache: stride was allocated with sliding dims (c->n_kv_heads, c->head_dim).
+     * For hybrid attention full layers with different head_dim, skip quant cache
+     * (quant_head_stride doesn't match). Fall back to FP32 cache for those layers. */
+    int cache_n_kv_heads = c->n_kv_heads;
+    if (use_int_attn && head_dim != c->head_dim) {
+        /* Full layer: head_dim mismatch with quant cache allocation → use FP32 key cache */
+        use_int_attn = 0;
+        memcpy(key_cache_layer + (size_t)pos * cache_kv_dim, s->k, kv_dim * sizeof(float));
+    }
     if (use_int_attn) {
         const tq_type_traits_t* traits = &TQ_TRAITS[s->kv_quant_type];
         for (int kh = 0; kh < n_kv_heads; kh++) {
             const float* key_src = s->k + kh * head_dim;
-            /* Destination in quantized cache:
-             * offset = layer * quant_kv_stride + pos * (n_kv_heads * quant_head_stride) + kh * quant_head_stride */
+            /* Use cache_n_kv_heads for position stride (cache allocated with sliding dims) */
             uint8_t* quant_dst = (uint8_t*)s->quant_key_cache
                 + (size_t)l * s->quant_kv_stride
-                + (size_t)pos * n_kv_heads * s->quant_head_stride
+                + (size_t)pos * cache_n_kv_heads * s->quant_head_stride
                 + (size_t)kh * s->quant_head_stride;
             traits->quantize(key_src, quant_dst, head_dim);
         }
@@ -1126,10 +1131,15 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
      * TODO: fix Hamming attention or implement proper QJL sketch attention. */
     int int_attn_threshold = INT_MAX; /* effectively disabled */
 
-    /* Attention scaling: Gemma3 uses 1/sqrt(query_pre_attn_scalar), others use 1/sqrt(head_dim) */
+    /* Attention scaling: Gemma uses 1/sqrt(query_pre_attn_scalar), others use 1/sqrt(head_dim).
+     * For Gemma 4 hybrid: full layers use full_head_dim for scaling (metadata scalar is for sliding). */
     float attn_scale_dim = (float)head_dim;
     if (c->query_pre_attn_scalar > 0.0f) {
         attn_scale_dim = c->query_pre_attn_scalar;
+        /* Override for full attention layers: scale with full head_dim */
+        if (c->full_head_dim > 0 && model->layer_is_sliding && !model->layer_is_sliding[l]) {
+            attn_scale_dim = (float)c->full_head_dim;
+        }
     }
 
     /* Gemma3 sliding window: limit attention to last sliding_window tokens for sliding layers */
@@ -1159,7 +1169,7 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
              * So we need to gather from strided positions. */
             const tq_type_traits_t* traits = &TQ_TRAITS[s->kv_quant_type];
             size_t head_block_bytes = s->quant_head_stride;
-            size_t pos_stride_bytes = (size_t)n_kv_heads * head_block_bytes;
+            size_t pos_stride_bytes = (size_t)cache_n_kv_heads * head_block_bytes;
             uint8_t* layer_base = (uint8_t*)s->quant_key_cache
                 + (size_t)l * s->quant_kv_stride;
 
@@ -1192,14 +1202,14 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
              * key cache is stored for previous positions. */
             const tq_type_traits_t* traits = &TQ_TRAITS[s->kv_quant_type];
             float inv_scale = 1.0f / sqrtf(attn_scale_dim);
-            float dequant_buf[256]; /* temp buffer for one head's dequantized key */
+            float dequant_buf[512]; /* temp buffer for one head's dequantized key (up to 512 for Gemma 4 full layers) */
 
             for (int t = 0; t < attn_start; t++) atth[t] = -1e30f;
 
             for (int t = attn_start; t < seq_len; t++) {
                 const uint8_t* quant_src = (const uint8_t*)s->quant_key_cache
                     + (size_t)l * s->quant_kv_stride
-                    + (size_t)t * n_kv_heads * s->quant_head_stride
+                    + (size_t)t * cache_n_kv_heads * s->quant_head_stride
                     + (size_t)kv_h * s->quant_head_stride;
 
                 traits->dequantize(quant_src, dequant_buf, head_dim);
@@ -1233,7 +1243,7 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
                 atth[t] = -1e30f;
             }
             for (int t = attn_start; t < seq_len; t++) {
-                const float* kt = key_cache_layer + (size_t)t * kv_dim + kv_h * head_dim;
+                const float* kt = key_cache_layer + (size_t)t * cache_kv_dim + kv_h * head_dim;
                 float score = 0.0f;
                 for (int d = 0; d < head_dim; d++) {
                     score += qh[d] * kt[d];
@@ -1310,13 +1320,13 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
 
             /* Recent tokens: use FP16 V from highres window */
             int window_size = s->v_highres_window;
-            size_t hr_layer_stride = (size_t)window_size * kv_dim;
+            size_t hr_layer_stride = (size_t)window_size * cache_kv_dim;
             const uint16_t* hr_layer = s->value_highres_fp16 + (size_t)l * hr_layer_stride;
             for (int t = window_start; t < seq_len; t++) {
                 float a = atth[t];
                 if (a == 0.0f) continue;
                 int win_idx = t % window_size;
-                const uint16_t* vt16 = hr_layer + (size_t)win_idx * kv_dim + kv_h * head_dim;
+                const uint16_t* vt16 = hr_layer + (size_t)win_idx * cache_kv_dim + kv_h * head_dim;
                 for (int d = 0; d < head_dim; d++) {
                     /* fp16_to_f32 inline: extract sign/exp/mant */
                     uint16_t hv = vt16[d];
@@ -1444,7 +1454,7 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
             /* FP16 value path: convert on the fly during weighted sum */
             const uint16_t* vfp16_layer = s->value_cache_fp16 + l * kv_layer_stride;
             for (int t = 0; t < seq_len; t++) {
-                const uint16_t* vt16 = vfp16_layer + (size_t)t * kv_dim + kv_h * head_dim;
+                const uint16_t* vt16 = vfp16_layer + (size_t)t * cache_kv_dim + kv_h * head_dim;
                 float a = atth[t];
                 if (a == 0.0f) continue; /* skip zero-weight positions */
 #ifdef __ARM_NEON
@@ -1469,7 +1479,7 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
             /* FP32 value path (original) */
             const float* val_cache_layer_fp32 = s->value_cache + l * kv_layer_stride;
             for (int t = 0; t < seq_len; t++) {
-                const float* vt = val_cache_layer_fp32 + (size_t)t * kv_dim + kv_h * head_dim;
+                const float* vt = val_cache_layer_fp32 + (size_t)t * cache_kv_dim + kv_h * head_dim;
                 float a = atth[t];
                 for (int d = 0; d < head_dim; d++) {
                     xbh[d] += a * vt[d];

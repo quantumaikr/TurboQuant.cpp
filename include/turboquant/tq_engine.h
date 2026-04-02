@@ -50,6 +50,13 @@ typedef struct {
     float rope_local_base_freq; /* RoPE base freq for local/sliding layers (10000.0 for gemma3) */
     int n_norms_per_block;   /* 2 for qwen35, 4 for gemma3 */
     float query_pre_attn_scalar; /* attention scaling: 1/sqrt(this) instead of 1/sqrt(head_dim), 0=use head_dim */
+
+    /* Gemma 4 hybrid attention: full layers have different head_dim/kv_heads than sliding.
+     * head_dim/n_heads/n_kv_heads store sliding layer values (majority).
+     * These store full layer values (0 = no hybrid, use sliding values). */
+    int full_head_dim;       /* head_dim for full attention layers (e.g., 512 vs sliding 256) */
+    int full_n_heads;        /* n_heads for full layers (e.g., 8 vs sliding 16) */
+    int full_n_kv_heads;     /* n_kv_heads for full layers (e.g., 2 vs sliding 8) */
 } tq_model_config_t;
 
 /* ============================================================
