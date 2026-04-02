@@ -173,6 +173,9 @@ int tq_ggml_type_blck(tq_ggml_dtype type);
 /* Human-readable name */
 const char* tq_ggml_type_name(tq_ggml_dtype type);
 
+/* IQ2_S codebook accessor — returns pointer to 1024-entry uint64 grid */
+const uint64_t* tq_iq2s_grid(void);
+
 /* ============================================================
  * GGUF dequantization
  * ============================================================ */
@@ -289,13 +292,13 @@ void tq_moe_advise(const tq_moe_layer_t* layer,
 /* ============================================================
  * Fused MoE Metal GPU dispatch
  *
- * Hybrid GPU/CPU MoE dispatch:
+ * Fused GPU MoE dispatch:
  *   Phase 1: gate + up projections on GPU (all experts, parallel)
  *   Phase 2: SwiGLU activation on GPU (all experts, parallel)
- *   Phase 3: down projection + weighted accumulate on CPU
- *            (IQ2_S shader hangs on Metal; CPU fallback is reliable)
+ *   Phase 3: down projection + weighted accumulate on GPU
+ *            (IQ2_S codebook passed as device buffer to avoid constant memory limit)
  *
- * GPU handles the larger gate+up matmuls (~2/3 of compute).
+ * Returns 0 = full GPU success (output filled).
  * Returns 1 = partial (hb_output filled, caller does down+accum on CPU).
  * Returns -1 if unavailable.
  * ============================================================ */

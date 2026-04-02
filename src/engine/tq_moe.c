@@ -669,9 +669,9 @@ void tq_moe_forward(const tq_moe_layer_t* layer,
         int num_active, int expert_dim, int hidden_dim, int num_experts_total, int weight_type,
         const int* gate_types, const int* up_types, const int* down_types);
 
-    /* Metal MoE disabled: IQ2_S Phase 3 hangs, hybrid too slow.
-     * CPU fused IQ2 dot at 3.7 tok/s is the current fastest path.
-     * GPU acceleration needs IQ2_S shader fix or Q4_K model format. */
+    /* Metal MoE: IQ2_S hang fixed! But per-phase waitUntilCompleted
+     * makes it slow. Need single command buffer (was 9.5 tok/s).
+     * Re-enable after merging single-cmdBuf dispatch. */
     if (0 && tq_metal_moe_available() && num_active > 0) {
         /* Check that all active experts use IQ2_XXS and have valid weights */
         int can_fuse = 1;

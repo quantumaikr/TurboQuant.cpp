@@ -913,6 +913,10 @@ static const uint64_t iq2s_grid[1024] = {
     0x2b2b2b2b082b082b, 0x2b2b2b2b082b2b08, 0x2b2b2b2b2b082b08, 0x2b2b2b2b2b2b2b2b,
 };
 
+/* Public accessor for the IQ2_S codebook — used by Metal backend */
+const uint64_t* tq_iq2s_grid(void) {
+    return iq2s_grid;
+}
 
 static void dequant_iq2_s(const void* src, float* dst, int n) {
     const int nb = n / 256;

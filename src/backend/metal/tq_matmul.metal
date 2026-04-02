@@ -225,6 +225,116 @@ kernel void matmul_iq2_xxs(
 }
 
 /* ============================================================
+ * IQ2_S fused dequant-matmul kernel
+ *
+ * Block format: 82 bytes per 256 elements (2.5625 bpw)
+ *   - d (half, 2 bytes): super-block scale
+ *   - qs[32]: grid index low 8 bits (4 per sub-block x 8 sub-blocks)
+ *   - signs[32]: sign bitmasks (4 per sub-block x 8 sub-blocks)
+ *   - qh[8]: grid index high 2 bits per sub-block
+ *   - scales[8]: 4-bit packed sub-block scales (2 per byte)
+ *
+ * The codebook (iq2s_grid, 1024 uint64 entries) is passed as a device
+ * buffer to avoid exceeding Metal constant memory limits.
+ * ============================================================ */
+
+kernel void matmul_iq2_s(
+    device const uchar*    weight     [[buffer(0)]],  /* [out_dim * row_bytes] */
+    device const float*    input      [[buffer(1)]],  /* [in_dim] */
+    device float*          output     [[buffer(2)]],  /* [out_dim] */
+    constant uint&         in_dim     [[buffer(3)]],
+    constant uint&         out_dim    [[buffer(4)]],
+    device const uint64_t* iq2s_grid  [[buffer(5)]],  /* 1024-entry codebook */
+    threadgroup float*     shared_input [[threadgroup(0)]],
+    uint  gid     [[threadgroup_position_in_grid]],
+    uint  tid     [[thread_index_in_threadgroup]],
+    uint  tg_size [[threads_per_threadgroup]])
+{
+    uint row = gid;
+    if (row >= out_dim) return;
+
+    /* Cache input vector in shared memory (cooperative load) */
+    for (uint i = tid; i < in_dim; i += tg_size) {
+        shared_input[i] = input[i];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    uint n_blocks = in_dim / 256;
+    uint row_bytes = n_blocks * 82;
+    device const uchar* row_ptr = weight + row * row_bytes;
+
+    /* Each thread processes a subset of blocks */
+    float partial_sum = 0.0f;
+
+    for (uint b = tid; b < n_blocks; b += tg_size) {
+        device const uchar* blk = row_ptr + b * 82;
+
+        half d_half = *reinterpret_cast<device const half*>(blk);
+        float d = float(d_half);
+
+        device const uchar* qs    = blk + 2;       /* 32 bytes: grid index low 8 bits */
+        device const uchar* signs = blk + 34;      /* 32 bytes: sign bits */
+        device const uchar* qh    = blk + 66;      /* 8 bytes: grid index high 2 bits */
+        device const uchar* scales = blk + 74;     /* 8 bytes: 4-bit sub-block scales */
+
+        uint base_idx = b * 256;
+
+        for (uint ib32 = 0; ib32 < 8; ib32++) {
+            float db0 = d * (0.5f + float(scales[ib32] & 0xF)) * 0.25f;
+            float db1 = d * (0.5f + float(scales[ib32] >> 4)) * 0.25f;
+
+            for (uint l = 0; l < 4; l++) {
+                float dl = (l < 2) ? db0 : db1;
+
+                /* 10-bit grid index: low 8 from qs, high 2 from qh */
+                uint grid_idx = uint(qs[l]) | ((uint(qh[ib32]) << (8u - 2u * l)) & 0x300u);
+                uint64_t grid_val = iq2s_grid[grid_idx];
+                uchar sign = signs[l];
+
+                uint elem_idx = base_idx + ib32 * 32 + l * 8;
+
+                float group_sum = 0.0f;
+                for (uint j = 0; j < 8; j++) {
+                    float w = float((grid_val >> (8u * j)) & 0xFF);
+                    if (sign & (1u << j)) w = -w;
+                    group_sum += w * shared_input[elem_idx + j];
+                }
+                partial_sum += dl * group_sum;
+            }
+            qs += 4;
+            signs += 4;
+        }
+    }
+
+    /* SIMD-group (warp) reduction */
+    partial_sum += simd_shuffle_down(partial_sum, 16);
+    partial_sum += simd_shuffle_down(partial_sum, 8);
+    partial_sum += simd_shuffle_down(partial_sum, 4);
+    partial_sum += simd_shuffle_down(partial_sum, 2);
+    partial_sum += simd_shuffle_down(partial_sum, 1);
+
+    /* Cross-SIMD-group reduction via shared memory */
+    threadgroup float simd_sums[8];
+
+    uint simd_lane = tid % 32;
+    uint simd_group = tid / 32;
+
+    if (simd_lane == 0) {
+        simd_sums[simd_group] = partial_sum;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (tid == 0) {
+        uint n_simd = (tg_size + 31) / 32;
+        float total = 0.0f;
+        for (uint s = 0; s < n_simd; s++) {
+            total += simd_sums[s];
+        }
+        output[row] = total;
+    }
+}
+
+/* ============================================================
  * Q8_0 fused dequant-matmul kernel
  *
  * Block format: 34 bytes per 32 elements

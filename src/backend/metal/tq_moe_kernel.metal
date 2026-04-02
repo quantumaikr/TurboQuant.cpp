@@ -200,14 +200,24 @@ inline float iq2xxs_dot_partial(
 }
 
 /* ============================================================
- * IQ2_S codebook table (constant memory, 8 KB)
+ * IQ2_S codebook table — passed as device buffer, NOT constant array.
  *
- * 1024-entry E8 lattice codebook for IQ2_S.
- * Each uint64 packs 8 unsigned magnitude bytes from {0x08, 0x19, 0x2b}.
- * Grid index is 10-bit (low 8 from qs, high 2 from qh).
+ * The 1024-entry E8 lattice codebook (8 KB) was previously a constant
+ * array, but this caused GPU hangs on Apple Silicon — likely due to
+ * exceeding the per-function constant data budget when combined with
+ * the IQ2_XXS tables (2 KB) and ksigns table (128 B).
+ *
+ * Solution: pass the grid as a device buffer (buffer binding).
+ * The iq2s_grid data is created once in tq_metal_dispatch.m and
+ * bound to buffer(5) for kernels that need IQ2_S support.
  * ============================================================ */
 
-constant uint64_t iq2s_grid[1024] = {
+/* The iq2s_grid[1024] data now lives in tq_metal_dispatch.m and is passed
+ * to kernels via buffer(5) or buffer(4) as device const uint64_t*.
+ * See tq_iq2s_grid() in tq_gguf_quants.c for the canonical data. */
+
+#if 0 /* REMOVED: was causing GPU hangs as 8KB constant array */
+constant uint64_t iq2s_grid_OLD[1024] = {
     0x0808080808080808ULL, 0x080808080808082bULL, 0x0808080808081919ULL, 0x0808080808082b08ULL,
     0x0808080808082b2bULL, 0x0808080808190819ULL, 0x0808080808191908ULL, 0x080808080819192bULL,
     0x0808080808192b19ULL, 0x08080808082b0808ULL, 0x08080808082b082bULL, 0x08080808082b1919ULL,
@@ -465,6 +475,7 @@ constant uint64_t iq2s_grid[1024] = {
     0x2b2b2b192b08192bULL, 0x2b2b2b2b08082b08ULL, 0x2b2b2b2b08082b2bULL, 0x2b2b2b2b082b0808ULL,
     0x2b2b2b2b082b082bULL, 0x2b2b2b2b082b2b08ULL, 0x2b2b2b2b2b082b08ULL, 0x2b2b2b2b2b2b2b2bULL,
 };
+#endif /* DISABLED constant array */
 
 /**
  * Partial IQ2_S dot for blocks assigned to this thread.
@@ -478,6 +489,7 @@ constant uint64_t iq2s_grid[1024] = {
 inline float iq2s_dot_partial(
     device const uchar* row_ptr,
     threadgroup const float* shared_input,
+    device const uint64_t* iq2s_grid,   /* 1024-entry codebook buffer */
     uint n_blocks,
     uint tid,
     uint tg_size)
@@ -586,6 +598,7 @@ kernel void moe_gate_up_fused(
     device float*          gate_outputs  [[buffer(2)]],   /* [num_active * expert_dim] */
     device float*          up_outputs    [[buffer(3)]],   /* [num_active * expert_dim] */
     constant MoeGpuParams& params        [[buffer(4)]],
+    device const uint64_t* iq2s_grid     [[buffer(5)]],   /* IQ2_S codebook (1024 entries) */
     threadgroup float*     shared_mem    [[threadgroup(0)]],
     uint  gid     [[threadgroup_position_in_grid]],
     uint  tid     [[thread_index_in_threadgroup]],
@@ -620,7 +633,7 @@ kernel void moe_gate_up_fused(
     device const uchar* gate_row = weights + gate_off + uint(row) * gate_rb;
     float gate_partial;
     if (gate_type == 22) { /* IQ2_S */
-        gate_partial = iq2s_dot_partial(gate_row, shared_input, n_blocks, tid, tg_size);
+        gate_partial = iq2s_dot_partial(gate_row, shared_input, iq2s_grid, n_blocks, tid, tg_size);
     } else { /* IQ2_XXS (16) or default */
         gate_partial = iq2xxs_dot_partial(gate_row, shared_input, n_blocks, tid, tg_size);
     }
@@ -641,7 +654,7 @@ kernel void moe_gate_up_fused(
     device const uchar* up_row = weights + up_off + uint(row) * up_rb;
     float up_partial;
     if (up_type == 22) { /* IQ2_S */
-        up_partial = iq2s_dot_partial(up_row, shared_input, n_blocks, tid, tg_size);
+        up_partial = iq2s_dot_partial(up_row, shared_input, iq2s_grid, n_blocks, tid, tg_size);
     } else { /* IQ2_XXS (16) or default */
         up_partial = iq2xxs_dot_partial(up_row, shared_input, n_blocks, tid, tg_size);
     }
@@ -705,6 +718,7 @@ kernel void moe_down_accum(
     device const float*    hb_all        [[buffer(1)]],   /* [num_active * expert_dim] (SwiGLU output) */
     device float*          output        [[buffer(2)]],   /* [hidden_dim] */
     constant MoeGpuParams& params        [[buffer(3)]],
+    device const uint64_t* iq2s_grid     [[buffer(4)]],   /* IQ2_S codebook (1024 entries) */
     threadgroup float*     shared_mem    [[threadgroup(0)]],
     uint  gid     [[threadgroup_position_in_grid]],
     uint  tid     [[thread_index_in_threadgroup]],
@@ -742,9 +756,9 @@ kernel void moe_down_accum(
         uint down_rb = (down_type == 22) ? n_blocks_down * 82u : uint(params.row_bytes_down);
         device const uchar* down_row = weights + down_off + row * down_rb;
         float dot_partial;
-        if (0 && down_type == 22) { /* IQ2_S — DISABLED: causes hang */
-            dot_partial = iq2s_dot_partial(down_row, shared_hb, n_blocks_down, tid, tg_size);
-        } else { /* IQ2_XXS path for all types (temporary debug) */
+        if (down_type == 22) { /* IQ2_S — now uses device buffer for grid */
+            dot_partial = iq2s_dot_partial(down_row, shared_hb, iq2s_grid, n_blocks_down, tid, tg_size);
+        } else { /* IQ2_XXS (16) or default */
             dot_partial = iq2xxs_dot_partial(down_row, shared_hb, n_blocks_down, tid, tg_size);
         }
         float dot_val = reduce_sum(dot_partial, tid, tg_size, simd_sums);

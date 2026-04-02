@@ -38,6 +38,7 @@ static id<MTLComputePipelineState> tq_pipe_value_quantize  = nil;
 
 /* Cached pipelines — matmul kernels */
 static id<MTLComputePipelineState> tq_pipe_matmul_iq2_xxs  = nil;
+static id<MTLComputePipelineState> tq_pipe_matmul_iq2_s    = nil;
 static id<MTLComputePipelineState> tq_pipe_matmul_q8_0     = nil;
 static id<MTLComputePipelineState> tq_pipe_matmul_q4_k     = nil;
 
@@ -45,6 +46,9 @@ static id<MTLComputePipelineState> tq_pipe_matmul_q4_k     = nil;
 static id<MTLComputePipelineState> tq_pipe_moe_gate_up     = nil;
 static id<MTLComputePipelineState> tq_pipe_moe_swiglu      = nil;
 static id<MTLComputePipelineState> tq_pipe_moe_down_accum  = nil;
+
+/* IQ2_S codebook buffer — shared between matmul and MoE kernels */
+static id<MTLBuffer> tq_iq2s_grid_buf = nil;
 
 /* ============================================================
  * Zero-copy weight buffer cache
@@ -284,8 +288,17 @@ int tq_init_metal_backend(void) {
 
         /* Create compute pipelines — matmul */
         tq_pipe_matmul_iq2_xxs = makePipe(@"matmul_iq2_xxs");
+        tq_pipe_matmul_iq2_s   = makePipe(@"matmul_iq2_s");
         tq_pipe_matmul_q8_0 = makePipe(@"matmul_q8_0");
         tq_pipe_matmul_q4_k = makePipe(@"matmul_q4_k");
+
+        /* Create IQ2_S codebook buffer (shared by matmul and MoE kernels) */
+        {
+            const uint64_t* grid = tq_iq2s_grid();
+            tq_iq2s_grid_buf = [tq_mtl_device newBufferWithBytes:grid
+                                                          length:1024 * sizeof(uint64_t)
+                                                         options:MTLResourceStorageModeShared];
+        }
 
         /* Create compute pipelines — fused MoE.
          * If the MoE kernel functions aren't in the main library
@@ -386,6 +399,7 @@ void tq_free_metal_backend(void) {
 
     /* Matmul pipelines */
     tq_pipe_matmul_iq2_xxs = nil;
+    tq_pipe_matmul_iq2_s   = nil;
     tq_pipe_matmul_q8_0 = nil;
     tq_pipe_matmul_q4_k = nil;
 
@@ -393,6 +407,9 @@ void tq_free_metal_backend(void) {
     tq_pipe_moe_gate_up = nil;
     tq_pipe_moe_swiglu = nil;
     tq_pipe_moe_down_accum = nil;
+
+    /* IQ2_S codebook buffer */
+    tq_iq2s_grid_buf = nil;
 
     /* Weight cache */
     for (int i = 0; i < tq_weight_cache_count; i++) {
@@ -541,6 +558,9 @@ int tq_metal_matmul_gguf(float* out, const float* x, const void* weight,
             case TQ_GGML_TYPE_IQ2_XXS:
                 pipeline = tq_pipe_matmul_iq2_xxs;
                 break;
+            case TQ_GGML_TYPE_IQ2_S:
+                pipeline = tq_pipe_matmul_iq2_s;
+                break;
             case TQ_GGML_TYPE_Q8_0:
                 pipeline = tq_pipe_matmul_q8_0;
                 break;
@@ -659,6 +679,11 @@ int tq_metal_matmul_gguf(float* out, const float* x, const void* weight,
             [enc setBuffer:indim_buf   offset:0 atIndex:3];
             [enc setBuffer:outdim_buf  offset:0 atIndex:4];
 
+            /* IQ2_S needs codebook buffer at index 5 */
+            if (weight_type == TQ_GGML_TYPE_IQ2_S && tq_iq2s_grid_buf) {
+                [enc setBuffer:tq_iq2s_grid_buf offset:0 atIndex:5];
+            }
+
             NSUInteger shared_mem = (NSUInteger)in_dim * sizeof(float);
             NSUInteger max_shared = [tq_mtl_device maxThreadgroupMemoryLength];
             if (shared_mem > max_shared) shared_mem = max_shared;
@@ -688,6 +713,11 @@ int tq_metal_matmul_gguf(float* out, const float* x, const void* weight,
         [enc setBuffer:output_buf           offset:0 atIndex:2];
         [enc setBuffer:indim_buf            offset:0 atIndex:3];
         [enc setBuffer:outdim_buf           offset:0 atIndex:4];
+
+        /* IQ2_S needs codebook buffer at index 5 */
+        if (weight_type == TQ_GGML_TYPE_IQ2_S && tq_iq2s_grid_buf) {
+            [enc setBuffer:tq_iq2s_grid_buf offset:0 atIndex:5];
+        }
 
         NSUInteger shared_mem = (NSUInteger)in_dim * sizeof(float);
         NSUInteger max_shared = [tq_mtl_device maxThreadgroupMemoryLength];
@@ -893,6 +923,9 @@ int tq_metal_moe_forward(
             [enc setBuffer:gate_buf    offset:0 atIndex:2];
             [enc setBuffer:up_buf      offset:0 atIndex:3];
             [enc setBuffer:params_buf  offset:0 atIndex:4];
+            if (tq_iq2s_grid_buf) {
+                [enc setBuffer:tq_iq2s_grid_buf offset:0 atIndex:5];
+            }
             [enc setThreadgroupMemoryLength:shared_phase1 atIndex:0];
 
             /* One threadgroup per (expert, row): num_active * expert_dim total */
@@ -978,13 +1011,72 @@ int tq_metal_moe_forward(
         }
         NSLog(@"TurboQuant MoE: Phase 2 (SwiGLU) completed OK");
 
-        /* ======== Phase 3: SKIP GPU down projection (IQ2_S shader hangs) ========
-         * Instead, copy the SwiGLU'd activations from gate_buf back to CPU.
-         * The caller (tq_moe.c) will do down projection + accumulate on CPU. */
-        memcpy(hb_output, [gate_buf contents], inter_bytes);
-        NSLog(@"TurboQuant MoE: Hybrid — Phase 1+2 on GPU done, returning hb for CPU down proj");
-        (void)output; /* unused in hybrid mode */
-        return 1; /* partial success: hb_output filled, caller does down+accum */
+        /* ======== Phase 3: down projection + weighted accumulate (GPU) ========
+         * Previously skipped due to IQ2_S shader hanging with constant array.
+         * Now fixed: IQ2_S codebook passed as device buffer (buffer 4). */
+        {
+            /* Create output buffer for hidden_dim results */
+            size_t output_bytes = (size_t)hidden_dim * sizeof(float);
+            id<MTLBuffer> output_buf = [tq_mtl_device newBufferWithLength:output_bytes
+                                                                  options:MTLResourceStorageModeShared];
+            if (!output_buf) {
+                /* Fallback to hybrid if buffer creation fails */
+                memcpy(hb_output, [gate_buf contents], inter_bytes);
+                return 1;
+            }
+
+            /* New command buffer for Phase 3 */
+            cmdBuf = [tq_mtl_queue commandBuffer];
+            if (!cmdBuf) {
+                memcpy(hb_output, [gate_buf contents], inter_bytes);
+                return 1;
+            }
+
+            id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
+            if (!enc) {
+                memcpy(hb_output, [gate_buf contents], inter_bytes);
+                return 1;
+            }
+
+            [enc setComputePipelineState:tq_pipe_moe_down_accum];
+            [enc setBuffer:weight_buf   offset:0 atIndex:0];
+            [enc setBuffer:gate_buf     offset:0 atIndex:1]; /* SwiGLU output = hb_all */
+            [enc setBuffer:output_buf   offset:0 atIndex:2];
+            [enc setBuffer:params_buf   offset:0 atIndex:3];
+            if (tq_iq2s_grid_buf) {
+                [enc setBuffer:tq_iq2s_grid_buf offset:0 atIndex:4];
+            }
+
+            /* Shared memory for Phase 3: expert_dim floats for hb + 8 for SIMD sums */
+            NSUInteger shared_phase3 = ((NSUInteger)expert_dim + 8) * sizeof(float);
+            if (shared_phase3 > max_shared) shared_phase3 = max_shared;
+            [enc setThreadgroupMemoryLength:shared_phase3 atIndex:0];
+
+            /* One threadgroup per output row (hidden_dim total) */
+            MTLSize gridSize3 = MTLSizeMake((NSUInteger)hidden_dim, 1, 1);
+            MTLSize tgSize3   = MTLSizeMake(TQ_MATMUL_TG_SIZE, 1, 1);
+            [enc dispatchThreadgroups:gridSize3 threadsPerThreadgroup:tgSize3];
+            [enc endEncoding];
+
+            [cmdBuf commit];
+            [cmdBuf waitUntilCompleted];
+
+            if (cmdBuf.status == MTLCommandBufferStatusError) {
+                NSLog(@"TurboQuant MoE: Phase 3 (down+accum) FAILED: %@", cmdBuf.error);
+                /* Fallback to hybrid on failure */
+                memcpy(hb_output, [gate_buf contents], inter_bytes);
+                return 1;
+            }
+            NSLog(@"TurboQuant MoE: Phase 3 (down+accum) completed OK");
+
+            /* Copy result to output */
+            memcpy(output, [output_buf contents], output_bytes);
+
+            /* Also copy hb for potential caller use */
+            memcpy(hb_output, [gate_buf contents], inter_bytes);
+
+            return 0; /* Full GPU success */
+        }
     }
 }
 
