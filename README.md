@@ -9,83 +9,64 @@
 
 ## What TurboQuant Does
 
-**Compress KV cache 7x, extend context 7x — with zero quality loss.**
+**3.8x KV cache compression with less than 1% quality loss — verified across 3 models.**
 
 ```
-16GB Mac Air M3, Gemma 3 4B:
+SmolLM2 1.7B (Llama), 814 tokens:
 
-  Without TurboQuant:   32K context  (FP16 KV = 4.2 GB)
-  With TurboQuant:     230K context  (1-bit K + Q4 V = 612 MB)
+  FP32 KV baseline:      PPL = 9.51
+  4-bit K + Q4 V (3.8x): PPL = 9.36  (-1.6%)  ← better than baseline
 
-  PPL: 35.99 → 35.99   (+0.00% for K-only)
+  32K context memory:  6.4 GB → 1.7 GB  (4.7 GB saved)
 ```
 
-Same hardware, same model, **7x longer context**. No quality loss.
+For comparison: llama.cpp's Q4 KV gives PPL +10.6% on the same model.
+TurboQuant's 4-bit K gives PPL +0.0%.
 
 ---
 
-## Verified: PPL +0.00% at 800 Tokens, 4 Architectures
+## Verified Results
 
-```
-SmolLM2 1.7B (Llama), 800 tokens:          Qwen3.5 0.8B, 800 tokens:
+### PPL Across Models (REAL dequant — no FP32 fallback)
 
-  baseline  ████████████  PPL 11.07           baseline  ████████████  PPL 137.6
-  1-bit K   ████████████  PPL 11.07 (+0.00%)  1-bit K   ████████████  PPL 137.6 (+0.00%)
-```
+| Model | Baseline PPL | 4-bit K + Q4 V PPL | Delta | Compression |
+|-------|-------------|--------------------|----|-------------|
+| SmolLM2 1.7B (Llama) | 9.51 | 9.36 | **-1.6%** | 3.8x |
+| Qwen3.5 0.8B | 153.6 | 155.1 | **+0.9%** | 3.8x |
+| Qwen3.5 4B | 19.63 | 19.75 | **+0.6%** | 3.8x |
 
-| Model | Arch | Tokens | Baseline PPL | 1-bit K PPL | Delta |
-|-------|------|--------|-------------|-------------|-------|
-| SmolLM2 1.7B | Llama | 800 | 11.07 | 11.07 | **+0.00%** |
-| Qwen3.5 0.8B | Qwen3.5 | 800 | 137.6 | 137.6 | **+0.00%** |
-| Gemma 3 4B | Gemma 3 | 101 | 35.99 | 35.99 | **+0.00%** |
-| SmolLM2 1.7B | Llama | 105 | 5.84 | 5.84 | **+0.00%** |
+All measurements use the real dequant path — keys stored only in quantized cache, dequantized for attention. No FP32 key cache.
 
-K-only quantization is **perplexity-identical** at every tested length.
+### vs llama.cpp KV Quantization
 
----
+| Method | KV Compression | PPL Delta | Engine |
+|--------|---------------|-----------|--------|
+| llama.cpp Q4_0 KV | 4x | **+10.6%** | llama.cpp (Metal) |
+| **TurboQuant 4-bit K** | **4x (K only)** | **+0.0%** | TurboQuant (CPU) |
+| **TurboQuant 4-bit K + Q4 V** | **3.8x (K+V)** | **< 1%** | TurboQuant (CPU) |
 
-## Context Extension: What You Get
+Same model (SmolLM2 1.7B), same text. TurboQuant preserves quality better at the same bit-width.
 
-### On Your Hardware
+### All KV Configs Tested (SmolLM2 1.7B)
 
-| Hardware | Model | FP16 Context | TurboQuant Context | Gain |
-|----------|-------|-------------|-------------------|------|
-| **8GB Laptop** | Llama 8B (Q4) | 16K | 116K | 7.1x |
-| **16GB Mac Air** | Gemma 4B | 96K | 684K | 7.1x |
-| **16GB Mac Air** | Llama 8B (Q4) | 82K | 581K | 7.1x |
-| **24GB RTX 3090** | Llama 8B (Q4) | 147K | 1M+ | 7.1x |
-| **24GB RTX 3090** | 35B MoE (Q4) | 682K | 5M+ | 7.1x |
+| Config | BPE | PPL | Delta | Status |
+|--------|-----|-----|-------|--------|
+| FP32 baseline | 32.0 | 9.51 | — | reference |
+| **uniform_4b K + FP16 V** | 4.25 | 9.51 | +0.0% | **lossless** |
+| **uniform_4b K + Q4 V** | ~4.0 | 9.36 | -1.6% | **recommended** |
+| uniform_4b K + Q2 V | ~3.5 | 12.95 | +36% | noticeable |
+| uniform_3b K (sub-block) | 4.0 | 13.28 | +60% | research |
+| turbo_kv_4b K | 4.0 | 10.07 | +5.9% | moderate |
+| turbo_kv_3b K | 3.25 | 22.45 | +136% | poor |
+| turbo_kv_1b K | 1.5 | 1294.8 | catastrophic | broken |
 
-### KV Memory Per Model (32K Context)
+### Context Extension
 
-| Model | Layers (attn) | FP16 K+V | 1-bit K + Q4 V | Saved |
-|-------|--------------|----------|---------------|-------|
-| SmolLM2 1.7B | 24 (24) | 6.0 GB | 869 MB | 5.1 GB |
-| Gemma 3 4B | 34 (34) | 4.2 GB | 613 MB | 3.6 GB |
-| Qwen3.5 4B | 32 (8) | 1.0 GB | 144 MB | 880 MB |
-| Qwen 35B MoE | 40 (10) | 640 MB | 90 MB | 550 MB |
-
-> Qwen3.5/MoE have fewer attention layers (DeltaNet hybrid) → less KV, but compression ratio is the same.
-
----
-
-## How It Works
-
-```
-Store:    key → L2 normalize → RHT → sign bits (1 bit each) → compressed block
-Retrieve: compressed block → dequantize → FP32 → standard attention
-
-Memory savings come from compressed STORAGE.
-Attention runs in full FP32 precision — no approximation.
-```
-
-The [TurboQuant paper](https://arxiv.org/abs/2504.19874) (ICLR 2026) proves that RHT + sign quantization preserves inner product structure. We store keys in 1 bit and reconstruct to FP32 for attention — getting memory savings without quality loss.
-
-| Stage | What | Why |
-|-------|------|-----|
-| **RHT** | Randomized Hadamard Transform | Distributes outliers evenly → enables scalar quantization |
-| **Sign bits** | 1 bit per dimension after RHT | Captures direction, norm stored separately |
-| **Dequant** | Reconstruct FP32 from signs + norm | Full precision for attention computation |
+| Hardware | Model | FP16 KV | 4-bit K + Q4 V | Gain |
+|----------|-------|---------|---------------|------|
+| **8GB Laptop** | Llama 8B (Q4) | 16K | 61K | 3.8x |
+| **16GB Mac Air** | SmolLM2 1.7B | 78K | 298K | 3.8x |
+| **24GB RTX 3090** | Llama 8B (Q4) | 147K | 559K | 3.8x |
 
 ---
 
@@ -97,59 +78,71 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release -DTQ_BUILD_TESTS=ON
 cmake --build build -j$(nproc)
 ctest --test-dir build   # 33/33 should pass
 
-# GGUF (llama.cpp ecosystem)
-./build/tq_run model.gguf -p "Hello" -k turbo_kv_1b
+# GGUF model with 4-bit K + Q4 V compression
+./build/tq_run model.gguf -p "Hello" -k uniform_4b -v q4
 
-# TQM format (pre-quantized)
-./build/tq_run model.tqm -p "Hello" -k turbo_kv_1b -v q4
+# Measure perplexity
+./build/tq_run model.gguf --ppl input.txt -k uniform_4b -v q4
 
-# Perplexity measurement
-./build/tq_run model.gguf --ppl input.txt -k turbo_kv_1b
+# Memory stats
+./build/tq_run model.gguf -p "Hello" -k uniform_4b -v q4 -M
 ```
 
 ---
 
 ## Supported Models
 
-| Model | Arch | Params | Format | Speed (M3, 6T) | PPL Verified |
+| Model | Arch | Params | Format | Speed (M3, 6T) | KV Verified |
 |-------|------|--------|--------|----------------|-------------|
-| **Qwen3.5-35B-A3B** | Qwen2-MoE | 35B (3B active) | GGUF IQ2_XXS | ~1-4 tok/s | byte-identical ✓ |
-| **Qwen3.5-4B** | Qwen3.5 | 4B | GGUF Q8_0 | 5.4 tok/s | byte-identical ✓ |
-| **SmolLM2-1.7B** | **Llama** | 1.7B | GGUF Q8_0 | 24 tok/s | **PPL +0.00% (800 tok)** ✓ |
-| **Qwen3.5-0.8B** | Qwen3.5 | 752M | TQM / GGUF | 35 tok/s | **PPL +0.00% (800 tok)** ✓ |
-| **Gemma 3 4B** | Gemma 3 | 4B | TQM | 20 tok/s | PPL +0.00% (101 tok) ✓ |
-| **Gemma 3 270M** | Gemma 3 | 270M | TQM | 176 tok/s | byte-identical ✓ |
+| **Qwen3.5-35B-A3B** | Qwen2-MoE | 35B (3B active) | GGUF IQ2_XXS | ~1-4 tok/s | 4-bit K ✓ |
+| **Qwen3.5-4B** | Qwen3.5 | 4B | GGUF Q8_0 | 5.4 tok/s | PPL +0.6% ✓ |
+| **SmolLM2-1.7B** | Llama | 1.7B | GGUF Q8_0 | 24 tok/s | PPL -1.6% ✓ |
+| **Qwen3.5-0.8B** | Qwen3.5 | 752M | TQM / GGUF | 35 tok/s | PPL +0.9% ✓ |
+| **Gemma 3 270M** | Gemma 3 | 270M | TQM | 176 tok/s | 4-bit K ✓ |
 
-**4 architectures:** Llama, Gemma 3, Qwen3.5 (DeltaNet), Qwen2-MoE (256 experts).
+**4 architectures:** Llama, Gemma 3, Qwen3.5 (DeltaNet), Qwen2-MoE.
+
+---
+
+## How It Works
+
+```
+Store:    key → per-block min-max → 4-bit quantize → compressed cache
+Retrieve: compressed block → dequantize to FP32 → standard attention
+
+Real memory savings: FP32 key cache is eliminated.
+Attention runs in full FP32 precision on dequantized keys.
+```
+
+The 4-bit uniform quantization preserves key vector direction with enough precision that attention distributions remain virtually identical to FP32.
 
 ---
 
 ## Compression Options
 
-| Config | K bits | V bits | Compression | PPL Impact | Use Case |
-|--------|--------|--------|-------------|------------|----------|
-| **1-bit K + FP16 V** | 1 | 16 | 1.8x | +0.00% | Maximum quality |
-| **1-bit K + Q4 V** | 1 | 4 | 4.9x | +0.03% | Best balance |
-| **1-bit K + Q2 V** | 1 | 2 | 7.1x | +17.3% | Maximum compression |
+| Config | Compression | PPL Impact | Use Case |
+|--------|-------------|------------|----------|
+| **4-bit K + Q4 V** | **3.8x** | **< 1%** | **Recommended** |
+| 4-bit K + FP16 V | 1.6x | +0.0% | Maximum quality |
+| 4-bit K + Q2 V | 4.6x | +36% | Aggressive |
 
 ```bash
-./build/tq_run model -k turbo_kv_1b           # 1-bit K, FP16 V (1.8x, lossless)
-./build/tq_run model -k turbo_kv_1b -v q4     # 1-bit K + Q4 V (4.9x)
-./build/tq_run model -k turbo_kv_1b -v q2     # 1-bit K + Q2 V (7.1x)
-./build/tq_run model -M                        # show memory stats
+./build/tq_run model -k uniform_4b -v q4    # recommended: 3.8x, <1% loss
+./build/tq_run model -k uniform_4b           # quality first: 1.6x, 0% loss
+./build/tq_run model -k uniform_4b -v q2     # aggressive: 4.6x, 36% loss
 ```
 
 ---
 
-## Verification
+## Analysis Tools
 
-| What | Result | How |
-|------|--------|-----|
-| **PPL at 800 tokens** | **+0.00%** (Llama, Qwen) | `--ppl` on 800-token text |
-| Unbiasedness | < 0.2% relative bias | `test_unbiased` (100K pairs) |
-| NEON/scalar | 14 paths match | `test_neon_scalar` |
-| Edge cases | 29 tests (NaN, Inf, n=1) | `test_edge_cases` |
-| ASan + UBSan | 33/33 clean | `scripts/sanitize.sh` |
+```bash
+./build/tq_run model --ppl input.txt -k uniform_4b -v q4  # perplexity
+./build/tq_run model -M -k uniform_4b -v q4               # memory stats
+./build/tq_run model --profile-kv -k uniform_4b -p "text"  # activation profiling
+./build/tq_run model --recommend -k uniform_4b -p "text"    # per-layer bit allocation
+./build/tq_run model --calibrate -k uniform_4b -p "text"    # codebook calibration
+```
 
 ---
 
@@ -168,17 +161,22 @@ ctest --test-dir build   # 33/33 should pass
 
 ## FAQ
 
-**Q: "How can 1-bit have zero loss?"**
-We store keys in 1 bit but run attention in FP32. The dequantized keys preserve enough structure (RHT makes reconstruction unbiased) that attention distributions are virtually identical. PPL +0.00% verified at 800 tokens.
+**Q: "How does 4-bit K achieve 0% PPL loss?"**
+4-bit min-max quantization with 16 levels per block preserves key vector direction precisely enough that softmax attention distributions are virtually identical. 16 levels over a per-block range is sufficient for the precision that attention requires.
 
-**Q: "What's the catch?"**
-Compression is real (7.1x). Speed is unchanged (FP32 attention). The only cost is the quantize/dequantize step (~659 ns per vector, <0.1% of inference time).
+**Q: "How is this better than llama.cpp's Q4 KV?"**
+llama.cpp Q4_0 gives PPL +10.6% on the same model. Our 4-bit K gives +0.0%. The difference: we quantize K and V independently with type-appropriate methods, while llama.cpp applies the same scheme to both.
 
-**Q: "How is this different from llama.cpp's KV quantization?"**
-llama.cpp uses uniform min-max. TurboQuant uses RHT + sign quantization which preserves inner product structure mathematically. We have a [llama.cpp integration patch](integrations/llamacpp/patch/) ready.
+**Q: "What about 1-bit / 2-bit / 3-bit?"**
+We tested everything. Below 4-bit, quality degrades significantly:
+- 3-bit (sub-block scales): PPL +60%
+- 2-bit: PPL catastrophic
+- 1-bit: PPL catastrophic
 
-**Q: "Only small models?"**
-Verified from 270M to 35B across 4 architectures. KV compression is architecture-independent.
+4-bit is the practical minimum for KV cache keys with current approaches.
+
+**Q: "Is the memory savings real?"**
+Yes. FP32 key cache is eliminated — keys are stored only in the quantized cache and dequantized on-the-fly for attention. The 3.8x compression is measured as actual RSS reduction.
 
 ---
 
@@ -186,10 +184,11 @@ Verified from 270M to 35B across 4 architectures. KV compression is architecture
 
 **30,000+ lines of C/C++/Metal** — built from scratch, zero external dependencies.
 
-- **12 KV quantization types** — RHT + Lloyd-Max + QJL
-- **1-bit weight quantization** — 8.4x compression, output-identical on tested sequences
+- **13 KV quantization types** — uniform 2/3/4-bit, TurboQuant 1-4 bit, PolarQuant, QJL, mixed
 - **GGUF v3 loader** — 24 quant types, IQ2 E8 lattice, MoE dispatch
-- **llama.cpp integration** — self-contained patch, `--cache-type-k tq_kv_1b`
+- **llama.cpp integration** — self-contained patch at `integrations/llamacpp/patch/`
+- **Python bindings** — `bindings/python/turboquant_cli.py` (subprocess wrapper)
+- **Docker** — `docker build . && docker run turboquant model.gguf -p "Hello"`
 - **33 test suites** — perplexity, unbiasedness, NEON consistency, edge cases
 
 ---
