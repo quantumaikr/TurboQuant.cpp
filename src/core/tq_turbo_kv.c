@@ -768,8 +768,11 @@ void tq_turbo_kv_1b_attention_ref(const float* query, const void* kv_cache,
     int sketch_dim = dim;
     if (sketch_dim < TQ_BK) sketch_dim = TQ_BK;
 
-    /* Scale factor uses sketch_dim (total sign bits), not dim */
-    float scale_factor = sqrtf(TQ_PI_2) / (float)sketch_dim;
+    /* Scale factor for sign-sign agreement estimator: (pi/2) / m.
+     * Note: sqrt(pi/2)/m is for random-projection-then-sign (QJL).
+     * sign-sign (Hamming) uses pi/2 per the arcsin law.
+     * Currently int_attn is disabled, but fix for future use. */
+    float scale_factor = TQ_PI_2 / (float)sketch_dim;
 
     /* Step 1: RHT(query) with expansion matching quantize */
     float q_rot[TQ_BK];

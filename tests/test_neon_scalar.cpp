@@ -295,8 +295,8 @@ TEST(NeonScalarConsistency, HammingAttentionReference) {
     tq_turbo_kv_1b_attention_ref(query.data(), kv_blocks.data(),
                                    actual_scores.data(), seq_len, dim);
 
-    /* Manual reference computation */
-    float scale_factor = sqrtf((float)M_PI / 2.0f) / (float)dim;
+    /* Manual reference computation — sign-sign estimator uses (pi/2)/m */
+    float scale_factor = ((float)M_PI / 2.0f) / (float)dim;
 
     /* RHT(query) */
     std::vector<float> q_rot(dim);
