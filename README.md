@@ -141,7 +141,7 @@ Every NEON path verified against scalar reference (`test_neon_scalar`). A Q4 deq
 No. Verified from 270M to 35B. Qwen3.5-35B-A3B MoE (IQ2_XXS, 9.9GB) loads and runs on a 16GB Mac Air M3 with RSS ~4.7GB via mmap demand-paging. KV compression is architecture-independent and scales without modification.
 
 **Q: "AMD GPU support?"**
-Yes. Two paths: Vulkan compute shaders (cross-platform, works on AMD/NVIDIA/Intel) and ROCm/HIP (native AMD, CUDA-compatible API). Build with `-DTQ_BUILD_VULKAN=ON` or `-DTQ_BUILD_ROCM=ON`.
+Vulkan and ROCm/HIP backends are implemented and compile (`-DTQ_BUILD_VULKAN=ON` or `-DTQ_BUILD_ROCM=ON`). Not yet tested on AMD hardware — contributions welcome.
 
 **Q: "What GGUF formats work?"**
 Q8_0 produces coherent output (verified). Q5_K/Q6_K work for non-recurrent layers. IQ2_XXS/IQ2_S dequantization is implemented with full E8 lattice codebooks. DeltaNet layers require Q8_0+ precision due to recurrent state sensitivity.
@@ -152,14 +152,14 @@ Q8_0 produces coherent output (verified). Q5_K/Q6_K work for non-recurrent layer
 
 TurboQuant runs on all major GPU platforms — including AMD.
 
-| Backend | Target | Status | Files |
-|---------|--------|--------|-------|
-| **CUDA** | NVIDIA GPU | Production (1,919 LOC) | `src/backend/cuda/` |
-| **Metal** | Apple Silicon | Production (1,494 LOC) | `src/backend/metal/` |
-| **Vulkan** | **AMD + cross-platform** | New (2,317 LOC) | `src/backend/vulkan/` |
-| **ROCm/HIP** | **AMD ROCm** | New (2,174 LOC) | `src/backend/rocm/` |
-| **NEON** | ARM CPU | Production (980 LOC) | `src/backend/cpu/tq_neon.c` |
-| **AVX2** | x86 CPU | Expanded (638 LOC) | `src/backend/cpu/tq_avx2.c` |
+| Backend | Target | Status | LOC |
+|---------|--------|--------|-----|
+| **Metal** | Apple Silicon | Verified (M3 tested) | 4,002 |
+| **NEON** | ARM CPU | Production | 980 |
+| **AVX2** | x86 CPU | Production | 638 |
+| **CUDA** | NVIDIA GPU | Compiles (untested on GPU) | 2,146 |
+| **Vulkan** | AMD + cross-platform | Compiles (untested on GPU) | 2,317 |
+| **ROCm/HIP** | AMD ROCm | Compiles (untested on GPU) | 2,174 |
 
 ```bash
 # Build with GPU backends
@@ -206,9 +206,9 @@ Load community GGUF models directly — no conversion needed.
 
 **Self-built inference engine** — not a fork, not a wrapper. Every component written from scratch.
 
-- **20,000+ lines of C/C++** — transformer, tokenizer, matmul, attention, sampling, GPU kernels — zero external dependencies
-- **12 KV quantization types** — the core differentiator: RHT + Lloyd-Max + QJL for unbiased inner products
-- **6 compute backends** — CUDA, Metal, Vulkan, ROCm/HIP, NEON, AVX2
+- **30,000+ lines of C/C++/Metal** — 19,600 core + 10,600 GPU kernels — zero external dependencies
+- **12 KV quantization types** — RHT + Lloyd-Max + QJL for unbiased inner products
+- **6 compute backends** — Metal (verified), NEON/AVX2 (production), CUDA/Vulkan/ROCm (compiles, GPU untested)
 - **Fused Q4 attention** — weighted sum directly from packed nibbles, no dequant buffer
 - **Adaptive compression** — per-layer bit recommendation, online codebook calibration (49.7% MSE gain)
 - **GGUF v3 loader** — 24 quant types, IQ2 E8 lattice, MoE expert dispatch, on-the-fly dequant
