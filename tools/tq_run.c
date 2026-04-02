@@ -62,6 +62,7 @@ static tq_type parse_kv_type(const char* s) {
     if (strcmp(s, "turbo_kv_1b") == 0) return TQ_TYPE_TURBO_KV_1B;
     if (strcmp(s, "qjl_1b") == 0)     return TQ_TYPE_QJL_1B;
     if (strcmp(s, "mixed_4b8") == 0)  return TQ_TYPE_MIXED_4B8;
+    if (strcmp(s, "uniform_3b") == 0) return TQ_TYPE_UNIFORM_3B;
     fprintf(stderr, "Unknown KV type: %s (using uniform_4b)\n", s);
     return TQ_TYPE_UNIFORM_4B;
 }

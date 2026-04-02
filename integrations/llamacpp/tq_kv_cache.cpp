@@ -44,7 +44,8 @@ enum {
     GGML_TYPE_TQ_TURBO_KV_4B  = GGML_TYPE_TQ_BASE + 9,
     GGML_TYPE_TQ_TURBO_KV_1B  = GGML_TYPE_TQ_BASE + 10,
     GGML_TYPE_TQ_TURBO_KV_2B  = GGML_TYPE_TQ_BASE + 11,
-    GGML_TYPE_TQ_COUNT         = 12,
+    GGML_TYPE_TQ_UNIFORM_3B   = GGML_TYPE_TQ_BASE + 12,
+    GGML_TYPE_TQ_COUNT         = 13,
 };
 
 /* ============================================================
@@ -65,6 +66,7 @@ static int tq_to_ggml_type(tq_type type) {
         case TQ_TYPE_TURBO_KV_4B:  return GGML_TYPE_TQ_TURBO_KV_4B;
         case TQ_TYPE_TURBO_KV_1B:  return GGML_TYPE_TQ_TURBO_KV_1B;
         case TQ_TYPE_TURBO_KV_2B:  return GGML_TYPE_TQ_TURBO_KV_2B;
+        case TQ_TYPE_UNIFORM_3B:   return GGML_TYPE_TQ_UNIFORM_3B;
         default: return -1;
     }
 }
@@ -83,6 +85,7 @@ static tq_type ggml_to_tq_type(int ggml_id) {
         case GGML_TYPE_TQ_TURBO_KV_4B:  return TQ_TYPE_TURBO_KV_4B;
         case GGML_TYPE_TQ_TURBO_KV_1B:  return TQ_TYPE_TURBO_KV_1B;
         case GGML_TYPE_TQ_TURBO_KV_2B:  return TQ_TYPE_TURBO_KV_2B;
+        case GGML_TYPE_TQ_UNIFORM_3B:   return TQ_TYPE_UNIFORM_3B;
         default: return TQ_TYPE_COUNT;
     }
 }
@@ -147,6 +150,7 @@ TQ_GGML_WRAPPERS(turbo_kv_3b,  TQ_TYPE_TURBO_KV_3B)
 TQ_GGML_WRAPPERS(turbo_kv_4b,  TQ_TYPE_TURBO_KV_4B)
 TQ_GGML_WRAPPERS(turbo_kv_1b,  TQ_TYPE_TURBO_KV_1B)
 TQ_GGML_WRAPPERS(turbo_kv_2b,  TQ_TYPE_TURBO_KV_2B)
+TQ_GGML_WRAPPERS(uniform_3b,  TQ_TYPE_UNIFORM_3B)
 
 /* ============================================================
  * vec_dot wrappers (quantized key . FP32 query -> scalar)
@@ -199,6 +203,7 @@ TQ_GGML_VEC_DOT(turbo_kv_3b,  TQ_TYPE_TURBO_KV_3B)
 TQ_GGML_VEC_DOT(turbo_kv_4b,  TQ_TYPE_TURBO_KV_4B)
 TQ_GGML_VEC_DOT(turbo_kv_1b,  TQ_TYPE_TURBO_KV_1B)
 TQ_GGML_VEC_DOT(turbo_kv_2b,  TQ_TYPE_TURBO_KV_2B)
+TQ_GGML_VEC_DOT(uniform_3b,  TQ_TYPE_UNIFORM_3B)
 
 /* ============================================================
  * GGML type trait table
@@ -313,6 +318,14 @@ static const tq_ggml_type_trait TQ_GGML_TRAITS[GGML_TYPE_TQ_COUNT] = {
         tq_ggml_from_float_turbo_kv_2b,
         tq_ggml_to_float_turbo_kv_2b,
         tq_ggml_vec_dot_turbo_kv_2b,
+    },
+    {
+        "tq_uniform_3b", GGML_TYPE_TQ_UNIFORM_3B, TQ_TYPE_UNIFORM_3B,
+        sizeof(block_tq_uniform_3b), TQ_BK,
+        (float)sizeof(block_tq_uniform_3b) * 8.0f / TQ_BK,
+        tq_ggml_from_float_uniform_3b,
+        tq_ggml_to_float_uniform_3b,
+        tq_ggml_vec_dot_uniform_3b,
     },
 };
 

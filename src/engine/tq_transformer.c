@@ -861,26 +861,19 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
     int n_heads = c->n_heads;
     int n_kv_heads = c->n_kv_heads;
 
-    /* Gemma 4 hybrid: full attention layers have different head_dim and kv_heads.
-     * Detect from GGUF weight shapes: if Q output > n_heads * head_dim, it's a full layer. */
-    if (model->layer_is_sliding && !model->layer_is_sliding[l] && layer->gguf_wq) {
-        /* Full attention layer: infer head_dim from Q tensor.
-         * Q shape = [hidden_dim, n_heads * full_head_dim * (1 + gate)] */
-        int q_out = 0;
-        /* Get Q output dim from GGUF tensor — stored at load time in gguf_wq_type's neighbor.
-         * Simpler: compute from expected: global_head_dim = metadata key_length */
-        int global_head_dim = tq_gguf_get_i32((const tq_gguf_ctx_t*)model->gguf_ctx,
-            "gemma4.attention.key_length", head_dim);
-        if (global_head_dim > head_dim) {
-            head_dim = global_head_dim;
-            /* For full layers, kv_heads is typically smaller */
-            /* K shape for full: [dim, kv_heads_full * global_head_dim]
-             * We know K_out from sliding kv_dim * (global/sliding) ratio... or just compute:
-             * Total Q = n_heads * global_head_dim = 16 * 512 = 8192
-             * Total K = ? from tensor. For now, infer: */
-            n_kv_heads = c->n_kv_heads * c->head_dim / global_head_dim;
-            if (n_kv_heads < 1) n_kv_heads = 1;
-        }
+    /* Gemma 4 hybrid: full attention layers use different head_dim and kv_heads.
+     * Sliding layers: head_dim=256, kv_heads=8 (stored in config)
+     * Full layers:    head_dim=512, kv_heads=2
+     * Infer full dimensions: total Q/K stays same, head_dim doubles, heads halve. */
+    if (model->layer_is_sliding && !model->layer_is_sliding[l]) {
+        /* Full attention layer: head_dim is 2x sliding, kv_heads is sliding/2.
+         * Query pre-attn scalar (Gemma) also changes with head_dim. */
+        int global_head_dim = c->head_dim * 2;  /* 256 → 512 */
+        int global_kv_heads = c->n_kv_heads * c->head_dim / global_head_dim;
+        if (global_kv_heads < 1) global_kv_heads = 1;
+        head_dim = global_head_dim;
+        n_kv_heads = global_kv_heads;
+        n_heads = n_heads; /* Q heads stay same count but with larger head_dim */
     }
 
     int kv_dim = n_kv_heads * head_dim;

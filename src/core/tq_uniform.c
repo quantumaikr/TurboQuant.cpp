@@ -258,3 +258,120 @@ void tq_uniform_2b_attention_ref(const float* query, const void* kv,
         scores[s] = dot;
     }
 }
+
+/* ====================================================================
+ * Uniform 3-bit with per-sub-block FP16 scales (Q3_K-style)
+ *
+ * Each 128-element block is split into 4 sub-blocks of 32 elements.
+ * Each sub-block has independent FP16 scale and minimum, giving
+ * excellent adaptation to local value distributions.
+ *
+ * 8 quantization levels (3-bit) per value.
+ * 64 bytes / 128 elements = 4.0 bpe.
+ *
+ * Compared to uniform_4b (4.0 bpe, 16 levels, 1 global scale):
+ * - Fewer levels (8 vs 16) but finer per-sub-block adaptation
+ * - Better for heterogeneous distributions within a head dimension
+ * ==================================================================== */
+
+/* ---------- Uniform 3-bit sub-block quantize ---------- */
+
+void tq_uniform_3b_quantize_ref(const float* src, void* dst, int n) {
+    block_tq_uniform_3b* block = (block_tq_uniform_3b*)dst;
+    int count = n;
+    if (count > TQ_BK) count = TQ_BK;
+
+    /* Compute per-sub-block min/max and store FP16 scale/min */
+    for (int sb = 0; sb < TQ_3B_NSUB; sb++) {
+        int start = sb * TQ_3B_SUBK;
+        int end = start + TQ_3B_SUBK;
+        if (end > count) end = count;
+        float mn = FLT_MAX, mx = -FLT_MAX;
+        for (int i = start; i < end; i++) {
+            if (src[i] < mn) mn = src[i];
+            if (src[i] > mx) mx = src[i];
+        }
+        if (end <= start) { mn = 0; mx = 0; }
+
+        float range = mx - mn;
+        if (range < 1e-8f) range = 1e-8f;
+        float scale = range / 8.0f; /* 3-bit: 8 bins of width range/8 */
+
+        block->sub_scale[sb] = uni_fp32_to_fp16(scale);
+        block->sub_min[sb]   = uni_fp32_to_fp16(mn);
+    }
+
+    /* Pack 3-bit quantized values into qs (LSB-first).
+     * Use the FP16-reconstructed scale/min for quantization
+     * to minimize encode/decode mismatch.
+     */
+    memset(block->qs, 0, TQ_BK * 3 / 8);
+    for (int i = 0; i < count; i++) {
+        int sb = i / TQ_3B_SUBK;
+        float scale = uni_fp16_to_fp32(block->sub_scale[sb]);
+        float mn    = uni_fp16_to_fp32(block->sub_min[sb]);
+        if (scale < 1e-10f) scale = 1e-10f;
+
+        int q = (int)floorf((src[i] - mn) / scale);
+        if (q < 0) q = 0;
+        if (q > 7) q = 7;
+
+        /* 3-bit packing: element i uses bits [i*3 .. i*3+2] across qs bytes */
+        int bit_pos = i * 3;
+        int byte_idx = bit_pos / 8;
+        int bit_off  = bit_pos % 8;
+        block->qs[byte_idx] |= (uint8_t)(q << bit_off);
+        /* Handle cross-byte boundary (when bit_off > 5, bits spill into next byte) */
+        if (bit_off > 5 && byte_idx + 1 < TQ_BK * 3 / 8) {
+            block->qs[byte_idx + 1] |= (uint8_t)(q >> (8 - bit_off));
+        }
+    }
+}
+
+/* ---------- Uniform 3-bit sub-block dequantize ---------- */
+
+void tq_uniform_3b_dequantize_ref(const void* src, float* dst, int n) {
+    const block_tq_uniform_3b* block = (const block_tq_uniform_3b*)src;
+    int count = n;
+    if (count > TQ_BK) count = TQ_BK;
+
+    for (int i = 0; i < count; i++) {
+        int sb = i / TQ_3B_SUBK;
+        float scale = uni_fp16_to_fp32(block->sub_scale[sb]);
+        float mn    = uni_fp16_to_fp32(block->sub_min[sb]);
+
+        /* Extract 3-bit value */
+        int bit_pos = i * 3;
+        int byte_idx = bit_pos / 8;
+        int bit_off  = bit_pos % 8;
+        int q = (block->qs[byte_idx] >> bit_off) & 0x07;
+        if (bit_off > 5 && byte_idx + 1 < TQ_BK * 3 / 8) {
+            q |= (block->qs[byte_idx + 1] << (8 - bit_off)) & 0x07;
+        }
+
+        dst[i] = mn + ((float)q + 0.5f) * scale;
+    }
+}
+
+/* ---------- Uniform 3-bit attention (dequantize + dot product) ---------- */
+
+void tq_uniform_3b_attention_ref(const float* query, const void* kv,
+                                  float* scores, int seq_len, int head_dim) {
+    int blocks_per_key = (head_dim + TQ_BK - 1) / TQ_BK;
+    const block_tq_uniform_3b* all_blocks = (const block_tq_uniform_3b*)kv;
+
+    for (int s = 0; s < seq_len; s++) {
+        float dot = 0;
+        for (int b = 0; b < blocks_per_key; b++) {
+            int offset = b * TQ_BK;
+            int chunk = (head_dim - offset > TQ_BK) ? TQ_BK : (head_dim - offset);
+
+            float deq[TQ_BK];
+            tq_uniform_3b_dequantize_ref(&all_blocks[s * blocks_per_key + b], deq, chunk);
+
+            for (int dd = 0; dd < chunk; dd++)
+                dot += query[offset + dd] * deq[dd];
+        }
+        scores[s] = dot;
+    }
+}

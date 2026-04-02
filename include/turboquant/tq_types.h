@@ -53,7 +53,8 @@ typedef enum {
     TQ_TYPE_TURBO_KV_4B = 9, /* TurboQuant KV: 3-bit codebook + 1-bit QJL residual */
     TQ_TYPE_TURBO_KV_1B = 10,/* TurboQuant KV: 1-bit Hamming (sign only)           */
     TQ_TYPE_TURBO_KV_2B = 11,/* TurboQuant KV: 2-bit (1-bit codebook + 1-bit QJL) */
-    TQ_TYPE_COUNT     = 12
+    TQ_TYPE_UNIFORM_3B= 12,  /* Min-Max uniform 3-bit with sub-block scales     */
+    TQ_TYPE_COUNT     = 13
 } tq_type;
 
 /* ============================================================
@@ -109,6 +110,22 @@ typedef struct {
     uint16_t zero_point;
     uint8_t  qs[TQ_BK / 4];         /* 2-bit: 4 values/byte, LSB-first */
 } block_tq_uniform_2b;
+
+/* size verified after extern "C" block */
+
+/* Uniform 3-bit with sub-block scales (Q3_K-style)
+ * 4 sub-blocks of 32 elements, each with independent FP16 scale/min.
+ * 8 quantization levels (3-bit) per value, but adapted to local statistics.
+ * 4.0 bits per element: (16 bytes meta + 48 bytes data) / 128 elements.
+ */
+#define TQ_3B_NSUB  4                          /* sub-blocks per block  */
+#define TQ_3B_SUBK  (TQ_BK / TQ_3B_NSUB)      /* 32 elements per sub  */
+
+typedef struct {
+    uint16_t sub_scale[TQ_3B_NSUB]; /* per-sub-block scale (fp16, 8B)   */
+    uint16_t sub_min[TQ_3B_NSUB];   /* per-sub-block minimum (fp16, 8B) */
+    uint8_t  qs[TQ_BK * 3 / 8];    /* 3-bit packed data (48B)          */
+} block_tq_uniform_3b;              /* 64 bytes per 128 elements        */
 
 /* size verified after extern "C" block */
 
@@ -241,6 +258,7 @@ TQ_CHECK_SIZE(block_tq_polar,      8 + TQ_BK / 2);
 TQ_CHECK_SIZE(block_tq_qjl,        4 + TQ_SKETCH_DIM / 8 + TQ_OUTLIERS);
 TQ_CHECK_SIZE(block_tq_uniform_4b, 4 + TQ_BK / 2);
 TQ_CHECK_SIZE(block_tq_uniform_2b, 4 + TQ_BK / 4);
+TQ_CHECK_SIZE(block_tq_uniform_3b, 4 * TQ_3B_NSUB + TQ_BK * 3 / 8);
 TQ_CHECK_SIZE(block_tq_mixed_4b8, 4 + TQ_MIXED_OUTLIERS + TQ_MIXED_OUTLIERS * 2 + TQ_BK / 2);
 TQ_CHECK_SIZE(block_tq_turbo_kv_3b, 8 + TQ_BK / 4 + TQ_BK / 8);
 TQ_CHECK_SIZE(block_tq_turbo_kv_4b, 8 + TQ_BK * 3 / 8 + TQ_BK / 8);
