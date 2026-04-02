@@ -47,11 +47,6 @@ static struct {
 
 static int g_n_threads = 1;
 
-/* Global flag: when set, Q2 matmul functions use 1-bit sign hash instead of Lloyd-Max Q2.
- * This is set by tq_quantize_weights_1bit(). The Q2 fields store sign bits and norms. */
-static int g_use_1bit_weights = 0;
-void tq_set_1bit_mode(int enable) { g_use_1bit_weights = enable; }
-
 
 static void* tp_worker(void* arg) {
     int id = (int)(intptr_t)arg;
@@ -1503,10 +1498,6 @@ static void* matmul_q2_worker(void* arg) {
 /* Q2 matmul: quantize activation x to Q8 once, then Q2xQ8 integer dot products */
 void tq_matmul_q2(float* out, const float* x, const uint8_t* w_qs, const float* w_scales,
                    int n, int d) {
-    if (g_use_1bit_weights) {
-        tq_matmul_1bit(out, x, w_qs, w_scales, n, d);
-        return;
-    }
     /* Quantize activation x to Q8 (reuse global buffer, mutex-protected) */
     pthread_mutex_lock(&g_q8_mutex);
     if (d > g_q8_cap) {
@@ -1562,22 +1553,6 @@ void tq_matmul_q2(float* out, const float* x, const uint8_t* w_qs, const float* 
 void tq_matmul_q2_preq(float* out, const uint8_t* w_qs, const float* w_scales,
                         const int8_t* x_q8, const float* x_scales,
                         int n, int d) {
-    /* 1-bit mode: Q2 fields contain sign bits + norms, not Lloyd-Max Q2 */
-    if (g_use_1bit_weights) {
-        /* Reconstruct FP32 x from Q8 (approximate) */
-        float* x_fp32 = (float*)malloc((size_t)d * sizeof(float));
-        if (x_fp32) {
-            int nb = d / 32;
-            for (int b = 0; b < nb; b++) {
-                float sc = x_scales[b];
-                for (int j = 0; j < 32; j++)
-                    x_fp32[b*32+j] = (float)x_q8[b*32+j] * sc;
-            }
-            tq_matmul_1bit(out, x_fp32, w_qs, w_scales, n, d);
-            free(x_fp32);
-            return;
-        }
-    }
     int n_threads = g_n_threads;
 
     if (n < 256 || n_threads <= 1) {
@@ -1706,8 +1681,16 @@ void tq_matmul_rht_q4q2(float* out, const float* x,
     int nb = d / 32;
     size_t q4_row_bytes = (size_t)nb * 16;
     size_t q2_row_bytes = (size_t)nb * 8;
-    float* row_q4 = (float*)malloc((size_t)d * sizeof(float));
-    float* row_q2 = (float*)malloc((size_t)d * sizeof(float));
+    /* Thread-local buffers to avoid per-call malloc */
+    static __thread float* row_q4 = NULL;
+    static __thread float* row_q2 = NULL;
+    static __thread int row_cap = 0;
+    if (d > row_cap) {
+        free(row_q4); free(row_q2);
+        row_q4 = (float*)malloc((size_t)d * sizeof(float));
+        row_q2 = (float*)malloc((size_t)d * sizeof(float));
+        row_cap = d;
+    }
 
     for (int row = 0; row < n; row++) {
         /* Dequant Q4 component */
@@ -1722,8 +1705,7 @@ void tq_matmul_rht_q4q2(float* out, const float* x,
             sum += (row_q4[j] + row_q2[j]) * x_rht[j];
         out[row] = sum;
     }
-    free(row_q4);
-    free(row_q2);
+    /* row_q4/row_q2 are thread-local, kept for reuse */
 }
 
 /* Q4+Q2 fused matmul: Q4 primary + Q2 residual correction.
@@ -1737,13 +1719,18 @@ void tq_matmul_q4q2_preq(float* out,
     /* Q4 matmul */
     tq_matmul_q4_preq(out, w_q4, w_q4s, x_q8, x_scales, n, d);
     
-    /* Q2 residual correction */
+    /* Q2 residual correction — uses thread-local static buffer to avoid hot-path malloc */
     if (w_q2 && w_q2s) {
-        float* corr = (float*)malloc((size_t)n * sizeof(float));
-        if (corr) {
-            tq_matmul_q2_preq(corr, w_q2, w_q2s, x_q8, x_scales, n, d);
-            for (int i = 0; i < n; i++) out[i] += corr[i];
-            free(corr);
+        static __thread float* t_corr = NULL;
+        static __thread int t_corr_cap = 0;
+        if (n > t_corr_cap) {
+            free(t_corr);
+            t_corr = (float*)malloc((size_t)n * sizeof(float));
+            t_corr_cap = n;
+        }
+        if (t_corr) {
+            tq_matmul_q2_preq(t_corr, w_q2, w_q2s, x_q8, x_scales, n, d);
+            for (int i = 0; i < n; i++) out[i] += t_corr[i];
         }
     }
 }

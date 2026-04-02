@@ -4013,8 +4013,6 @@ void tq_quantize_weights_1bit(tq_model_t* model) {
     model->_q2_size = used;
 
     /* Activate global 1-bit matmul routing */
-    extern void tq_set_1bit_mode(int);
-    tq_set_1bit_mode(1);
 
     fprintf(stderr, "tq_quantize_weights_1bit: 1-bit sign hash (%zu MB)\n",
             used / (1024 * 1024));

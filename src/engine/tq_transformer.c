@@ -29,6 +29,26 @@
 
 #ifdef __ARM_NEON
 #include <arm_neon.h>
+
+/* Unified Q2/1-bit matmul dispatch.
+ * When model->use_1bit_weights, Q2 fields contain sign bits + norms,
+ * dispatched to tq_matmul_1bit (FP32 input required).
+ * Otherwise, standard Q2 Lloyd-Max matmul with pre-quantized Q8 input. */
+#define TQ_MATMUL_Q2_OR_1BIT(out, x_fp32, qs, scales, x_q8, x_q8s, rows, cols, is_1bit) \
+    do { \
+        if (is_1bit) \
+            tq_matmul_1bit((out), (x_fp32), (qs), (scales), (rows), (cols)); \
+        else \
+            tq_matmul_q2_preq((out), (qs), (scales), (x_q8), (x_q8s), (rows), (cols)); \
+    } while(0)
+
+#define TQ_MATMUL_Q2_OR_1BIT_FP32(out, x_fp32, qs, scales, rows, cols, is_1bit) \
+    do { \
+        if (is_1bit) \
+            tq_matmul_1bit((out), (x_fp32), (qs), (scales), (rows), (cols)); \
+        else \
+            tq_matmul_q2((out), (x_fp32), (qs), (scales), (rows), (cols)); \
+    } while(0)
 #endif
 
 /* ============================================================
@@ -515,7 +535,7 @@ static void deltanet_forward(tq_model_t* model, tq_state_t* s, int l) {
     /* Step 1: Project input through QKV and Z */
     TQ_PROF_START(_tp);
     if (layer->delta_in_proj_qkv_q2)
-        tq_matmul_q2_preq(s->delta_qkv, layer->delta_in_proj_qkv_q2, layer->delta_in_proj_qkv_q2s, s->xb_q8, s->xb_q8s, qkv_dim, dim);
+        TQ_MATMUL_Q2_OR_1BIT(s->delta_qkv, s->xb, layer->delta_in_proj_qkv_q2, layer->delta_in_proj_qkv_q2s, s->xb_q8, s->xb_q8s, qkv_dim, dim, model->use_1bit_weights);
     else if (layer->delta_in_proj_qkv_q4)
         tq_matmul_q4q2_preq(s->delta_qkv, layer->delta_in_proj_qkv_q4, layer->delta_in_proj_qkv_q4s, layer->delta_in_proj_qkv_q2, layer->delta_in_proj_qkv_q2s, s->xb_q8, s->xb_q8s, qkv_dim, dim);
     else if (layer->delta_in_proj_qkv_q8)
@@ -526,7 +546,7 @@ static void deltanet_forward(tq_model_t* model, tq_state_t* s, int l) {
         tq_matmul(s->delta_qkv, s->xb, layer->delta_in_proj_qkv, qkv_dim, dim);
 
     if (layer->delta_in_proj_z_q2)
-        tq_matmul_q2_preq(s->delta_z, layer->delta_in_proj_z_q2, layer->delta_in_proj_z_q2s, s->xb_q8, s->xb_q8s, z_dim, dim);
+        TQ_MATMUL_Q2_OR_1BIT(s->delta_z, s->xb, layer->delta_in_proj_z_q2, layer->delta_in_proj_z_q2s, s->xb_q8, s->xb_q8s, z_dim, dim, model->use_1bit_weights);
     else if (layer->delta_in_proj_z_q4)
         tq_matmul_q4q2_preq(s->delta_z, layer->delta_in_proj_z_q4, layer->delta_in_proj_z_q4s, layer->delta_in_proj_z_q2, layer->delta_in_proj_z_q2s, s->xb_q8, s->xb_q8s, z_dim, dim);
     else if (layer->delta_in_proj_z_q8)
@@ -539,7 +559,7 @@ static void deltanet_forward(tq_model_t* model, tq_state_t* s, int l) {
     /* Step 2: Project alpha and beta */
     /* alpha = in_proj_a @ x  -> [dn] */
     if (layer->delta_in_proj_a_q2)
-        tq_matmul_q2_preq(s->delta_ab, layer->delta_in_proj_a_q2, layer->delta_in_proj_a_q2s, s->xb_q8, s->xb_q8s, dn, dim);
+        TQ_MATMUL_Q2_OR_1BIT(s->delta_ab, s->xb, layer->delta_in_proj_a_q2, layer->delta_in_proj_a_q2s, s->xb_q8, s->xb_q8s, dn, dim, model->use_1bit_weights);
     else if (layer->delta_in_proj_a_q4)
         tq_matmul_q4q2_preq(s->delta_ab, layer->delta_in_proj_a_q4, layer->delta_in_proj_a_q4s, layer->delta_in_proj_a_q2, layer->delta_in_proj_a_q2s, s->xb_q8, s->xb_q8s, dn, dim);
     else if (layer->delta_in_proj_a_q8)
@@ -551,7 +571,7 @@ static void deltanet_forward(tq_model_t* model, tq_state_t* s, int l) {
 
     /* beta = sigmoid(in_proj_b @ x) -> [dn] */
     if (layer->delta_in_proj_b_q2)
-        tq_matmul_q2_preq(s->delta_ab + dn, layer->delta_in_proj_b_q2, layer->delta_in_proj_b_q2s, s->xb_q8, s->xb_q8s, dn, dim);
+        TQ_MATMUL_Q2_OR_1BIT(s->delta_ab + dn, s->xb, layer->delta_in_proj_b_q2, layer->delta_in_proj_b_q2s, s->xb_q8, s->xb_q8s, dn, dim, model->use_1bit_weights);
     else if (layer->delta_in_proj_b_q4)
         tq_matmul_q4q2_preq(s->delta_ab + dn, layer->delta_in_proj_b_q4, layer->delta_in_proj_b_q4s, layer->delta_in_proj_b_q2, layer->delta_in_proj_b_q2s, s->xb_q8, s->xb_q8s, dn, dim);
     else if (layer->delta_in_proj_b_q8)
@@ -809,7 +829,7 @@ static void deltanet_forward(tq_model_t* model, tq_state_t* s, int l) {
     /* Output projection: [dim, z_dim] @ delta_out[z_dim] -> xb2[dim] */
     TQ_PROF_START(_tp);
     if (layer->delta_out_proj_q2)
-        tq_matmul_q2(s->xb2, s->delta_out, layer->delta_out_proj_q2, layer->delta_out_proj_q2s, dim, z_dim);
+        TQ_MATMUL_Q2_OR_1BIT_FP32(s->xb2, s->delta_out, layer->delta_out_proj_q2, layer->delta_out_proj_q2s, dim, z_dim, model->use_1bit_weights);
     else if (layer->delta_out_proj_q4)
         tq_matmul_q4(s->xb2, s->delta_out, layer->delta_out_proj_q4, layer->delta_out_proj_q4s, dim, z_dim);
     else if (layer->delta_out_proj_q8)
@@ -862,7 +882,7 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
     if (c->attn_output_gate) {
         int qg_dim = n_heads * head_dim * 2;
         if (layer->wq_q2) {
-            tq_matmul_q2_preq(s->xb2, layer->wq_q2, layer->wq_q2s, s->xb_q8, s->xb_q8s, qg_dim, dim);
+            TQ_MATMUL_Q2_OR_1BIT(s->xb2, s->xb, layer->wq_q2, layer->wq_q2s, s->xb_q8, s->xb_q8s, qg_dim, dim, model->use_1bit_weights);
         } else if (layer->wq_q4) {
             tq_matmul_q4q2_preq(s->xb2, layer->wq_q4, layer->wq_q4s, layer->wq_q2, layer->wq_q2s, s->xb_q8, s->xb_q8s, qg_dim, dim);
         } else if (layer->wq_q8) {
@@ -886,7 +906,7 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
         gate_q = gate_tmp;
     } else {
         if (layer->wq_q2) {
-            tq_matmul_q2_preq(s->q, layer->wq_q2, layer->wq_q2s, s->xb_q8, s->xb_q8s, n_heads * head_dim, dim);
+            TQ_MATMUL_Q2_OR_1BIT(s->q, s->xb, layer->wq_q2, layer->wq_q2s, s->xb_q8, s->xb_q8s, n_heads * head_dim, dim, model->use_1bit_weights);
         } else if (layer->wq_q4) {
             tq_matmul_q4q2_preq(s->q, layer->wq_q4, layer->wq_q4s, layer->wq_q2, layer->wq_q2s, s->xb_q8, s->xb_q8s, n_heads * head_dim, dim);
         } else if (layer->wq_q8) {
@@ -898,7 +918,7 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
         }
     }
     if (layer->wk_q2) {
-        tq_matmul_q2_preq(s->k, layer->wk_q2, layer->wk_q2s, s->xb_q8, s->xb_q8s, kv_dim, dim);
+        TQ_MATMUL_Q2_OR_1BIT(s->k, s->xb, layer->wk_q2, layer->wk_q2s, s->xb_q8, s->xb_q8s, kv_dim, dim, model->use_1bit_weights);
     } else if (layer->wk_q4) {
         tq_matmul_q4q2_preq(s->k, layer->wk_q4, layer->wk_q4s, layer->wk_q2, layer->wk_q2s, s->xb_q8, s->xb_q8s, kv_dim, dim);
     } else if (layer->wk_q8) {
@@ -909,7 +929,7 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
         tq_matmul(s->k, s->xb, layer->wk, kv_dim, dim);
     }
     if (layer->wv_q2) {
-        tq_matmul_q2_preq(s->v, layer->wv_q2, layer->wv_q2s, s->xb_q8, s->xb_q8s, kv_dim, dim);
+        TQ_MATMUL_Q2_OR_1BIT(s->v, s->xb, layer->wv_q2, layer->wv_q2s, s->xb_q8, s->xb_q8s, kv_dim, dim, model->use_1bit_weights);
     } else if (layer->wv_q4) {
         tq_matmul_q4q2_preq(s->v, layer->wv_q4, layer->wv_q4s, layer->wv_q2, layer->wv_q2s, s->xb_q8, s->xb_q8s, kv_dim, dim);
     } else if (layer->wv_q8) {
@@ -1419,7 +1439,7 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
     /* Output projection */
     TQ_PROF_START(_tp);
     if (layer->wo_q2)
-        tq_matmul_q2(s->xb2, s->xb, layer->wo_q2, layer->wo_q2s, dim, n_heads * head_dim);
+        TQ_MATMUL_Q2_OR_1BIT_FP32(s->xb2, s->xb, layer->wo_q2, layer->wo_q2s, dim, n_heads * head_dim, model->use_1bit_weights);
     else if (layer->wo_q4)
         tq_matmul_q4(s->xb2, s->xb, layer->wo_q4, layer->wo_q4s, dim, n_heads * head_dim);
     else if (layer->wo_q8)
@@ -1576,29 +1596,20 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
                                    s->xb_q8, s->xb_q8s, c->intermediate_dim, dim);
                 tq_matmul_q4_preq(s->hb2, layer->w_up_q4, layer->w_up_q4s,
                                    s->xb_q8, s->xb_q8s, c->intermediate_dim, dim);
-                /* Add Q2 residual correction */
-                float* corr = (float*)malloc((size_t)c->intermediate_dim * sizeof(float));
-                tq_matmul_q2_preq(corr, layer->w_gate_q2, layer->w_gate_q2s,
+                /* Add Q2 residual correction (reuse xb2 as temp — safe here,
+                 * xb2 is only needed after FFN completes) */
+                tq_matmul_q2_preq(s->xb2, layer->w_gate_q2, layer->w_gate_q2s,
                                    s->xb_q8, s->xb_q8s, c->intermediate_dim, dim);
-                for (int i = 0; i < c->intermediate_dim; i++) s->hb[i] += corr[i];
-                tq_matmul_q2_preq(corr, layer->w_up_q2, layer->w_up_q2s,
+                for (int i = 0; i < c->intermediate_dim; i++) s->hb[i] += s->xb2[i];
+                tq_matmul_q2_preq(s->xb2, layer->w_up_q2, layer->w_up_q2s,
                                    s->xb_q8, s->xb_q8s, c->intermediate_dim, dim);
-                for (int i = 0; i < c->intermediate_dim; i++) s->hb2[i] += corr[i];
-                free(corr);
+                for (int i = 0; i < c->intermediate_dim; i++) s->hb2[i] += s->xb2[i];
             } else if (layer->w_gate_q2 && !layer->w_gate_q4) {
-                if (model->use_1bit_weights) {
-                    /* 1-bit sign hash matmul */
-                    tq_matmul_1bit(s->hb, s->xb, layer->w_gate_q2, layer->w_gate_q2s,
-                                    c->intermediate_dim, dim);
-                    tq_matmul_1bit(s->hb2, s->xb, layer->w_up_q2, layer->w_up_q2s,
-                                    c->intermediate_dim, dim);
-                } else {
-                    tq_quantize_row_q8(s->xb, s->xb_q8, s->xb_q8s, dim);
-                    tq_matmul_q2_preq(s->hb, layer->w_gate_q2, layer->w_gate_q2s,
-                                       s->xb_q8, s->xb_q8s, c->intermediate_dim, dim);
-                    tq_matmul_q2_preq(s->hb2, layer->w_up_q2, layer->w_up_q2s,
-                                       s->xb_q8, s->xb_q8s, c->intermediate_dim, dim);
-                }
+                tq_quantize_row_q8(s->xb, s->xb_q8, s->xb_q8s, dim);
+                TQ_MATMUL_Q2_OR_1BIT(s->hb, s->xb, layer->w_gate_q2, layer->w_gate_q2s,
+                                      s->xb_q8, s->xb_q8s, c->intermediate_dim, dim, model->use_1bit_weights);
+                TQ_MATMUL_Q2_OR_1BIT(s->hb2, s->xb, layer->w_up_q2, layer->w_up_q2s,
+                                      s->xb_q8, s->xb_q8s, c->intermediate_dim, dim, model->use_1bit_weights);
             } else if (layer->w_gate_q4) {
                 tq_quantize_row_q8(s->xb, s->xb_q8, s->xb_q8s, dim);
                 tq_matmul_q4_preq(s->hb, layer->w_gate_q4, layer->w_gate_q4s,
@@ -1636,7 +1647,7 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
 
             TQ_PROF_START(_tp);
             if (layer->w_down_q2) {
-                tq_matmul_q2(s->xb2, s->hb, layer->w_down_q2, layer->w_down_q2s, dim, c->intermediate_dim);
+                TQ_MATMUL_Q2_OR_1BIT_FP32(s->xb2, s->hb, layer->w_down_q2, layer->w_down_q2s, dim, c->intermediate_dim, model->use_1bit_weights);
             } else if (layer->w_down_q4) {
                 tq_matmul_q4(s->xb2, s->hb, layer->w_down_q4, layer->w_down_q4s, dim, c->intermediate_dim);
             } else if (layer->w_down_q8) {
