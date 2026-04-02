@@ -44,3 +44,9 @@ refs/
 models/.claude/worktrees/
 *.gguf
 models/
+
+# Makefile build artifacts
+tq_run
+tq_convert
+libturboquant.a
+*.o
