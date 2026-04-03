@@ -911,9 +911,12 @@ moe_cpu_fallback: ;
                            hidden_dim, expert_dim);
         }
 
-        /* Weighted accumulation: output += weight * down_proj */
+        /* Weighted accumulation: output += weight * scale * down_proj
+         * Gemma 4 has per-expert output scaling (ffn_down_exps.scale). */
+        float exp_scale = (layer->expert_scale) ? layer->expert_scale[eid] : 1.0f;
+        float ws = w * exp_scale;
         for (int i = 0; i < hidden_dim; i++)
-            output[i] += w * state->expert_out[i];
+            output[i] += ws * state->expert_out[i];
     }
 
 #ifdef TQ_HAS_METAL

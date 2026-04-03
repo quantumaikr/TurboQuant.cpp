@@ -238,8 +238,11 @@ __global__ void tq_fused_uniform_cache_kernel(
         } else if constexpr (QUANT_BITS == 2) {
             tq_uniform_2b_block_d* out = reinterpret_cast<tq_uniform_2b_block_d*>(cache);
             if (tid == 0) {
-                out[cache_out_idx].scale      = tq_float_to_half(scale);
-                out[cache_out_idx].zero_point = tq_float_to_half(gmin);
+                /* TODO: compute per-sub-block scales for better quality */
+                for (int sb = 0; sb < 4; sb++) {
+                    out[cache_out_idx].sub_scale[sb] = tq_float_to_half(scale);
+                    out[cache_out_idx].sub_min[sb]   = tq_float_to_half(gmin);
+                }
             }
 
             /* Each thread packs four values into one byte */

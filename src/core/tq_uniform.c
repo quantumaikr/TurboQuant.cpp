@@ -88,28 +88,41 @@ void tq_uniform_4b_dequantize_ref(const void* src, float* dst, int n) {
     }
 }
 
-/* ---------- Uniform 2-bit quantize ---------- */
+/* ---------- Uniform 2-bit quantize (sub-block scales) ---------- */
 
 void tq_uniform_2b_quantize_ref(const float* src, void* dst, int n) {
     block_tq_uniform_2b* block = (block_tq_uniform_2b*)dst;
     int count = n;
     if (count > TQ_BK) count = TQ_BK;
 
-    float mn = FLT_MAX, mx = -FLT_MAX;
-    for (int i = 0; i < count; i++) {
-        if (src[i] < mn) mn = src[i];
-        if (src[i] > mx) mx = src[i];
+    /* Compute per-sub-block min/max and store FP16 scale/min */
+    for (int sb = 0; sb < TQ_2B_NSUB; sb++) {
+        int start = sb * TQ_2B_SUBK;
+        int end = start + TQ_2B_SUBK;
+        if (end > count) end = count;
+        float mn = FLT_MAX, mx = -FLT_MAX;
+        for (int i = start; i < end; i++) {
+            if (src[i] < mn) mn = src[i];
+            if (src[i] > mx) mx = src[i];
+        }
+        if (end <= start) { mn = 0; mx = 0; }
+
+        float range = mx - mn;
+        if (range < 1e-8f) range = 1e-8f;
+        float scale = range / 4.0f; /* 2-bit: 4 bins of width range/4 */
+
+        block->sub_scale[sb] = uni_fp32_to_fp16(scale);
+        block->sub_min[sb]   = uni_fp32_to_fp16(mn);
     }
 
-    float range = mx - mn;
-    if (range < 1e-8f) range = 1e-8f;
-    float scale = range / 4.0f; /* 2-bit: 4 bins of width range/4 */
-
-    block->scale      = uni_fp32_to_fp16(scale);
-    block->zero_point = uni_fp32_to_fp16(mn);
-
+    /* Pack 2-bit quantized values using FP16-reconstructed scale/min */
     memset(block->qs, 0, TQ_BK / 4);
     for (int i = 0; i < count; i++) {
+        int sb = i / TQ_2B_SUBK;
+        float scale = uni_fp16_to_fp32(block->sub_scale[sb]);
+        float mn    = uni_fp16_to_fp32(block->sub_min[sb]);
+        if (scale < 1e-10f) scale = 1e-10f;
+
         int q = (int)floorf((src[i] - mn) / scale);
         if (q < 0) q = 0;
         if (q > 3) q = 3;
@@ -119,17 +132,18 @@ void tq_uniform_2b_quantize_ref(const float* src, void* dst, int n) {
     }
 }
 
-/* ---------- Uniform 2-bit dequantize ---------- */
+/* ---------- Uniform 2-bit dequantize (sub-block scales) ---------- */
 
 void tq_uniform_2b_dequantize_ref(const void* src, float* dst, int n) {
     const block_tq_uniform_2b* block = (const block_tq_uniform_2b*)src;
     int count = n;
     if (count > TQ_BK) count = TQ_BK;
 
-    float scale = uni_fp16_to_fp32(block->scale);
-    float mn    = uni_fp16_to_fp32(block->zero_point);
-
     for (int i = 0; i < count; i++) {
+        int sb = i / TQ_2B_SUBK;
+        float scale = uni_fp16_to_fp32(block->sub_scale[sb]);
+        float mn    = uni_fp16_to_fp32(block->sub_min[sb]);
+
         uint8_t byte = block->qs[i / 4];
         int pos = i % 4;
         int q = (byte >> (pos * 2)) & 0x03;

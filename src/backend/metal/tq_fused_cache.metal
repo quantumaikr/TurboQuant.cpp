@@ -31,9 +31,9 @@ struct block_tq_uniform_4b_fc {
 };
 
 struct block_tq_uniform_2b_fc {
-    ushort scale;
-    ushort zero_point;
-    uchar  qs[32]; /* TQ_BK / 4 */
+    ushort sub_scale[4];  /* per-sub-block scale (fp16) */
+    ushort sub_min[4];    /* per-sub-block minimum (fp16) */
+    uchar  qs[32];        /* TQ_BK / 4 */
 };
 
 /* ============================================================

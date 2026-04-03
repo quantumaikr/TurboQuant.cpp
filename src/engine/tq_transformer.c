@@ -1630,7 +1630,12 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
                 }
                 /* Apply post_attention_layernorm to xb2 */
                 tq_rmsnorm(s->xb2, s->xb2, layer->post_attn_norm, dim, c->rms_norm_eps);
-                /* Re-add normalized output */
+                /* Apply layer_output_scale if present (Gemma 4) */
+                float los = layer->layer_output_scale;
+                if (los != 0.0f && los != 1.0f) {
+                    for (int i = 0; i < dim; i++) s->xb2[i] *= los;
+                }
+                /* Re-add normalized+scaled output */
                 tq_add(s->x, s->x, s->xb2, dim);
             }
         }
@@ -1639,6 +1644,7 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
         /* FFN Block — MoE or Dense SwiGLU/GeGLU */
 
         /* MoE FFN path: route to top-K experts + shared expert */
+        int did_moe = 0;
         if (layer->moe && s->moe_state && model->moe_config) {
             float* ffn_norm_w = layer->ffn_norm;
             if (is_gemma3 && layer->pre_ffn_norm)
@@ -1655,17 +1661,27 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
             if (is_gemma3 && layer->post_ffn_norm)
                 tq_rmsnorm(s->xb2, s->xb2, layer->post_ffn_norm, dim, c->rms_norm_eps);
 
+            /* Apply layer_output_scale (Gemma 4) */
+            float los = layer->layer_output_scale;
+            if (los != 0.0f && los != 1.0f) {
+                for (int i = 0; i < dim; i++) s->xb2[i] *= los;
+            }
             tq_add(s->x, s->x, s->xb2, dim);
+            did_moe = 1;
         }
         /* Dense FFN path — SwiGLU (Qwen3.5) or GeGLU (Gemma3).
+         * For Gemma 4: runs BOTH MoE AND dense FFN (shared expert) per layer.
          * Optimization: cache Q8 quantization of xb for gate+up projections,
          * and cache Q8 of hb for down projection. */
-        else if ((layer->w_gate || layer->w_gate_q8 || layer->w_gate_q4 || layer->w_gate_q2 || layer->gguf_w_gate) &&
+        /* Dense FFN: run for non-MoE layers, or for Gemma 4 MoE layers that also have dense FFN */
+        if ((!did_moe || (is_gemma3 && did_moe)) &&
+            (layer->w_gate || layer->w_gate_q8 || layer->w_gate_q4 || layer->w_gate_q2 || layer->gguf_w_gate) &&
             (layer->w_up || layer->w_up_q8 || layer->w_up_q4 || layer->w_up_q2 || layer->gguf_w_up) &&
             (layer->w_down || layer->w_down_q8 || layer->w_down_q4 || layer->w_down_q2 || layer->gguf_w_down)) {
 
-            /* Pre-FFN norm: Gemma3 uses pre_feedforward_layernorm,
-             * Qwen3.5 uses post_attention_layernorm (stored as ffn_norm) */
+            /* Pre-FFN norm: Gemma 4 dual-FFN uses pre_ffw_norm_2 for the dense FFN.
+             * Gemma3 uses pre_feedforward_layernorm.
+             * Qwen3.5 uses post_attention_layernorm (stored as ffn_norm). */
             float* ffn_norm_w = layer->ffn_norm;
             if (is_gemma3 && layer->pre_ffn_norm) {
                 ffn_norm_w = layer->pre_ffn_norm;
@@ -1746,10 +1762,19 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
             TQ_PROF_STOP(_tp, matmul_ns);
 
             /* Gemma3: apply post_feedforward_layernorm to FFN output before residual */
-            if (is_gemma3 && layer->post_ffn_norm) {
+            if (is_gemma3 && layer->post_ffn_norm && !did_moe) {
+                /* For Gemma 4 dual-FFN, post_ffn_norm was already used for MoE.
+                 * Dense FFN post-norm would need post_ffw_norm_2 (not yet loaded). */
                 tq_rmsnorm(s->xb2, s->xb2, layer->post_ffn_norm, dim, c->rms_norm_eps);
             }
 
+            /* Apply layer_output_scale (Gemma 4) */
+            {
+                float los = layer->layer_output_scale;
+                if (los != 0.0f && los != 1.0f) {
+                    for (int i = 0; i < dim; i++) s->xb2[i] *= los;
+                }
+            }
             tq_add(s->x, s->x, s->xb2, dim);
         }
 

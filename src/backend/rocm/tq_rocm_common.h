@@ -223,8 +223,8 @@ struct tq_uniform_4b_block_d {
 };
 
 struct tq_uniform_2b_block_d {
-    uint16_t scale;
-    uint16_t zero_point;
+    uint16_t sub_scale[4];   /* per-sub-block scale (fp16) */
+    uint16_t sub_min[4];     /* per-sub-block minimum (fp16) */
     uint8_t  qs[TQ_BK_ROCM / 4];
 };
 

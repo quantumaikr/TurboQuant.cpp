@@ -251,6 +251,7 @@ typedef struct {
     tq_expert_weights_t* experts;        /* [num_experts] */
     tq_expert_weights_t  shared_expert;  /* always-active expert */
     float*               shared_gate;    /* [hidden_dim] shared expert gate (optional) */
+    const float*         expert_scale;   /* [num_experts] per-expert output scale (Gemma 4, NULL if not used) */
 } tq_moe_layer_t;
 
 /* MoE runtime state */

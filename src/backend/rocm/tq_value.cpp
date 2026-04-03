@@ -117,8 +117,11 @@ __global__ void tq_value_quantize_2b_kernel(
     float scale = range / 4.0f; /* 2-bit: 4 bins of width range/4 */
 
     if (tid == 0) {
-        out[block_idx].scale      = tq_float_to_half(scale);
-        out[block_idx].zero_point = tq_float_to_half(gmin);
+        /* TODO: compute per-sub-block scales for better quality */
+        for (int sb = 0; sb < 4; sb++) {
+            out[block_idx].sub_scale[sb] = tq_float_to_half(scale);
+            out[block_idx].sub_min[sb]   = tq_float_to_half(gmin);
+        }
     }
 
     if (tid < TQ_BK_ROCM && global_idx < n) {

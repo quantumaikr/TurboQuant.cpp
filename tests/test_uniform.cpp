@@ -82,7 +82,7 @@ TEST(Uniform2B, RoundtripBasic) {
 }
 
 TEST(Uniform2B, BlockSize) {
-    EXPECT_EQ(sizeof(block_tq_uniform_2b), 4u + TQ_BK / 4);
+    EXPECT_EQ(sizeof(block_tq_uniform_2b), 4u * TQ_2B_NSUB + TQ_BK / 4);
 }
 
 TEST(Uniform4B, ConstantInput) {

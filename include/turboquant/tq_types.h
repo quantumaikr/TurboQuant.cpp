@@ -105,11 +105,19 @@ typedef struct {
 
 /* size verified after extern "C" block */
 
+/* Uniform 2-bit with sub-block scales (Q2_K-style)
+ * 4 sub-blocks of 32 elements, each with independent FP16 scale/min.
+ * 4 quantization levels (2-bit) per value, adapted to local statistics.
+ * 3.0 bits per element: (16 bytes meta + 32 bytes data) / 128 elements.
+ */
+#define TQ_2B_NSUB  4                          /* sub-blocks per block  */
+#define TQ_2B_SUBK  (TQ_BK / TQ_2B_NSUB)      /* 32 elements per sub  */
+
 typedef struct {
-    uint16_t scale;
-    uint16_t zero_point;
+    uint16_t sub_scale[TQ_2B_NSUB]; /* per-sub-block scale (fp16, 8B)   */
+    uint16_t sub_min[TQ_2B_NSUB];   /* per-sub-block minimum (fp16, 8B) */
     uint8_t  qs[TQ_BK / 4];         /* 2-bit: 4 values/byte, LSB-first */
-} block_tq_uniform_2b;
+} block_tq_uniform_2b;               /* 48 bytes per 128 elements       */
 
 /* size verified after extern "C" block */
 
@@ -257,7 +265,7 @@ typedef struct {
 TQ_CHECK_SIZE(block_tq_polar,      8 + TQ_BK / 2);
 TQ_CHECK_SIZE(block_tq_qjl,        4 + TQ_SKETCH_DIM / 8 + TQ_OUTLIERS);
 TQ_CHECK_SIZE(block_tq_uniform_4b, 4 + TQ_BK / 2);
-TQ_CHECK_SIZE(block_tq_uniform_2b, 4 + TQ_BK / 4);
+TQ_CHECK_SIZE(block_tq_uniform_2b, 4 * TQ_2B_NSUB + TQ_BK / 4);
 TQ_CHECK_SIZE(block_tq_uniform_3b, 4 * TQ_3B_NSUB + TQ_BK * 3 / 8);
 TQ_CHECK_SIZE(block_tq_mixed_4b8, 4 + TQ_MIXED_OUTLIERS + TQ_MIXED_OUTLIERS * 2 + TQ_BK / 2);
 TQ_CHECK_SIZE(block_tq_turbo_kv_3b, 8 + TQ_BK / 4 + TQ_BK / 8);

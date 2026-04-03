@@ -2837,8 +2837,10 @@ tq_model_t* tq_load_gguf(const char* path) {
 
     /* Sliding window + local RoPE base */
     c->sliding_window = (int)tq_gguf_get_u32(gguf, GGUF_KEY("attention.sliding_window"), 0);
-    c->rope_local_base_freq = tq_gguf_get_f32(gguf, GGUF_KEY("rope.local.freq_base"),
-                               tq_gguf_get_f32(gguf, GGUF_KEY("rope.freq_base"), 10000.0f));
+    /* Local/sliding RoPE base: try Gemma4 naming first, then generic */
+    c->rope_local_base_freq = tq_gguf_get_f32(gguf, GGUF_KEY("rope.freq_base_swa"),
+                               tq_gguf_get_f32(gguf, GGUF_KEY("rope.local.freq_base"),
+                               tq_gguf_get_f32(gguf, GGUF_KEY("rope.freq_base"), 10000.0f)));
 
     /* Cap context for memory safety on small machines.
      * GGUF models often claim 262K context but we cap at 4096 by default.
@@ -2970,7 +2972,13 @@ tq_model_t* tq_load_gguf(const char* path) {
         /* RMSNorm weights (always FP32 in GGUF, dequant to FP32) */
         snprintf(tname, sizeof(tname), "blk.%d.attn_norm.weight", l);
         const tq_gguf_tensor_t* t = find_gguf_tensor(gguf, tname);
-        if (t) layer->attn_norm = dequant_tensor_fp32(t);
+        if (t) {
+            layer->attn_norm = dequant_tensor_fp32(t);
+            /* Gemma norm convention: weight = 1 + stored_weight */
+            if (c->model_type == 1) {
+                for (int i = 0; i < c->hidden_dim; i++) layer->attn_norm[i] += 1.0f;
+            }
+        }
 
         snprintf(tname, sizeof(tname), "blk.%d.ffn_norm.weight", l);
         t = find_gguf_tensor(gguf, tname);
@@ -2979,16 +2987,64 @@ tq_model_t* tq_load_gguf(const char* path) {
             snprintf(tname, sizeof(tname), "blk.%d.post_attention_norm.weight", l);
             t = find_gguf_tensor(gguf, tname);
         }
-        if (t) layer->ffn_norm = dequant_tensor_fp32(t);
+        if (t) {
+            layer->ffn_norm = dequant_tensor_fp32(t);
+            if (c->model_type == 1) {
+                for (int i = 0; i < c->hidden_dim; i++) layer->ffn_norm[i] += 1.0f;
+            }
+        }
 
         /* QK-norm (optional) */
         snprintf(tname, sizeof(tname), "blk.%d.attn_q_norm.weight", l);
         t = find_gguf_tensor(gguf, tname);
-        if (t) { layer->q_norm = dequant_tensor_fp32(t); c->use_qk_norm = 1; }
+        if (t) {
+            layer->q_norm = dequant_tensor_fp32(t);
+            c->use_qk_norm = 1;
+            /* Gemma QK norm: weight = 1 + stored. Size = head_dim (per-head norm). */
+            if (c->model_type == 1) {
+                int hd = (int)t->shape[t->n_dims > 1 ? 1 : 0];
+                for (int i = 0; i < hd; i++) layer->q_norm[i] += 1.0f;
+            }
+        }
 
         snprintf(tname, sizeof(tname), "blk.%d.attn_k_norm.weight", l);
         t = find_gguf_tensor(gguf, tname);
-        if (t) layer->k_norm = dequant_tensor_fp32(t);
+        if (t) {
+            layer->k_norm = dequant_tensor_fp32(t);
+            if (c->model_type == 1) {
+                int hd = (int)t->shape[t->n_dims > 1 ? 1 : 0];
+                for (int i = 0; i < hd; i++) layer->k_norm[i] += 1.0f;
+            }
+        }
+
+        /* Gemma extra norms (post_attn, pre_ffn, post_ffn) */
+        snprintf(tname, sizeof(tname), "blk.%d.post_attention_norm.weight", l);
+        t = find_gguf_tensor(gguf, tname);
+        if (t) {
+            layer->post_attn_norm = dequant_tensor_fp32(t);
+            /* Gemma norm convention: weight = 1 + stored_weight */
+            for (int i = 0; i < c->hidden_dim; i++) layer->post_attn_norm[i] += 1.0f;
+        }
+        snprintf(tname, sizeof(tname), "blk.%d.post_ffw_norm.weight", l);
+        t = find_gguf_tensor(gguf, tname);
+        if (t) {
+            layer->post_ffn_norm = dequant_tensor_fp32(t);
+            for (int i = 0; i < c->hidden_dim; i++) layer->post_ffn_norm[i] += 1.0f;
+        }
+        /* Gemma 4 pre_feedforward_layernorm (mapped as pre_ffn_norm) */
+        snprintf(tname, sizeof(tname), "blk.%d.pre_ffw_norm.weight", l);
+        t = find_gguf_tensor(gguf, tname);
+        if (t) {
+            layer->pre_ffn_norm = dequant_tensor_fp32(t);
+            for (int i = 0; i < c->hidden_dim; i++) layer->pre_ffn_norm[i] += 1.0f;
+        }
+
+        /* Gemma 4: layer_output_scale (scalar per layer) */
+        snprintf(tname, sizeof(tname), "blk.%d.layer_output_scale.weight", l);
+        t = find_gguf_tensor(gguf, tname);
+        if (t && t->type == TQ_GGML_TYPE_F32) {
+            layer->layer_output_scale = ((const float*)t->data)[0];
+        }
 
         /* Attention weights — keep as GGUF quantized pointers for on-the-fly dequant.
          * We store the raw data pointer + type info using a small struct packed into
@@ -3190,6 +3246,45 @@ tq_model_t* tq_load_gguf(const char* path) {
                     }
                 }
 
+                /* Gemma 4 fused gate_up_exps: single tensor [hidden_dim, 2*expert_dim, num_experts].
+                 * gate is first expert_dim rows, up is next expert_dim rows per expert. */
+                if (!gate_t && !up_t) {
+                    snprintf(tname, sizeof(tname), "blk.%d.ffn_gate_up_exps.weight", l);
+                    const tq_gguf_tensor_t* gate_up_t = find_gguf_tensor(gguf, tname);
+                    if (gate_up_t && down_t) {
+                        int exp_inter = c->expert_intermediate_dim;
+                        /* Fused gate+up: each expert has 2*expert_dim rows of hidden_dim columns.
+                         * gate = first expert_dim rows, up = next expert_dim rows. */
+                        int fused_rows = 2 * exp_inter;
+                        size_t fused_exp_size = tq_ggml_type_size(gate_up_t->type) *
+                            ((size_t)fused_rows * c->hidden_dim / tq_ggml_type_blck(gate_up_t->type));
+                        size_t gate_part_size = tq_ggml_type_size(gate_up_t->type) *
+                            ((size_t)exp_inter * c->hidden_dim / tq_ggml_type_blck(gate_up_t->type));
+                        size_t down_exp_size = tq_ggml_type_size(down_t->type) *
+                            ((size_t)c->hidden_dim * exp_inter / tq_ggml_type_blck(down_t->type));
+
+                        for (int e = 0; e < c->num_experts; e++) {
+                            const uint8_t* base = (const uint8_t*)gate_up_t->data + e * fused_exp_size;
+                            moe->experts[e].w_gate = base;
+                            moe->experts[e].gate_type = gate_up_t->type;
+                            moe->experts[e].w_up = base + gate_part_size;
+                            moe->experts[e].up_type = gate_up_t->type;
+                            moe->experts[e].w_down = (const uint8_t*)down_t->data + e * down_exp_size;
+                            moe->experts[e].down_type = down_t->type;
+                        }
+
+                        /* Load per-expert output scale if present (Gemma 4) */
+                        snprintf(tname, sizeof(tname), "blk.%d.ffn_down_exps.scale", l);
+                        t = find_gguf_tensor(gguf, tname);
+                        if (t && t->type == TQ_GGML_TYPE_F32) {
+                            moe->expert_scale = (const float*)t->data;
+                        }
+
+                        fprintf(stderr, "tq_load_gguf: layer %d — fused gate_up experts, "
+                                "exp_inter=%d, down_type=%d\n", l, exp_inter, down_t->type);
+                    }
+                }
+
                 /* Shared expert (if present) */
                 if (c->has_shared_expert) {
                     snprintf(tname, sizeof(tname), "blk.%d.ffn_gate_shexp.weight", l);
@@ -3343,7 +3438,12 @@ tq_model_t* tq_load_gguf(const char* path) {
     }
 
     const tq_gguf_tensor_t* onorm_t = find_gguf_tensor(gguf, "output_norm.weight");
-    if (onorm_t) model->output_norm = dequant_tensor_fp32(onorm_t);
+    if (onorm_t) {
+        model->output_norm = dequant_tensor_fp32(onorm_t);
+        if (c->model_type == 1) {
+            for (int i = 0; i < c->hidden_dim; i++) model->output_norm[i] += 1.0f;
+        }
+    }
 
     fprintf(stderr, "tq_load_gguf: loaded %d layers (%d self_attn%s), dim=%d, heads=%d/%d, vocab=%d\n",
             c->n_layers, n_attn_layers,

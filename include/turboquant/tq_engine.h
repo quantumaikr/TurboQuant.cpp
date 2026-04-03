@@ -75,10 +75,13 @@ typedef struct {
     float* q_norm;        /* [head_dim] QK-norm for queries */
     float* k_norm;        /* [head_dim] QK-norm for keys */
 
-    /* Gemma3 extra norms (NULL for Qwen3.5) */
+    /* Gemma3/4 extra norms (NULL for Qwen3.5) */
     float* post_attn_norm;   /* [hidden_dim] post_attention_layernorm (Gemma3 only) */
     float* pre_ffn_norm;     /* [hidden_dim] pre_feedforward_layernorm (Gemma3 only) */
     float* post_ffn_norm;    /* [hidden_dim] post_feedforward_layernorm (Gemma3 only) */
+
+    /* Gemma 4 layer output scaling */
+    float layer_output_scale; /* scalar applied to residual output (0.0 = disabled) */
 
     /* SwiGLU FFN weights (present on ALL layers) */
     float* w_gate;        /* [intermediate_dim, hidden_dim] */

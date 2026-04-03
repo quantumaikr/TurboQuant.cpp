@@ -275,7 +275,7 @@ static const tq_ggml_type_trait TQ_GGML_TRAITS[GGML_TYPE_TQ_COUNT] = {
     },
     {
         "tq_uniform_2b", GGML_TYPE_TQ_UNIFORM_2B, TQ_TYPE_UNIFORM_2B,
-        sizeof(block_tq_uniform_2b), TQ_BK, 2.25f,
+        sizeof(block_tq_uniform_2b), TQ_BK, 3.0f,
         tq_ggml_from_float_uniform_2b,
         tq_ggml_to_float_uniform_2b,
         tq_ggml_vec_dot_uniform_2b,
