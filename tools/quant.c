@@ -67,6 +67,14 @@ static tq_type parse_kv_type(const char* s) {
     return TQ_TYPE_UNIFORM_4B;
 }
 
+#define QUANT_VERSION "0.2.0"
+
+static void print_version(void) {
+    printf("quant.cpp v%s\n", QUANT_VERSION);
+    printf("Embeddable LLM inference in pure C\n");
+    printf("https://github.com/quantumaikr/quant.cpp\n");
+}
+
 static void print_usage(const char* prog) {
     fprintf(stderr, "quant — Minimal C inference engine. Zero dependencies.\n");
     fprintf(stderr, "Usage: %s <model.safetensors> [options]\n\n", prog);
@@ -97,6 +105,8 @@ static void print_usage(const char* prog) {
     fprintf(stderr, "  --ctx <N>        Override max context length (default: 4096)\n");
     fprintf(stderr, "  --delta, -D      Enable delta KV compression (store key deltas)\n");
     fprintf(stderr, "  --k-window <N>   Age-based K: recent N tokens FP32, rest quantized\n");
+    fprintf(stderr, "  --version        Print version and exit\n");
+    fprintf(stderr, "  --json           JSON output for --ppl (machine-parseable)\n");
 }
 
 int main(int argc, char** argv) {
@@ -130,6 +140,7 @@ int main(int argc, char** argv) {
     int delta_kv = 0;      /* 1 = delta KV compression (store key deltas) */
     int delta_iframe_int = 0; /* I-frame interval for delta KV (0 = auto = 64) */
     int k_highres_window = 0; /* age-based: recent N keys at FP32, rest at 2-bit */
+    int json_output = 0;     /* 1 = JSON output for --ppl */
 
     for (int i = 1; i < argc; i++) {
         if (argv[i][0] != '-') {
@@ -214,6 +225,11 @@ int main(int argc, char** argv) {
             delta_iframe_int = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--k-window") == 0 && i + 1 < argc) {
             k_highres_window = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--version") == 0) {
+            print_version();
+            return 0;
+        } else if (strcmp(argv[i], "--json") == 0) {
+            json_output = 1;
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]);
             return 0;
@@ -451,6 +467,25 @@ int main(int argc, char** argv) {
 
         /* Machine-parseable */
         fprintf(stderr, "PPL_CSV:%d,%.6f,%.4f\n", n_eval, avg_nll, perplexity);
+
+        /* JSON output (--json flag) */
+        if (json_output) {
+            const char* kv_name = kv_type < TQ_TYPE_COUNT ? tq_type_name(kv_type) : "fp32";
+            const char* v_name = value_quant_bits == 4 ? "q4" : (value_quant_bits == 2 ? "q2" : "fp16");
+            printf("{\n");
+            printf("  \"model\": \"%s\",\n", model_path);
+            printf("  \"benchmark\": \"%s\",\n", ppl_file);
+            printf("  \"tokens\": %d,\n", n_tokens);
+            printf("  \"tokens_evaluated\": %d,\n", n_eval);
+            printf("  \"kv_type\": \"%s\",\n", kv_name);
+            printf("  \"v_quant\": \"%s\",\n", v_name);
+            printf("  \"delta_kv\": %s,\n", delta_kv ? "true" : "false");
+            printf("  \"perplexity\": %.4f,\n", perplexity);
+            printf("  \"avg_nll\": %.6f,\n", avg_nll);
+            printf("  \"elapsed_s\": %.2f,\n", ppl_elapsed);
+            printf("  \"tok_per_s\": %.1f\n", (double)n_eval / ppl_elapsed);
+            printf("}\n");
+        }
 
         tq_free_state(state);
         free(tokens);
