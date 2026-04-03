@@ -1,0 +1,69 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos-arm64:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j$(sysctl -n hw.ncpu)
+
+      - name: Rename binary
+        run: cp build/quant quant-macos-arm64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quant-macos-arm64
+          path: quant-macos-arm64
+
+  build-linux-x86_64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_EXE_LINKER_FLAGS="-static -pthread"
+          cmake --build build -j$(nproc)
+
+      - name: Rename binary
+        run: cp build/quant quant-linux-x86_64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quant-linux-x86_64
+          path: quant-linux-x86_64
+
+  release:
+    needs: [build-macos-arm64, build-linux-x86_64]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: quant-macos-arm64
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: quant-linux-x86_64
+
+      - name: Make binaries executable
+        run: chmod +x quant-macos-arm64 quant-linux-x86_64
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            quant-macos-arm64
+            quant-linux-x86_64

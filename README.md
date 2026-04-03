@@ -37,7 +37,7 @@ Embeddable LLM inference in pure C.
 | Code | **33K LOC**, pure C | 250K+ LOC, C++ |
 | Design | Read, modify, embed | Feature-complete |
 | Dependencies | libc + pthreads only | ggml framework |
-| KV compression | PPL **-3.2%** (better than FP32) | PPL +10.6% |
+| KV compression | 4-bit: PPL **+0.0%**, 3-bit: +1.3% | PPL +10.6% |
 
 quant.cpp is not a fork. It's a standalone engine built from scratch for one goal: **LLM inference you can understand, customize, and ship inside your own product.**
 
@@ -73,10 +73,10 @@ cmake --build build -j$(nproc)
 
 ### Modes
 
-| Config | Compression | PPL vs FP32 | When to use |
-|--------|-------------|-------------|-------------|
-| delta + 3b K + Q4 V | ~4.3x | **-3.2%** | Maximum context length |
-| delta + 4b K + Q4 V | ~3.8x | **-12.2%** | Maximum quality |
+| Config | Compression | PPL vs FP32 (WikiText-2) | When to use |
+|--------|-------------|--------------------------|-------------|
+| delta + 3b K + Q4 V | ~4.3x | **+1.3%** | Maximum context length |
+| delta + 4b K + Q4 V | ~3.8x | ~0% | Maximum quality |
 | uniform 4b K + Q4 V | 3.8x | -7.8% | Simple, no delta overhead |
 | uniform 4b K + FP16 V | 1.6x | +0.0% | Lossless baseline |
 
@@ -84,21 +84,21 @@ cmake --build build -j$(nproc)
 
 Standard KV caching stores each key vector as-is. Delta mode stores `key[t] - reconstruct(key[t-1])` — like video P-frames.
 
-Adjacent keys differ by ~30% of their absolute range. This smaller range means 3-bit quantization preserves full quality. Without delta, 3-bit gives PPL +62%. With delta: **-3.2%**.
+Adjacent keys differ by ~30% of their absolute range. This smaller range means 3-bit quantization works. Without delta, 3-bit gives PPL +62%. With delta: **+1.3%**.
 
 Every 64 tokens, an FP32 I-frame is stored to prevent drift.
 
-### Verified PPL (SmolLM2 1.7B, 999 tokens)
+### WikiText-2 PPL (SmolLM2 1.7B, standard benchmark)
 
 | Config | PPL | vs FP32 |
 |--------|-----|---------|
-| FP32 baseline | 14.58 | -- |
-| delta + 4b K + Q4 V | 12.80 | -12.2% |
-| delta + 3b K + Q4 V | 14.11 | -3.2% |
-| uniform 4b K + Q4 V | 13.44 | -7.8% |
-| uniform 3b (no delta) | 23.62 | +62% |
+| FP32 baseline | 14.63 | -- |
+| uniform 4b K + FP16 V | 14.63 | **+0.00%** |
+| uniform 4b K + Q4 V | 14.57 | -0.4% |
+| delta + 3b K + Q4 V | 14.82 | +1.3% |
+| uniform 3b (no delta) | — | +62% |
 
-Cross-model: SmolLM2 1.7B (-1.6%), Qwen3.5 0.8B (+0.9%), Qwen3.5 4B (+0.6%).
+Cross-model (4b K + Q4 V): SmolLM2 1.7B (-1.6%), Qwen3.5 0.8B (+0.9%), Qwen3.5 4B (+0.6%).
 
 ---
 
