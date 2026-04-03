@@ -2017,7 +2017,7 @@ void tq_quantize_weights_q4(tq_model_t* model) {
     int full_kv_dim = (c->full_n_kv_heads > 0 && c->full_head_dim > 0)
         ? c->full_n_kv_heads * c->full_head_dim : kv_dim;
     int inter = c->intermediate_dim;
-    int qg_dim = c->attn_output_gate ? q_dim * 2 : q_dim;
+    (void)inter;
 
     /* DeltaNet dimensions */
     int delta_nkv = c->delta_n_kv_heads > 0 ? c->delta_n_kv_heads : c->delta_n_heads;
@@ -3606,7 +3606,7 @@ tq_model_t* tq_load_gguf(const char* path) {
         int full_kv_dim = (c->full_n_kv_heads > 0 && c->full_head_dim > 0)
             ? c->full_n_kv_heads * c->full_head_dim : kv_dim;
         int inter = c->intermediate_dim;
-        int qg_dim = c->attn_output_gate ? q_dim * 2 : q_dim;
+        (void)inter;
         int delta_nkv = c->delta_n_kv_heads > 0 ? c->delta_n_kv_heads : c->delta_n_heads;
         int delta_qkv_dim = delta_nkv * c->delta_key_head_dim * 2
                           + c->delta_n_heads * c->delta_value_head_dim;
@@ -3927,9 +3927,7 @@ skip_q4_conversion: ;
                      * Without mlock, expert weights get evicted by OS memory pressure,
                      * causing 100x+ slowdown from SSD page faults.
                      * mlock may fail if ulimit is too low — fall back to MADV_WILLNEED. */
-                    int mlocked = 0;
                     if (mlock(gctx->mmap_data, gctx->mmap_size) == 0) {
-                        mlocked = 1;
                         fprintf(stderr, "tq_load_gguf: mlock(%.1f GB) — expert weights pinned in RAM\n",
                                 (double)gctx->mmap_size / (1024.0 * 1024.0 * 1024.0));
                     } else {

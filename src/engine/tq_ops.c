@@ -1747,10 +1747,11 @@ void tq_matmul_q4q2_preq(float* out,
 
 /* Per-row 1-bit quantize: store sign bits + L2 norm */
 void tq_quantize_row_1bit(const float* src, uint8_t* sign_bits, float* norm_out, int n) {
+    if (n <= 0) { *norm_out = 0; return; }
     float norm_sq = 0;
     for (int j = 0; j < n; j++) norm_sq += src[j] * src[j];
     *norm_out = sqrtf(norm_sq);
-    
+
     int n_bytes = (n + 7) / 8;
     memset(sign_bits, 0, (size_t)n_bytes);
     for (int j = 0; j < n; j++) {
@@ -1772,7 +1773,7 @@ void tq_matmul_1bit(float* out, const float* x,
 #ifdef __ARM_NEON
         /* NEON: process 16 bytes (128 bits) at a time */
         int b = 0;
-        float32x4_t vsum = vdupq_n_f32(0);
+        float32x4_t vsum = vdupq_n_f32(0); (void)vsum; /* TODO: vectorize */
         for (; b + 15 < n_bytes; b += 16) {
             for (int k = 0; k < 16; k++) {
                 uint8_t s = signs[b + k];

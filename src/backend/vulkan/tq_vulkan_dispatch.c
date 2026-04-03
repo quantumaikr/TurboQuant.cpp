@@ -505,14 +505,20 @@ static tq_vk_dispatch_entry_t g_vk_dispatch[7] = {
     { tq_uniform_2b_quantize_vk_wrap, NULL },
 };
 
+/* POSIX guarantees function pointer <-> void* round-trip.
+ * Use memcpy to avoid -Wpedantic on strict ISO C compilers (GCC 15+). */
 void* tq_vulkan_get_quantize_fn(int type_id) {
     if (type_id < 0 || type_id >= 7) return NULL;
-    return (void*)g_vk_dispatch[type_id].quantize;
+    void* p;
+    memcpy(&p, &g_vk_dispatch[type_id].quantize, sizeof(p));
+    return p;
 }
 
 void* tq_vulkan_get_attention_fn(int type_id) {
     if (type_id < 0 || type_id >= 7) return NULL;
-    return (void*)g_vk_dispatch[type_id].attention;
+    void* p;
+    memcpy(&p, &g_vk_dispatch[type_id].attention, sizeof(p));
+    return p;
 }
 
 #endif /* TQ_BUILD_VULKAN */

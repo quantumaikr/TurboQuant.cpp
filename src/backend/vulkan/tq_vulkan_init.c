@@ -53,20 +53,22 @@ extern const size_t   tq_value_quant_2b_spv_size;
 extern const uint32_t tq_value_dequant_matmul_4b_spv[];
 extern const size_t   tq_value_dequant_matmul_4b_spv_size;
 
-/* SPIR-V lookup table */
+/* SPIR-V lookup table.
+ * Arrays decay to pointers, so we store const uint32_t* directly.
+ * The size externs are scalar — take their address for uniform access. */
 static const struct {
-    const uint32_t** code;
-    const size_t*    size;
+    const uint32_t* code;
+    const size_t*   size;
 } g_shader_table[TQ_VK_PIPE_COUNT] = {
-    { &tq_polar_quantize_spv,          &tq_polar_quantize_spv_size },
-    { &tq_polar_attention_spv,         &tq_polar_attention_spv_size },
-    { &tq_qjl_quantize_spv,           &tq_qjl_quantize_spv_size },
-    { &tq_qjl_attention_spv,          &tq_qjl_attention_spv_size },
-    { &tq_turbo_quantize_spv,         &tq_turbo_quantize_spv_size },
-    { &tq_turbo_attention_spv,        &tq_turbo_attention_spv_size },
-    { &tq_value_quant_4b_spv,         &tq_value_quant_4b_spv_size },
-    { &tq_value_quant_2b_spv,         &tq_value_quant_2b_spv_size },
-    { &tq_value_dequant_matmul_4b_spv,&tq_value_dequant_matmul_4b_spv_size },
+    { tq_polar_quantize_spv,          &tq_polar_quantize_spv_size },
+    { tq_polar_attention_spv,         &tq_polar_attention_spv_size },
+    { tq_qjl_quantize_spv,           &tq_qjl_quantize_spv_size },
+    { tq_qjl_attention_spv,          &tq_qjl_attention_spv_size },
+    { tq_turbo_quantize_spv,         &tq_turbo_quantize_spv_size },
+    { tq_turbo_attention_spv,        &tq_turbo_attention_spv_size },
+    { tq_value_quant_4b_spv,         &tq_value_quant_4b_spv_size },
+    { tq_value_quant_2b_spv,         &tq_value_quant_2b_spv_size },
+    { tq_value_dequant_matmul_4b_spv,&tq_value_dequant_matmul_4b_spv_size },
 };
 
 /* ============================================================
@@ -410,7 +412,7 @@ static int tq_vk_create_pipeline_layout(void) {
 
 static int tq_vk_create_pipelines(void) {
     for (int i = 0; i < TQ_VK_PIPE_COUNT; i++) {
-        const uint32_t* code = *g_shader_table[i].code;
+        const uint32_t* code = g_shader_table[i].code;
         size_t code_size     = *g_shader_table[i].size;
 
         if (!code || code_size == 0) {
