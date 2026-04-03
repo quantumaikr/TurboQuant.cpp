@@ -1680,7 +1680,9 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
     TQ_PROF_STOP(_tp, matmul_ns);
 
     /* Debug: check attention output magnitude for full layers */
-    if (getenv("TQ_DEBUG") && model->layer_is_sliding && !model->layer_is_sliding[l]) {
+    if (getenv("TQ_DEBUG") && l >= 5) {
+        int is_full_l = (model->layer_is_sliding && !model->layer_is_sliding[l]);
+        if (is_full_l) {
         float max_q = 0, max_k = 0, max_xb2 = 0;
         for (int i = 0; i < n_heads * head_dim; i++)
             if (fabsf(s->q[i]) > max_q) max_q = fabsf(s->q[i]);
@@ -1688,8 +1690,16 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
             if (fabsf(s->k[i]) > max_k) max_k = fabsf(s->k[i]);
         for (int i = 0; i < dim; i++)
             if (fabsf(s->xb2[i]) > max_xb2) max_xb2 = fabsf(s->xb2[i]);
-        fprintf(stderr, "[DEBUG] L%d full: hd=%d nh=%d kvh=%d kv=%d |Q|=%.2f |K|=%.2f |O|=%.2f\n",
-                l, head_dim, n_heads, n_kv_heads, kv_dim, max_q, max_k, max_xb2);
+        float max_xb = 0, max_v = 0;
+        for (int i = 0; i < n_heads * head_dim; i++)
+            if (fabsf(s->xb[i]) > max_xb) max_xb = fabsf(s->xb[i]);
+        for (int i = 0; i < kv_dim; i++)
+            if (fabsf(s->v[i]) > max_v) max_v = fabsf(s->v[i]);
+        fprintf(stderr, "[DEBUG] L%d FULL: hd=%d nh=%d kvh=%d kv=%d |Q|=%.2f |K|=%.2f |V|=%.2f |attn|=%.2f |O|=%.2f\n",
+                l, head_dim, n_heads, n_kv_heads, kv_dim, max_q, max_k, max_v, max_xb, max_xb2);
+        } else {
+            fprintf(stderr, "[DEBUG] L%d sliding: hd=%d nh=%d kvh=%d\n", l, head_dim, n_heads, n_kv_heads);
+        }
     }
 
     /* Residual */
@@ -1765,9 +1775,11 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
         if (layer->delta_a_log) {
             /* DeltaNet layer */
             deltanet_forward(model, s, l);
-        } else if ((layer->wq || layer->wq_q8 || layer->wq_q4 || layer->gguf_wq) &&
-                   (layer->wk || layer->wk_q8 || layer->wk_q4 || layer->gguf_wk) &&
-                   (layer->wv || layer->wv_q8 || layer->wv_q4 || layer->gguf_wv)) {
+        } else if ((layer->wq || layer->wq_q8 || layer->wq_q4 || layer->gguf_wq || layer->wq_q2) &&
+                   (layer->wk || layer->wk_q8 || layer->wk_q4 || layer->gguf_wk || layer->wk_q2) &&
+                   (layer->wv || layer->wv_q8 || layer->wv_q4 || layer->gguf_wv || layer->wv_q2 ||
+                    /* K=V layers (Gemma 4 full attention): no V weights needed */
+                    (model->layer_is_sliding && !model->layer_is_sliding[l]))) {
             /* Standard self-attention layer */
             self_attn_forward(model, s, l, pos);
 
