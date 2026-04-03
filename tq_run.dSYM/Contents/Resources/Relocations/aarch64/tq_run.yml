@@ -1,5 +1,5 @@
 ---
 triple:          'arm64-apple-darwin'
-binary-path:     tq_run
+binary-path:     quant
 relocations:     []
 ...

@@ -1032,6 +1032,36 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
                 kh[2 * i + 1] = k0 * sin_t + k1 * cos_t;
             }
         }
+    } else if (model->rope_freqs && model->rope_freqs_len > 0) {
+        /* Learned RoPE frequencies (Gemma 4): use pre-computed inv_freq values.
+         * rope_freqs has full_head_dim/2 entries (e.g., 256 for head_dim=512).
+         * For sliding layers (head_dim=256), use the first 128 entries.
+         * For full layers (head_dim=512), use all 256 entries. */
+        int rope_pairs = head_dim / 2;
+        for (int h = 0; h < n_heads; h++) {
+            float* qh = s->q + h * head_dim;
+            for (int i = 0; i < rope_pairs && i < model->rope_freqs_len; i++) {
+                float theta = pos * model->rope_freqs[i];
+                float cos_t = cosf(theta);
+                float sin_t = sinf(theta);
+                float q0 = qh[2 * i];
+                float q1 = qh[2 * i + 1];
+                qh[2 * i]     = q0 * cos_t - q1 * sin_t;
+                qh[2 * i + 1] = q0 * sin_t + q1 * cos_t;
+            }
+        }
+        for (int h = 0; h < n_kv_heads; h++) {
+            float* kh = s->k + h * head_dim;
+            for (int i = 0; i < rope_pairs && i < model->rope_freqs_len; i++) {
+                float theta = pos * model->rope_freqs[i];
+                float cos_t = cosf(theta);
+                float sin_t = sinf(theta);
+                float k0 = kh[2 * i];
+                float k1 = kh[2 * i + 1];
+                kh[2 * i]     = k0 * cos_t - k1 * sin_t;
+                kh[2 * i + 1] = k0 * sin_t + k1 * cos_t;
+            }
+        }
     } else {
         /* Full RoPE — for Gemma3, use different freq base for sliding vs global layers */
         float rope_base = c->rope_freq_base;

@@ -209,11 +209,11 @@ int tq_generate(tq_model_t* model, tq_tokenizer_t* tokenizer,
     int n_prompt = 0;
 
     if (tokenizer && prompt) {
-        /* Gemma 3: prepend BOS=2. Gemma 4 (n_layers > 30): no BOS (add_bos_token=false).
+        /* Gemma models: prepend BOS=2 (required by both Gemma 3 and 4 architectures).
          * Qwen3.5: no BOS. */
         int add_bos = 0;
-        if (model->config.model_type == 1 && model->config.n_layers <= 30) {
-            add_bos = 1; /* Gemma 3 only */
+        if (model->config.model_type == 1) {
+            add_bos = 1; /* All Gemma models need BOS */
         }
         n_prompt = tq_encode(tokenizer, prompt, prompt_tokens, 4096, add_bos);
     } else {
@@ -225,6 +225,14 @@ int tq_generate(tq_model_t* model, tq_tokenizer_t* tokenizer,
     if (n_prompt <= 0) {
         prompt_tokens[0] = (model->config.model_type == 1) ? 2 : 1;
         n_prompt = 1;
+    }
+
+    /* Debug: print tokenized prompt */
+    if (getenv("TQ_DEBUG")) {
+        fprintf(stderr, "[DEBUG] prompt tokens (%d): ", n_prompt);
+        for (int i = 0; i < n_prompt && i < 20; i++)
+            fprintf(stderr, "%d ", prompt_tokens[i]);
+        fprintf(stderr, "\n");
     }
 
     /* Prefill: process all prompt tokens */
