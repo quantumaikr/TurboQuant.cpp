@@ -351,7 +351,12 @@ int main(int argc, char** argv) {
             return 1;
         }
         state->delta_kv_enabled = delta_kv;
-        if (delta_kv) {
+        /* Disable delta for hybrid DeltaNet models (causes NaN) */
+        if (state->delta_kv_enabled && c->delta_n_heads > 0) {
+            fprintf(stderr, "Warning: delta KV disabled for hybrid DeltaNet model\n");
+            state->delta_kv_enabled = 0;
+        }
+        if (state->delta_kv_enabled) {
             fprintf(stderr, "Delta KV compression: ENABLED (storing key deltas)\n");
         }
 

@@ -166,6 +166,12 @@ int tq_generate(tq_model_t* model, tq_tokenizer_t* tokenizer,
         return -1;
     }
     state->delta_kv_enabled = config->delta_kv;
+    /* Delta KV requires pure self-attention models. Hybrid models (DeltaNet)
+     * have non-contiguous attention layers that cause NaN in delta accumulation. */
+    if (state->delta_kv_enabled && model->config.delta_n_heads > 0) {
+        fprintf(stderr, "Warning: delta KV disabled for hybrid DeltaNet model\n");
+        state->delta_kv_enabled = 0;
+    }
 
     /* Allocate MoE state if model uses MoE */
     if (model->config.is_moe && model->moe_config) {

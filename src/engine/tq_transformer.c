@@ -1113,8 +1113,14 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
      * For hybrid attention full layers with different head_dim, skip quant cache
      * (quant_head_stride doesn't match). Fall back to FP32 cache for those layers. */
     int cache_n_kv_heads = c->n_kv_heads;
-    if (use_int_attn && head_dim != c->head_dim) {
-        /* Full layer: head_dim mismatch with quant cache allocation → use FP32 key cache */
+    if (head_dim != c->head_dim) {
+        /* Full layer: head_dim mismatch with quant cache allocation.
+         * Disable both quantized and integer attention → use FP32 path. */
+        use_quant_kv = 0;
+        use_int_attn = 0;
+        /* Ensure K is stored in FP32 cache (may have been skipped above) */
+        memcpy(key_cache_layer + (size_t)pos * cache_kv_dim, s->k, kv_dim * sizeof(float));
+    } else if (use_int_attn && head_dim != c->head_dim) {
         use_int_attn = 0;
         memcpy(key_cache_layer + (size_t)pos * cache_kv_dim, s->k, kv_dim * sizeof(float));
     }
@@ -1678,29 +1684,6 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
     else
         tq_matmul(s->xb2, s->xb, layer->wo, dim, n_heads * head_dim);
     TQ_PROF_STOP(_tp, matmul_ns);
-
-    /* Debug: check attention output magnitude for full layers */
-    if (getenv("TQ_DEBUG") && l >= 5) {
-        int is_full_l = (model->layer_is_sliding && !model->layer_is_sliding[l]);
-        if (is_full_l) {
-        float max_q = 0, max_k = 0, max_xb2 = 0;
-        for (int i = 0; i < n_heads * head_dim; i++)
-            if (fabsf(s->q[i]) > max_q) max_q = fabsf(s->q[i]);
-        for (int i = 0; i < kv_dim; i++)
-            if (fabsf(s->k[i]) > max_k) max_k = fabsf(s->k[i]);
-        for (int i = 0; i < dim; i++)
-            if (fabsf(s->xb2[i]) > max_xb2) max_xb2 = fabsf(s->xb2[i]);
-        float max_xb = 0, max_v = 0;
-        for (int i = 0; i < n_heads * head_dim; i++)
-            if (fabsf(s->xb[i]) > max_xb) max_xb = fabsf(s->xb[i]);
-        for (int i = 0; i < kv_dim; i++)
-            if (fabsf(s->v[i]) > max_v) max_v = fabsf(s->v[i]);
-        fprintf(stderr, "[DEBUG] L%d FULL: hd=%d nh=%d kvh=%d kv=%d |Q|=%.2f |K|=%.2f |V|=%.2f |attn|=%.2f |O|=%.2f\n",
-                l, head_dim, n_heads, n_kv_heads, kv_dim, max_q, max_k, max_v, max_xb, max_xb2);
-        } else {
-            fprintf(stderr, "[DEBUG] L%d sliding: hd=%d nh=%d kvh=%d\n", l, head_dim, n_heads, n_kv_heads);
-        }
-    }
 
     /* Residual */
     tq_add(s->x, s->x, s->xb2, dim);
