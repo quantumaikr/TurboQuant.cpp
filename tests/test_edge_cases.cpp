@@ -224,8 +224,8 @@ TEST_F(EdgeCaseFixture, SingleTokenQuantize_TurboKV1B) {
 /* ---- ZeroDimHandling: head_dim=0 returns error or zero size ---- */
 
 TEST_F(EdgeCaseFixture, ZeroDimQuantize) {
-    float keys[1] = {1.0f};
-    uint8_t buf[4096] = {};
+    float keys[1] = {1.0f}; (void)keys;
+    uint8_t buf[4096] = {}; (void)buf;
 
     /* Size query should return 0 for head_dim=0 */
     size_t sz = tq_quantize_keys_size(1, 0, TQ_TYPE_UNIFORM_4B);

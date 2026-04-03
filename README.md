@@ -137,7 +137,7 @@ llama.cpp is a full-featured inference framework (250K+ LOC). quant.cpp is a min
 
 **Can I embed this in my app?**
 
-Yes. Pure C11, zero dependencies, no global state. Copy the source files, link against libc/libm, and call `tq_load_model()` / `tq_generate()`. Works on Linux, macOS, Windows, iOS, Android, and WASM.
+Yes. Pure C11, zero dependencies. Copy the source files, link against libc/libm, and call `tq_load_model()` / `tq_generate()`. Works on Linux, macOS, Windows, iOS, Android, and WASM. Thread pool is global but mutex-protected.
 
 **What about sub-3-bit quantization?**
 
