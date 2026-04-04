@@ -47,7 +47,32 @@ quant.cpp is not a fork. It's a standalone engine built from scratch for one goa
 
 ---
 
-## Quick Start
+## Single-Header Mode
+
+Copy one file. Add LLM to any C project.
+
+```c
+#define QUANT_IMPLEMENTATION
+#include "quant.h"
+
+int main() {
+    quant_model* m = quant_load("model.gguf");
+    quant_ctx*   c = quant_new(m, NULL);
+    quant_generate(c, "Hello!", print_token, NULL);
+    quant_free_ctx(c);
+    quant_free_model(m);
+}
+```
+
+```bash
+cc app.c -o app -lm -lpthread    # that's it
+```
+
+15K lines, 628KB. No cmake, no build system, no dependencies.
+
+---
+
+## Quick Start (Full Build)
 
 ```bash
 git clone https://github.com/quantumaikr/quant.cpp && cd quant.cpp
