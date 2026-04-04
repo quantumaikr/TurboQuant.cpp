@@ -193,6 +193,92 @@ static tq_batch_state_t tq_batch = {
     .active = 0, .cmd_buf = nil, .encoder = nil, .n_copies = 0
 };
 
+/* ============================================================
+ * Cached buffer pools for batch mode
+ *
+ * Eliminates per-dispatch Metal buffer allocation overhead.
+ * In batch mode, each dispatch previously allocated:
+ *   - 1 output buffer (~4KB-16KB)
+ *   - 2 dimension uniform buffers (4 bytes each)
+ * With 30+ dispatches per layer * 35 layers, this caused
+ * massive allocation churn (~2000+ allocations per token).
+ *
+ * Solution: pre-allocated pools that grow as needed.
+ * Output buffers are pooled by slot index (up to TQ_BATCH_MAX_OPS).
+ * Dimension buffers are cached by value (small lookup table).
+ * ============================================================ */
+
+/* Output buffer pool: one buffer per batch slot, grow-only */
+static id<MTLBuffer> tq_batch_output_pool[TQ_BATCH_MAX_OPS];
+static size_t        tq_batch_output_pool_size[TQ_BATCH_MAX_OPS];
+
+/* Dimension uniform buffer cache: maps dimension value → MTLBuffer.
+ * Typical models use 3-5 distinct dimension values (hidden_dim,
+ * intermediate_dim, kv_dim, head_dim, etc.), so a small cache suffices. */
+#define TQ_DIM_CACHE_SIZE 16
+
+typedef struct {
+    uint32_t      dim_value;
+    id<MTLBuffer> buf;
+} tq_dim_cache_entry_t;
+
+static tq_dim_cache_entry_t tq_dim_cache[TQ_DIM_CACHE_SIZE];
+static int tq_dim_cache_count = 0;
+
+/**
+ * Get or create a cached dimension uniform buffer for a given value.
+ * Thread-safe for single-threaded Metal dispatch (which this is).
+ */
+static id<MTLBuffer> tq_get_dim_buffer(uint32_t dim_value) {
+    /* Search cache */
+    for (int i = 0; i < tq_dim_cache_count; i++) {
+        if (tq_dim_cache[i].dim_value == dim_value) {
+            return tq_dim_cache[i].buf;
+        }
+    }
+
+    /* Create new buffer */
+    id<MTLBuffer> buf = [tq_mtl_device newBufferWithLength:sizeof(uint32_t)
+                                                   options:MTLResourceStorageModeShared];
+    if (!buf) return nil;
+    *(uint32_t*)[buf contents] = dim_value;
+
+    /* Add to cache (evict oldest if full) */
+    if (tq_dim_cache_count < TQ_DIM_CACHE_SIZE) {
+        tq_dim_cache[tq_dim_cache_count].dim_value = dim_value;
+        tq_dim_cache[tq_dim_cache_count].buf = buf;
+        tq_dim_cache_count++;
+    } else {
+        /* Evict slot 0 */
+        tq_dim_cache[0].buf = nil;
+        for (int i = 0; i < TQ_DIM_CACHE_SIZE - 1; i++) {
+            tq_dim_cache[i] = tq_dim_cache[i + 1];
+        }
+        tq_dim_cache[TQ_DIM_CACHE_SIZE - 1].dim_value = dim_value;
+        tq_dim_cache[TQ_DIM_CACHE_SIZE - 1].buf = buf;
+    }
+
+    return buf;
+}
+
+/**
+ * Get or grow a cached output buffer for a given batch slot index.
+ * Buffers grow monotonically — never shrink.
+ */
+static id<MTLBuffer> tq_get_batch_output_buffer(int slot, size_t required_size) {
+    if (slot < 0 || slot >= TQ_BATCH_MAX_OPS) return nil;
+
+    if (tq_batch_output_pool_size[slot] < required_size || !tq_batch_output_pool[slot]) {
+        tq_batch_output_pool[slot] = [tq_mtl_device
+            newBufferWithLength:required_size
+                        options:MTLResourceStorageModeShared];
+        if (!tq_batch_output_pool[slot]) return nil;
+        tq_batch_output_pool_size[slot] = required_size;
+    }
+
+    return tq_batch_output_pool[slot];
+}
+
 /* Reusable input/dimension buffers (shared across batch and immediate modes) */
 static id<MTLBuffer> tq_shared_input_buf  = nil;
 static uint32_t      tq_shared_input_dim  = 0;
@@ -481,6 +567,19 @@ void tq_free_metal_backend(void) {
     tq_shared_indim_buf = nil;
     tq_shared_outdim_buf = nil;
 
+    /* Batch output buffer pool */
+    for (int i = 0; i < TQ_BATCH_MAX_OPS; i++) {
+        tq_batch_output_pool[i] = nil;
+        tq_batch_output_pool_size[i] = 0;
+    }
+
+    /* Dimension buffer cache */
+    for (int i = 0; i < tq_dim_cache_count; i++) {
+        tq_dim_cache[i].buf = nil;
+        tq_dim_cache[i].dim_value = 0;
+    }
+    tq_dim_cache_count = 0;
+
     tq_mtl_library = nil;
     tq_mtl_queue = nil;
     tq_mtl_device = nil;
@@ -662,14 +761,12 @@ int tq_metal_matmul_gguf(float* out, const float* x, const void* weight,
         id<MTLBuffer> output_buf = nil;
         if (tq_batch.active) {
             /* Batch mode: each matmul needs its own output buffer.
-             * Auto-flush if batch is full. */
+             * Use cached pool to avoid per-dispatch allocation. */
             if (tq_batch.n_copies >= TQ_BATCH_MAX_OPS) {
                 tq_metal_batch_flush();
                 /* Restart encoder for next operations */
             }
-            output_buf = [tq_mtl_device
-                newBufferWithLength:output_size
-                            options:MTLResourceStorageModeShared];
+            output_buf = tq_get_batch_output_buffer(tq_batch.n_copies, output_size);
             if (!output_buf) return -1;
         } else {
             /* Immediate mode: reuse a single output buffer */
@@ -687,24 +784,19 @@ int tq_metal_matmul_gguf(float* out, const float* x, const void* weight,
 
         /* --- Dimension uniform buffers --- */
         /* In batch mode, dimensions can change between matmuls, so we need
-         * per-dispatch dimension buffers. For simplicity, create small ones. */
+         * per-dispatch dimension buffers. Use cached lookup to avoid allocation. */
         id<MTLBuffer> indim_buf = nil;
         id<MTLBuffer> outdim_buf = nil;
         if (tq_batch.active) {
-            /* Allocate small uniform buffers per dispatch in batch mode */
-            indim_buf = [tq_mtl_device
-                newBufferWithLength:sizeof(uint32_t)
-                            options:MTLResourceStorageModeShared];
-            outdim_buf = [tq_mtl_device
-                newBufferWithLength:sizeof(uint32_t)
-                            options:MTLResourceStorageModeShared];
+            indim_buf  = tq_get_dim_buffer((uint32_t)in_dim);
+            outdim_buf = tq_get_dim_buffer((uint32_t)out_dim);
             if (!indim_buf || !outdim_buf) return -1;
         } else {
             indim_buf = tq_shared_indim_buf;
             outdim_buf = tq_shared_outdim_buf;
+            *(uint32_t*)[indim_buf contents]  = (uint32_t)in_dim;
+            *(uint32_t*)[outdim_buf contents] = (uint32_t)out_dim;
         }
-        *(uint32_t*)[indim_buf contents]  = (uint32_t)in_dim;
-        *(uint32_t*)[outdim_buf contents] = (uint32_t)out_dim;
 
         /* --- Encode compute command --- */
         id<MTLComputeCommandEncoder> enc = nil;
@@ -845,9 +937,7 @@ int tq_metal_matmul_q4(float* out, const float* x, const uint8_t* w_qs,
             if (tq_batch.n_copies >= TQ_BATCH_MAX_OPS) {
                 tq_metal_batch_flush();
             }
-            output_buf = [tq_mtl_device
-                newBufferWithLength:output_size
-                            options:MTLResourceStorageModeShared];
+            output_buf = tq_get_batch_output_buffer(tq_batch.n_copies, output_size);
             if (!output_buf) return -1;
         } else {
             static id<MTLBuffer> imm_q4_output_buf = nil;
@@ -866,19 +956,16 @@ int tq_metal_matmul_q4(float* out, const float* x, const uint8_t* w_qs,
         id<MTLBuffer> indim_buf = nil;
         id<MTLBuffer> outdim_buf = nil;
         if (tq_batch.active) {
-            indim_buf = [tq_mtl_device
-                newBufferWithLength:sizeof(uint32_t)
-                            options:MTLResourceStorageModeShared];
-            outdim_buf = [tq_mtl_device
-                newBufferWithLength:sizeof(uint32_t)
-                            options:MTLResourceStorageModeShared];
+            /* Dim cache buffers have values pre-written at creation time */
+            indim_buf  = tq_get_dim_buffer((uint32_t)d);
+            outdim_buf = tq_get_dim_buffer((uint32_t)n);
             if (!indim_buf || !outdim_buf) return -1;
         } else {
             indim_buf = tq_shared_indim_buf;
             outdim_buf = tq_shared_outdim_buf;
+            *(uint32_t*)[indim_buf contents]  = (uint32_t)d;
+            *(uint32_t*)[outdim_buf contents] = (uint32_t)n;
         }
-        *(uint32_t*)[indim_buf contents]  = (uint32_t)d;
-        *(uint32_t*)[outdim_buf contents] = (uint32_t)n;
 
         /* Encode compute command.
          * Shader signature: input(0), output(1), weight_qs(2),
