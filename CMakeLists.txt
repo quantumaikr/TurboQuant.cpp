@@ -27,7 +27,20 @@ add_library(turboquant STATIC
     ${TQ_ENGINE_SOURCES}
 )
 target_include_directories(turboquant PUBLIC include)
-target_link_libraries(turboquant PRIVATE m Threads::Threads)
+
+# Platform-specific linking
+if(MSVC)
+    # MSVC: no -lm needed, math is in CRT
+    target_link_libraries(turboquant PRIVATE Threads::Threads)
+    target_compile_definitions(turboquant PRIVATE
+        _CRT_SECURE_NO_WARNINGS
+        _USE_MATH_DEFINES
+    )
+    # Disable warnings that fire on valid C11
+    target_compile_options(turboquant PRIVATE /W3 /wd4244 /wd4267 /wd4996)
+else()
+    target_link_libraries(turboquant PRIVATE m Threads::Threads)
+endif()
 
 # Apple Accelerate framework (cblas_sgemv via AMX coprocessor)
 if(APPLE)
@@ -47,7 +60,13 @@ add_library(turboquant_shared SHARED
     ${TQ_ENGINE_SOURCES}
 )
 target_include_directories(turboquant_shared PUBLIC include)
-target_link_libraries(turboquant_shared PRIVATE m Threads::Threads)
+if(MSVC)
+    target_link_libraries(turboquant_shared PRIVATE Threads::Threads)
+    target_compile_definitions(turboquant_shared PRIVATE _CRT_SECURE_NO_WARNINGS _USE_MATH_DEFINES)
+    target_compile_options(turboquant_shared PRIVATE /W3 /wd4244 /wd4267 /wd4996)
+else()
+    target_link_libraries(turboquant_shared PRIVATE m Threads::Threads)
+endif()
 
 # Accelerate for shared library too
 if(APPLE AND ACCELERATE_LIB)

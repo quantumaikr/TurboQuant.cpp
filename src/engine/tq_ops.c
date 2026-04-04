@@ -11,7 +11,26 @@
 #include <stdlib.h>
 #include <string.h>
 #include <float.h>
+
+#ifdef _WIN32
+#include <windows.h>
+/* pthread compat for MSVC (using Windows threads) */
+typedef HANDLE pthread_t;
+typedef CRITICAL_SECTION pthread_mutex_t;
+typedef CONDITION_VARIABLE pthread_cond_t;
+#define pthread_mutex_init(m, a) InitializeCriticalSection(m)
+#define pthread_mutex_lock(m)    EnterCriticalSection(m)
+#define pthread_mutex_unlock(m)  LeaveCriticalSection(m)
+#define pthread_mutex_destroy(m) DeleteCriticalSection(m)
+#define pthread_cond_init(c, a)  InitializeConditionVariable(c)
+#define pthread_cond_wait(c, m)  SleepConditionVariableCS(c, m, INFINITE)
+#define pthread_cond_broadcast(c) WakeAllConditionVariable(c)
+#define pthread_cond_destroy(c)  ((void)0)
+/* __thread → __declspec(thread) */
+#define __thread __declspec(thread)
+#else
 #include <pthread.h>
+#endif
 
 #ifdef __ARM_NEON
 #include <arm_neon.h>
@@ -29,7 +48,16 @@
  * Workers sleep between dispatches, wake via cond_broadcast.
  * Main thread does task[0], workers do task[1..n-1].
  * ============================================================ */
-#include <stdatomic.h>
+#if defined(_MSC_VER)
+    /* MSVC: use interlocked intrinsics instead of C11 atomics */
+    #include <intrin.h>
+    typedef volatile long atomic_int;
+    #define atomic_store(p, v)     _InterlockedExchange((p), (v))
+    #define atomic_load(p)         _InterlockedCompareExchange((p), 0, 0)
+    #define atomic_fetch_add(p, v) _InterlockedExchangeAdd((p), (v))
+#else
+    #include <stdatomic.h>
+#endif
 
 /* Forward declaration for 1-bit matmul (defined at end of file) */
 void tq_matmul_1bit(float* out, const float* x, const uint8_t* sign_data, const float* norms,

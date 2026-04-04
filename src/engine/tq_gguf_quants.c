@@ -1256,7 +1256,11 @@ static inline float dot_block_iq2_xxs(const uint8_t* blk, const float* x) {
 /* Fused IQ2_XXS row dot: dot product of entire quantized row with input vector.
  * Processes all 256-element super-blocks without any intermediate FP32 buffer.
  * Reserved for future fused matmul optimization path. */
+#ifdef _MSC_VER
+__pragma(warning(suppress: 4505))
+#else
 __attribute__((unused))
+#endif
 static float fused_dot_iq2_xxs(const void* row, const float* x, int n) {
     const int nb = n / 256;
     const uint8_t* base = (const uint8_t*)row;

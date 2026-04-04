@@ -37,6 +37,24 @@
 #include <time.h>
 #include <math.h>
 
+/* MSVC: clock_gettime compatibility */
+#ifdef _WIN32
+#include <windows.h>
+#ifndef CLOCK_MONOTONIC
+#define CLOCK_MONOTONIC 1
+#endif
+struct timespec { long tv_sec; long tv_nsec; };
+static int clock_gettime(int id, struct timespec* ts) {
+    (void)id;
+    LARGE_INTEGER freq, cnt;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&cnt);
+    ts->tv_sec  = (long)(cnt.QuadPart / freq.QuadPart);
+    ts->tv_nsec = (long)((cnt.QuadPart % freq.QuadPart) * 1000000000LL / freq.QuadPart);
+    return 0;
+}
+#endif
+
 /* Forward-pass profiling flag (defined in tq_transformer.c) */
 extern int g_tq_profile_enabled;
 

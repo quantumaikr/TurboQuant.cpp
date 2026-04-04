@@ -70,9 +70,16 @@ static tq_profile_t g_profile = {0};
 int g_tq_profile_enabled = 0;  /* set from quant --profile */
 
 static inline double tq_now_ns(void) {
+#ifdef _WIN32
+    LARGE_INTEGER freq, cnt;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&cnt);
+    return (double)cnt.QuadPart / (double)freq.QuadPart * 1e9;
+#else
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double)ts.tv_sec * 1e9 + (double)ts.tv_nsec;
+#endif
 }
 
 /* Usage: double _tp; TQ_PROF_START(_tp); ... TQ_PROF_STOP(_tp, field); */

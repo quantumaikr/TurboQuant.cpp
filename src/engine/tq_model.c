@@ -27,6 +27,10 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <io.h>
+#ifndef R_OK
+#define R_OK 4
+#endif
+#define access _access
 #else
 #include <sys/mman.h>
 #include <sys/stat.h>

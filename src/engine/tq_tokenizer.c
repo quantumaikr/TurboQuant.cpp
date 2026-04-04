@@ -19,6 +19,10 @@
 #include <string.h>
 #include <stddef.h>
 
+#if defined(_MSC_VER) && !defined(__thread)
+#define __thread __declspec(thread)
+#endif
+
 /* Global for qsort comparator (vocab index sorting) */
 static char** g_vocab_for_sort;
 static int cmp_vocab_idx(const void* a, const void* b) {
