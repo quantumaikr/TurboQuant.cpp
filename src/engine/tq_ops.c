@@ -18,7 +18,9 @@
 #endif
 
 #ifdef __APPLE__
+#ifndef ACCELERATE_NEW_LAPACK
 #define ACCELERATE_NEW_LAPACK
+#endif
 #include <Accelerate/Accelerate.h>
 #endif
 

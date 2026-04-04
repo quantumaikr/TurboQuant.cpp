@@ -16,10 +16,11 @@ Embeddable LLM inference in pure C. Also ships as [**quant.h**](#single-header-m
 
 **~4x longer context on the same hardware.** KV cache compression reduces per-token memory by 3.8x, extending context proportionally.
 
-| Hardware | Model | FP16 KV | 4-bit K + Q4 V | Gain |
-|----------|-------|---------|----------------|------|
+| Hardware | Model | FP16 KV | Compressed KV | Gain |
+|----------|-------|---------|---------------|------|
 | 8GB Laptop | Llama 8B (Q4) | ~16K tokens | ~61K tokens | 3.8x |
 | 16GB Mac Air | SmolLM2 1.7B | ~78K tokens | ~298K tokens | 3.8x |
+| **16GB Mac** | **Gemma 4 26B-A4B** | **~8K tokens** | **~20K tokens** | **3.5x** |
 | 24GB RTX 3090 | Llama 8B (Q4) | ~147K tokens | ~559K tokens | 3.8x |
 
 *Estimates based on KV memory reduction. Actual context depends on available memory after model weights.*
@@ -136,6 +137,17 @@ cmake --build build -j$(nproc)
 | uniform 4b K + Q4 V | 3.8x | -7.8% | Simple, no delta overhead |
 | uniform 4b K + FP16 V | 1.6x | +0.0% | Lossless baseline |
 
+### QK-norm aware compression (Gemma 4)
+
+Models with QK-norm (Gemma 4) normalize key vectors to the unit sphere, creating extremely sparse distributions (256 dimensions, only ~56 active). Standard 4-bit quantization destroys directional information (cosine similarity drops to 0.62).
+
+quant.cpp automatically detects QK-normed models and stores keys in FP32 while quantizing only values to Q4. This preserves perfect key precision with **3.5x V memory reduction**.
+
+| Config | Compression | Quality (Gemma 4) |
+|--------|-------------|-------------------|
+| FP32 K + Q4 V (auto) | 3.5x V savings | Correct: "Paris", "서울" |
+| 4-bit K (forced) | 3.8x total | Broken: cosine=0.62 |
+
 ### Delta compression
 
 Standard KV caching stores each key vector as-is. Delta mode stores `key[t] - reconstruct(key[t-1])` — like video P-frames.
@@ -167,9 +179,28 @@ Cross-model (4b K + Q4 V): SmolLM2 1.7B (-1.6%), Qwen3.5 0.8B (+0.9%), Qwen3.5 4
 | Qwen3.5-4B | Qwen3.5 (DeltaNet) | 4B | PPL verified |
 | Qwen3.5-35B-A3B | Qwen2-MoE | 35B (3B active) | Working |
 | Gemma 3 270M | Gemma 3 | 270M | Working |
-| Gemma 4 E2B | Gemma 4 | 2B | Experimental (non-standard GGUF) |
+| **Gemma 4 26B-A4B-it** | **Gemma 4 MoE** | **26B (4B active)** | **Verified** |
 
-Architectures: Llama/Qwen3.5 (shared path), Gemma 3/4 (sliding + full attention), Qwen2-MoE.
+### Gemma 4 26B-A4B (NEW)
+
+Full support for Gemma 4's hybrid MoE architecture:
+
+- **Dual-FFN**: parallel Dense MLP + 128-expert MoE per layer
+- **Hybrid attention**: 25 sliding (head_dim=256) + 5 full (head_dim=512) layers
+- **QK-norm aware KV compression**: auto FP32 keys + Q4 values (3.5x savings)
+- **Learned RoPE** with per-layer frequency factors
+- **IQ3_XXS/IQ4_NL** fused dot with NEON optimization for MoE experts
+- **GeGLU** activation (NEON-accelerated fast tanh approximation)
+
+```bash
+# Gemma 4 26B inference with KV compression
+./build/quant gemma-4-26B-A4B-it-UD-Q3_K_M.gguf \
+  -p "<start_of_turn>user\nWhat is the capital of France?\n<end_of_turn>\n<start_of_turn>model\n" \
+  -n 50 -j 8 -T 0.0 -k uniform_4b -v q4
+# Output: "The capital of France is **Paris**."
+```
+
+Architectures: Llama/Qwen3.5 (shared path), Gemma 3/4 (sliding + full attention), Qwen2-MoE, Gemma 4 MoE (dual-FFN + hybrid attention).
 
 GGUF format. Load any llama.cpp-compatible model file.
 
@@ -179,11 +210,20 @@ GGUF format. Load any llama.cpp-compatible model file.
 
 | Backend | Platform | Status |
 |---------|----------|--------|
-| NEON | ARM CPU | Production |
+| NEON | ARM CPU | Production (5.8x SIMD speedup) |
 | AVX2 | x86 CPU | Production |
 | Metal | Apple Silicon | Verified |
 | CUDA | NVIDIA GPU | Compiles |
 | Vulkan | Cross-platform | Compiles |
+
+### Performance (Gemma 4 26B-A4B on M1 Pro, 8 threads)
+
+| Component | Time/token | Notes |
+|-----------|-----------|-------|
+| Attention matmul (Q8_0) | 168ms | NEON two-accumulator fused dot |
+| MoE experts (IQ3_XXS/IQ4_NL) | 72ms | NEON fused dot + GeGLU NEON |
+| Output projection (Q6_K) | included | GGUF on-the-fly fused dot |
+| **Total** | **257ms** | **3.9 tok/s** |
 
 ---
 

@@ -87,6 +87,54 @@ static void swiglu_fused(float* restrict hb, const float* restrict hb2, int n) {
 #endif
 }
 
+/* GeGLU: hb[i] = gelu_tanh(hb[i]) * hb2[i]
+ * Used by Gemma 4 MoE experts instead of SwiGLU.
+ * NEON version uses fast tanh approximation via Schraudolph exp. */
+static void geglu_fused(float* restrict hb, const float* restrict hb2, int n) {
+    const float c1 = 0.7978845608028654f; /* sqrt(2/pi) */
+    const float c2 = 0.044715f;
+#if TQ_MOE_HAS_NEON
+    int i = 0;
+    float32x4_t vc1 = vdupq_n_f32(c1);
+    float32x4_t vc2 = vdupq_n_f32(c2);
+    float32x4_t vhalf = vdupq_n_f32(0.5f);
+    float32x4_t vone = vdupq_n_f32(1.0f);
+    float32x4_t vtwo = vdupq_n_f32(2.0f);
+    for (; i + 3 < n; i += 4) {
+        float32x4_t vx = vld1q_f32(hb + i);
+        float32x4_t vu = vld1q_f32(hb2 + i);
+        /* arg = c1 * (x + c2 * x^3) = c1 * x * (1 + c2 * x^2) */
+        float32x4_t vx2 = vmulq_f32(vx, vx);
+        float32x4_t varg = vmulq_f32(vc1, vmulq_f32(vx, vfmaq_f32(vone, vc2, vx2)));
+        /* tanh(arg) via sigmoid: tanh(x) = 2*sigmoid(2x) - 1 */
+        float32x4_t vexp_arg = vmulq_f32(vtwo, vnegq_f32(varg));
+        /* Fast exp via Schraudolph for each lane */
+        float neg[4];
+        vst1q_f32(neg, vexp_arg);
+        float32x4_t vexp = {fast_expf_moe(neg[0]), fast_expf_moe(neg[1]),
+                            fast_expf_moe(neg[2]), fast_expf_moe(neg[3])};
+        /* sigmoid(2*arg) = 1/(1+exp(-2*arg)) */
+        float32x4_t vsig = vrecpeq_f32(vaddq_f32(vone, vexp));
+        vsig = vmulq_f32(vsig, vrecpsq_f32(vaddq_f32(vone, vexp), vsig));
+        float32x4_t vtanh = vsubq_f32(vmulq_f32(vtwo, vsig), vone);
+        /* gelu = 0.5 * x * (1 + tanh) * up */
+        float32x4_t vgelu = vmulq_f32(vmulq_f32(vhalf, vx), vaddq_f32(vone, vtanh));
+        vst1q_f32(hb + i, vmulq_f32(vgelu, vu));
+    }
+    for (; i < n; i++) {
+        float x = hb[i];
+        float t = tanhf(c1 * (x + c2 * x * x * x));
+        hb[i] = (0.5f * x * (1.0f + t)) * hb2[i];
+    }
+#else
+    for (int i = 0; i < n; i++) {
+        float x = hb[i];
+        float t = tanhf(c1 * (x + c2 * x * x * x));
+        hb[i] = (0.5f * x * (1.0f + t)) * hb2[i];
+    }
+#endif
+}
+
 #ifndef _WIN32
 #include <sys/mman.h>
 #endif
@@ -642,18 +690,27 @@ void tq_moe_forward(const tq_moe_layer_t* layer,
     int num_active = config->num_active;
     int expert_dim = config->expert_intermediate_dim;
 
+    /* Select activation: GeGLU for Gemma 4, SwiGLU for others */
+    void (*activation_fn)(float* restrict, const float* restrict, int) =
+        config->use_gelu ? geglu_fused : swiglu_fused;
+
     /* Step 1: Route — select top-K experts.
-     * Gemma 4: apply per-feature input scaling before routing. */
-    const float* route_input = input;
-    float scaled_input_buf[4096]; /* stack buffer for scaled input */
-    if (layer->router_input_scale && hidden_dim <= 4096) {
-        for (int i = 0; i < hidden_dim; i++)
-            scaled_input_buf[i] = input[i] * layer->router_input_scale[i];
-        route_input = scaled_input_buf;
+     * If routing was precomputed externally (Gemma 4 dual-FFN path),
+     * skip the routing step and use the pre-filled top_experts/expert_weights. */
+    if (!state->routing_precomputed) {
+        const float* route_input = input;
+        float scaled_input_buf[4096]; /* stack buffer for scaled input */
+        if (layer->router_input_scale && hidden_dim <= 4096) {
+            float inv_sqrt_dim = 1.0f / sqrtf((float)hidden_dim);
+            for (int i = 0; i < hidden_dim; i++)
+                scaled_input_buf[i] = input[i] * inv_sqrt_dim * layer->router_input_scale[i];
+            route_input = scaled_input_buf;
+        }
+        tq_moe_route(route_input, layer->router_weight,
+                     config->num_experts, num_active, hidden_dim,
+                     state->top_experts, state->expert_weights);
     }
-    tq_moe_route(route_input, layer->router_weight,
-                 config->num_experts, num_active, hidden_dim,
-                 state->top_experts, state->expert_weights);
+    state->routing_precomputed = 0; /* reset for next call */
 
     /* Step 2: Zero the output accumulator */
     memset(output, 0, (size_t)hidden_dim * sizeof(float));
@@ -798,9 +855,20 @@ void tq_moe_forward(const tq_moe_layer_t* layer,
 #ifdef TQ_HAS_METAL
 moe_cpu_fallback: ;
 #endif
-    /* Step 3: For each selected expert, compute SwiGLU FFN and accumulate */
+    /* Step 3: For each selected expert, compute GeGLU/SwiGLU FFN and accumulate.
+     * Prefetch next expert's weights to hide memory latency for mmap'd IQ3_XXS/IQ4_NL. */
     for (int k = 0; k < num_active; k++) {
         int eid = state->top_experts[k];
+
+        /* Prefetch next expert's gate weight (first cache line) */
+        if (k + 1 < num_active) {
+            int next_eid = state->top_experts[k + 1];
+            if (next_eid >= 0 && next_eid < config->num_experts) {
+                const tq_expert_weights_t* next_exp = &layer->experts[next_eid];
+                if (next_exp->w_gate) __builtin_prefetch(next_exp->w_gate, 0, 1);
+                if (next_exp->w_down) __builtin_prefetch(next_exp->w_down, 0, 1);
+            }
+        }
         float w = state->expert_weights[k];
         if (eid < 0 || eid >= config->num_experts) continue; /* safety check */
         const tq_expert_weights_t* exp = &layer->experts[eid];
@@ -832,8 +900,8 @@ moe_cpu_fallback: ;
                             ce->up_fp32, hidden_dim,
                             input, 1, 0.0f, state->expert_hb2, 1);
 
-                /* SwiGLU activation: hb = silu(gate) * up */
-                swiglu_fused(state->expert_hb, state->expert_hb2, expert_dim);
+                /* Gated activation: GeGLU (Gemma4) or SwiGLU (Qwen) */
+                activation_fn(state->expert_hb, state->expert_hb2, expert_dim);
 
                 /* down: hb[expert_dim] @ down[hidden_dim, expert_dim]^T -> out[hidden_dim]
                  * A is [hidden_dim x expert_dim], x is [expert_dim], y is [hidden_dim] */
@@ -865,8 +933,8 @@ moe_cpu_fallback: ;
                                ce->up_q8, TQ_GGML_TYPE_Q8_0,
                                expert_dim, hidden_dim);
 
-                /* SwiGLU activation: hb = silu(gate) * up */
-                swiglu_fused(state->expert_hb, state->expert_hb2, expert_dim);
+                /* Gated activation: GeGLU (Gemma4) or SwiGLU (Qwen) */
+                activation_fn(state->expert_hb, state->expert_hb2, expert_dim);
 
                 tq_matmul_gguf(state->expert_out, state->expert_hb,
                                ce->down_q8, TQ_GGML_TYPE_Q8_0,
@@ -889,8 +957,8 @@ moe_cpu_fallback: ;
                          exp->up_q4_qs, exp->up_q4_scales,
                          expert_dim, hidden_dim);
 
-            /* SwiGLU activation: hb = silu(gate) * up */
-            swiglu_fused(state->expert_hb, state->expert_hb2, expert_dim);
+            /* Gated activation: GeGLU (Gemma4) or SwiGLU (Qwen) */
+            activation_fn(state->expert_hb, state->expert_hb2, expert_dim);
 
             tq_matmul_q4(state->expert_out, state->expert_hb,
                          exp->down_q4_qs, exp->down_q4_scales,
@@ -910,8 +978,8 @@ moe_cpu_fallback: ;
                            exp->w_up, exp->up_type,
                            expert_dim, hidden_dim);
 
-            /* SwiGLU activation: hb = silu(gate) * up */
-            swiglu_fused(state->expert_hb, state->expert_hb2, expert_dim);
+            /* Gated activation: GeGLU (Gemma4) or SwiGLU (Qwen) */
+            activation_fn(state->expert_hb, state->expert_hb2, expert_dim);
 
             /* down = hb @ w_down^T   -> [hidden_dim] */
             tq_matmul_gguf(state->expert_out, state->expert_hb,
@@ -954,7 +1022,7 @@ moe_shared_expert:
                          layer->shared_expert.up_q4_qs, layer->shared_expert.up_q4_scales,
                          shared_dim, hidden_dim);
 
-            swiglu_fused(state->expert_hb, state->expert_hb2, shared_dim);
+            activation_fn(state->expert_hb, state->expert_hb2, shared_dim);
 
             tq_matmul_q4(state->expert_out, state->expert_hb,
                          layer->shared_expert.down_q4_qs, layer->shared_expert.down_q4_scales,
@@ -972,7 +1040,7 @@ moe_shared_expert:
 
             tq_metal_batch_flush_if_available();
 
-            swiglu_fused(state->expert_hb, state->expert_hb2, shared_dim);
+            activation_fn(state->expert_hb, state->expert_hb2, shared_dim);
 
             tq_matmul_gguf(state->expert_out, state->expert_hb,
                            layer->shared_expert.w_down, layer->shared_expert.down_type,

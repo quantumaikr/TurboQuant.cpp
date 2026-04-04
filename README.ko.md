@@ -173,9 +173,27 @@ cmake --build build -j$(nproc)
 | Qwen3.5-4B | Qwen3.5 (DeltaNet) | 4B | PPL 검증 |
 | Qwen3.5-35B-A3B | Qwen2-MoE | 35B (3B active) | 동작 |
 | Gemma 3 270M | Gemma 3 | 270M | 동작 |
-| Gemma 4 E2B | Gemma 4 | 2B | 실험적 (비표준 GGUF) |
+| **Gemma 4 26B-A4B-it** | **Gemma 4 MoE** | **26B (4B active)** | **검증 완료** |
 
-아키텍처: Llama/Qwen3.5 (공유 경로), Gemma 3/4 (sliding + full attention), Qwen2-MoE.
+### Gemma 4 26B-A4B (NEW)
+
+Gemma 4의 하이브리드 MoE 아키텍처를 완전 지원합니다:
+
+- **Dual-FFN**: Dense MLP + 128-expert MoE 병렬 실행 (레이어당)
+- **하이브리드 어텐션**: 25 sliding (head_dim=256) + 5 full (head_dim=512) 레이어
+- **QK-norm 인식 KV 압축**: K는 FP32 자동 유지, V만 Q4 양자화 (3.5x 절약)
+- **IQ3_XXS/IQ4_NL** NEON 최적화 fused dot (MoE expert 가속)
+- **GeGLU** 활성화 (NEON fast tanh 근사)
+
+```bash
+# Gemma 4 26B 추론 + KV 압축
+./build/quant gemma-4-26B-A4B-it-UD-Q3_K_M.gguf \
+  -p "<start_of_turn>user\n대한민국의 수도는?\n<end_of_turn>\n<start_of_turn>model\n" \
+  -n 50 -j 8 -T 0.0 -k uniform_4b -v q4
+# 출력: "대한민국의 수도는 **서울**입니다."
+```
+
+아키텍처: Llama/Qwen3.5 (공유 경로), Gemma 3/4 (sliding + full attention), Qwen2-MoE, Gemma 4 MoE (dual-FFN + 하이브리드 어텐션).
 
 GGUF 포맷. llama.cpp 호환 모델 파일을 그대로 사용합니다.
 

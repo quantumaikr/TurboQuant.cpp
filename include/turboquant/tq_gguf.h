@@ -224,6 +224,7 @@ typedef struct {
     int has_shared_expert;          /* 1 if shared expert exists */
     int shared_expert_intermediate_dim;
     int norm_topk_prob;             /* 1 = renormalize top-K weights */
+    int use_gelu;                   /* 1 = GeGLU (Gemma 4), 0 = SwiGLU (Qwen) */
 } tq_moe_config_t;
 
 /* Per-expert weight pointers (into GGUF mmap) */
@@ -263,6 +264,7 @@ typedef struct {
     float* expert_out;       /* [hidden_dim] accumulator */
     float* expert_hb;        /* [expert_intermediate_dim] workspace */
     float* expert_hb2;       /* [expert_intermediate_dim] workspace */
+    int    routing_precomputed; /* 1 = top_experts/expert_weights already set externally */
 } tq_moe_state_t;
 
 /* MoE API */

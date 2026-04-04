@@ -2895,8 +2895,9 @@ tq_model_t* tq_load_gguf(const char* path) {
                                tq_gguf_get_f32(gguf, GGUF_KEY("rope.freq_base"), 10000.0f)));
     c->final_logit_softcap = tq_gguf_get_f32(gguf, GGUF_KEY("final_logit_softcapping"), 0.0f);
     c->attn_logit_softcap = tq_gguf_get_f32(gguf, GGUF_KEY("attn_logit_softcapping"), 0.0f);
-    /* Gemma 2/3/4 use attention softcap but it may not be in metadata — hardcode */
-    if (c->model_type == 1 && c->attn_logit_softcap == 0.0f) {
+    /* Gemma 2/3 use attention softcap (50.0) but Gemma 4 does NOT.
+     * Ref: llama.cpp — attn_soft_cap is only set for Gemma 2/3, not Gemma 4. */
+    if (c->model_type == 1 && !c->is_gemma4 && c->attn_logit_softcap == 0.0f) {
         c->attn_logit_softcap = 50.0f;
     }
 
@@ -2978,13 +2979,12 @@ tq_model_t* tq_load_gguf(const char* path) {
     if (strstr(gguf->arch, "gemma") != NULL) {
         c->model_type = 1; /* gemma family */
         c->n_norms_per_block = 4;
-        /* Gemma 4 (STEP35) detection: architecture string is "gemma4" */
+        /* Gemma 4 detection: architecture string is "gemma4" */
         if (strstr(gguf->arch, "gemma4") != NULL) {
             c->is_gemma4 = 1;
-            /* STEP35: full attention layers use half the RoPE dimensions */
-            if (c->rope_n_dims_full > 0) {
-                c->rope_n_dims_full = c->rope_n_dims_full / 2;
-            }
+            /* Gemma 4 (LLM_ARCH_GEMMA4): n_rot_full = rope.dimension_count (no halving).
+             * rope_n_dims_full is already set from rope.dimension_count.
+             * Refs: llama.cpp llama-model.cpp line 472-474 — reads ROPE_DIMENSION_COUNT directly. */
             fprintf(stderr, "tq_load_gguf: Gemma4 — RoPE dims swa=%d full=%d, "
                     "GeGLU, rope_freqs for full layers only\n",
                     c->rope_n_dims, c->rope_n_dims_full);
@@ -3027,6 +3027,7 @@ tq_model_t* tq_load_gguf(const char* path) {
         moe_cfg->has_shared_expert = c->has_shared_expert;
         moe_cfg->shared_expert_intermediate_dim = c->shared_expert_intermediate_dim;
         moe_cfg->norm_topk_prob = 1;
+        moe_cfg->use_gelu = c->is_gemma4 ? 1 : 0; /* Gemma 4: GeGLU, others: SwiGLU */
         model->moe_config = moe_cfg;
     }
 
@@ -3451,8 +3452,22 @@ tq_model_t* tq_load_gguf(const char* path) {
                 }
 
                 layer->moe = moe;
+
+                /* Gemma 4 dual-FFN: MoE layers ALSO have dense FFN (ffn_gate/up/down).
+                 * Load dense FFN weights alongside MoE experts. */
+                if (c->is_gemma4) {
+                    snprintf(tname, sizeof(tname), "blk.%d.ffn_gate.weight", l);
+                    t = find_gguf_tensor(gguf, tname);
+                    if (t) { layer->gguf_w_gate = t->data; layer->gguf_w_gate_type = t->type; }
+                    snprintf(tname, sizeof(tname), "blk.%d.ffn_up.weight", l);
+                    t = find_gguf_tensor(gguf, tname);
+                    if (t) { layer->gguf_w_up = t->data; layer->gguf_w_up_type = t->type; }
+                    snprintf(tname, sizeof(tname), "blk.%d.ffn_down.weight", l);
+                    t = find_gguf_tensor(gguf, tname);
+                    if (t) { layer->gguf_w_down = t->data; layer->gguf_w_down_type = t->type; }
+                }
             } else {
-                /* Dense FFN in an otherwise MoE model — use GGUF on-the-fly */
+                /* Dense FFN in an otherwise MoE model (non-Gemma4) */
                 snprintf(tname, sizeof(tname), "blk.%d.ffn_gate.weight", l);
                 t = find_gguf_tensor(gguf, tname);
                 if (t) { layer->gguf_w_gate = t->data; layer->gguf_w_gate_type = t->type; }
@@ -3539,14 +3554,28 @@ tq_model_t* tq_load_gguf(const char* path) {
         }
     }
 
-    /* Load embedding + output weights */
+    /* Load embedding + output weights.
+     * For large vocab (>100K) with quantized embedding, keep GGUF pointer for
+     * fused dot output projection (saves 2.8GB FP32 allocation + faster matmul).
+     * Token lookup still needs per-row dequant, done in forward pass. */
     const tq_gguf_tensor_t* emb_t = find_gguf_tensor(gguf, "token_embd.weight");
     if (emb_t) {
         if (emb_t->type == TQ_GGML_TYPE_F32) {
             model->token_embedding = (float*)emb_t->data;
         } else if (emb_t->type == TQ_GGML_TYPE_BF16 || emb_t->type == TQ_GGML_TYPE_F16) {
-            /* Keep as-is for streaming dequant */
             model->embed_bf16 = (const uint16_t*)emb_t->data;
+        } else if (c->vocab_size > 100000 || emb_t->shape[1] > 100000) {
+            /* Large vocab: keep GGUF for output projection, dequant rows on demand */
+            model->output_gguf = emb_t->data;
+            model->output_gguf_type = emb_t->type;
+            /* Still need FP32 embedding for token lookup — allocate just one row buffer.
+             * The full FP32 table is NOT allocated. Token lookup uses on-the-fly dequant. */
+            model->token_embedding = NULL;
+            model->embed_bf16 = NULL;
+            fprintf(stderr, "tq_load_gguf: large vocab (%d) — using GGUF embedding "
+                    "(saves %.1f GB, fused dot output projection)\n",
+                    (int)(emb_t->shape[1]),
+                    (double)(emb_t->shape[0] * emb_t->shape[1] * 4) / (1024.0*1024.0*1024.0));
         } else {
             model->token_embedding = dequant_tensor_fp32(emb_t);
         }
@@ -3570,6 +3599,7 @@ tq_model_t* tq_load_gguf(const char* path) {
         /* Weight tying: output weight = embedding weight */
         model->output_weight = model->token_embedding;
         model->output_weight_bf16 = model->embed_bf16;
+        /* GGUF weight tying: output_gguf already set from embedding */
     }
 
     const tq_gguf_tensor_t* onorm_t = find_gguf_tensor(gguf, "output_norm.weight");
@@ -3693,6 +3723,13 @@ tq_model_t* tq_load_gguf(const char* path) {
         /* TQ_NO_Q4=1 disables Q4 recompression → use direct GGUF dequant for better quality */
         if (getenv("TQ_NO_Q4")) {
             fprintf(stderr, "tq_load_gguf: TQ_NO_Q4 set — skipping Q4 conversion, using GGUF on-the-fly dequant\n");
+            goto skip_q4_conversion;
+        }
+        /* Gemma 4 MoE: skip Q4 conversion — Q8_0 fused dot is faster than Q4 matmul
+         * because Q8_0→Q4 conversion adds overhead without speedup benefit.
+         * Profiling: Q8_0 direct = 325ms/tok vs Q4 converted = 431ms/tok (-25%). */
+        if (c->is_gemma4 && c->is_moe) {
+            fprintf(stderr, "tq_load_gguf: Gemma4 MoE — skipping Q4 conversion (Q8_0 fused dot is faster)\n");
             goto skip_q4_conversion;
         }
         int has_gguf_weights = 0;

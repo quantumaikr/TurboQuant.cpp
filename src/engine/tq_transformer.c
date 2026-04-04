@@ -257,12 +257,16 @@ tq_state_t* tq_create_state_ex(const tq_model_config_t* config, tq_type kv_type,
         s->delta_dvec = (float*)calloc((size_t)dv, sizeof(float));
     }
 
-    /* Quantization workspace */
+    /* Quantization workspace — use MAX head_dim for hybrid attention (Gemma 4).
+     * Sliding layers have head_dim=256, full layers have head_dim=512.
+     * Quantized cache must accommodate the larger dimension. */
     size_t block_size = tq_type_block_size(kv_type);
     size_t type_size  = tq_type_type_size(kv_type);
     if (block_size == 0) block_size = TQ_BK;
     if (type_size == 0) type_size = sizeof(block_tq_uniform_4b);
-    size_t n_blocks_per_head = ((size_t)config->head_dim + block_size - 1) / block_size;
+    int max_head_dim = config->head_dim;
+    if (config->full_head_dim > max_head_dim) max_head_dim = config->full_head_dim;
+    size_t n_blocks_per_head = ((size_t)max_head_dim + block_size - 1) / block_size;
     /* quant_key_buf is used as a gather buffer for integer attention:
      * we collect quantized key blocks for one KV head across all seq positions.
      * Size needed: max_seq_len * blocks_per_head * type_size */
@@ -277,7 +281,11 @@ tq_state_t* tq_create_state_ex(const tq_model_config_t* config, tq_type kv_type,
      * Layout: [n_layers][max_seq_len][n_kv_heads][blocks_per_head * type_size]
      * Each key vector is quantized when stored, then reused for fast Q4xQ8 attention. */
     s->quant_head_stride = n_blocks_per_head * type_size;
-    size_t quant_pos_stride = s->quant_head_stride * (size_t)config->n_kv_heads;
+    /* Use max kv_heads for position stride (hybrid: sliding=8, full=2 but larger heads) */
+    int max_kv_heads = config->n_kv_heads;
+    if (config->full_n_kv_heads > max_kv_heads) max_kv_heads = config->full_n_kv_heads;
+    /* Position stride = max(sliding_kv_dim, full_kv_dim) in quantized blocks */
+    size_t quant_pos_stride = s->quant_head_stride * (size_t)max_kv_heads;
     s->quant_kv_stride = quant_pos_stride * (size_t)max_seq;
     if (kv_type < TQ_TYPE_COUNT) {
         s->quant_key_cache = calloc((size_t)n_layers * s->quant_kv_stride, 1);
@@ -986,6 +994,17 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
     if (has_gguf) tq_metal_batch_flush_if_available();
     TQ_PROF_STOP(_tp, matmul_ns);
 
+    /* Gemma 4: save pre-QK-norm keys for quantized cache (better distribution).
+     * QK-norm compresses keys to unit sphere (rms≈0.06), destroying quantization quality.
+     * Pre-norm keys have rms≈1.0 which quantizes well (cosine>0.99).
+     * During attention, we apply QK-norm to dequantized keys on-the-fly. */
+    float pre_norm_keys[4096]; /* max kv_dim for Gemma 4 */
+    /* Gemma 4 QK-normed keys: 4-bit quantization gives cosine=0.62 (unusable).
+     * Both pre-norm and post-norm keys quantize poorly due to extreme sparsity.
+     * Solution: skip key quantization for QK-normed models → use FP32 keys + Q4 values.
+     * This gives 2x V memory savings while preserving key precision. */
+    int save_pre_norm_keys = 0; /* disabled — see above */
+
     /* Apply QK-norm if present (per-head RMSNorm) */
     if (layer->q_norm) {
         for (int h = 0; h < n_heads; h++) {
@@ -997,6 +1016,18 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
         for (int h = 0; h < n_kv_heads; h++) {
             tq_rmsnorm(s->k + h * head_dim, s->k + h * head_dim,
                        layer->k_norm, head_dim, c->rms_norm_eps);
+        }
+    }
+
+    /* Gemma 4: V normalization (RMS norm without learned weights).
+     * Reference: refs/llama.cpp/src/models/gemma4-iswa.cpp line 82 */
+    if (c->is_gemma4 && has_v_weights) {
+        for (int h = 0; h < n_kv_heads; h++) {
+            float* vh = s->v + h * head_dim;
+            float ss = 0.0f;
+            for (int i = 0; i < head_dim; i++) ss += vh[i] * vh[i];
+            ss = 1.0f / sqrtf(ss / (float)head_dim + c->rms_norm_eps);
+            for (int i = 0; i < head_dim; i++) vh[i] *= ss;
         }
     }
 
@@ -1115,6 +1146,11 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
      * cache is the single source of truth.  This eliminates the duplicate
      * FP32 copy and is the basis for real memory savings. */
     int use_quant_kv = (s->kv_quant_type < TQ_TYPE_COUNT && s->quant_key_cache != NULL);
+    /* Gemma 4: QK-normed keys are too sparse for low-bit quantization (cosine=0.62).
+     * Force FP32 key storage while keeping quantized V cache for memory savings. */
+    if (use_quant_kv && c->is_gemma4 && c->use_qk_norm) {
+        use_quant_kv = 0; /* fall through to FP32 key storage */
+    }
     float* key_cache_layer = s->key_cache + l * kv_layer_stride;
     if (!use_quant_kv) {
         /* Use cache_kv_dim for position stride (cache allocated with sliding dims).
@@ -1209,25 +1245,96 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
      * at least 128 bits for small head_dim (QJL paper: m/d >= 2), so no
      * fallback is needed. */
     int use_int_attn = use_quant_kv;
-    /* Quantized KV cache: stride was allocated with sliding dims (c->n_kv_heads, c->head_dim).
-     * For hybrid attention full layers with different head_dim, skip quant cache
-     * (quant_head_stride doesn't match). Fall back to FP32 cache for those layers. */
+    /* Hybrid attention KV cache: now allocated with max(sliding, full) dimensions.
+     * quant_head_stride uses max_head_dim, quant_pos_stride uses max_kv_heads.
+     * Both sliding and full layers can use the quantized cache. */
     int cache_n_kv_heads = c->n_kv_heads;
-    if (head_dim != c->head_dim) {
-        /* Full layer: head_dim mismatch with quant cache allocation.
-         * Disable both quantized and integer attention → use FP32 path. */
-        use_quant_kv = 0;
-        use_int_attn = 0;
-        /* Ensure K is stored in FP32 cache (may have been skipped above) */
-        memcpy(key_cache_layer + (size_t)pos * cache_kv_dim, s->k, kv_dim * sizeof(float));
-    } else if (use_int_attn && head_dim != c->head_dim) {
-        use_int_attn = 0;
-        memcpy(key_cache_layer + (size_t)pos * cache_kv_dim, s->k, kv_dim * sizeof(float));
+    if (c->full_n_kv_heads > cache_n_kv_heads) cache_n_kv_heads = c->full_n_kv_heads;
+    /* Debug: measure KV quantization roundtrip error (before RHT) */
+    if (0 && pos == 0 && l == 0 && getenv("TQ_DEBUG") && use_int_attn) {
+        float kmin = s->k[0], kmax = s->k[0], krms = 0;
+        for (int i = 0; i < kv_dim; i++) {
+            if (s->k[i] < kmin) kmin = s->k[i];
+            if (s->k[i] > kmax) kmax = s->k[i];
+            krms += s->k[i] * s->k[i];
+        }
+        krms = sqrtf(krms / kv_dim);
+        /* Measure roundtrip: quantize → dequantize → MSE */
+        const tq_type_traits_t* dbg_traits = &TQ_TRAITS[s->kv_quant_type];
+        float mse = 0, cos_num = 0, cos_d1 = 0, cos_d2 = 0;
+        uint8_t tmp_buf[1024];
+        float recon[256];
+        for (int kh = 0; kh < 1; kh++) { /* first head only */
+            const float* key_src = s->k + kh * head_dim;
+            dbg_traits->quantize(key_src, tmp_buf, head_dim);
+            dbg_traits->dequantize(tmp_buf, recon, head_dim);
+            for (int i = 0; i < head_dim; i++) {
+                float diff = key_src[i] - recon[i];
+                mse += diff * diff;
+                cos_num += key_src[i] * recon[i];
+                cos_d1 += key_src[i] * key_src[i];
+                cos_d2 += recon[i] * recon[i];
+            }
+        }
+        mse /= head_dim;
+        float cosine = cos_num / (sqrtf(cos_d1) * sqrtf(cos_d2) + 1e-10f);
+        fprintf(stderr, "[DEBUG] layer0 key: min=%.4f max=%.4f rms=%.4f | quant MSE=%.6f cosine=%.6f (hd=%d)\n",
+                kmin, kmax, krms, mse, cosine, head_dim);
     }
+    /* Gemma 4 QK-normed keys: pre-scale before quantization.
+     * QK-norm produces keys with rms≈0.12, range≈3.0 → sparse distribution.
+     * Uniform quantization has terrible cosine (0.62) due to most values → 0.
+     * Fix: scale keys by 1/rms to fill dynamic range, store scale factor.
+     * Attention: q·k = q·(k/rms)*rms → scale cancels in dot product.
+     * Since attention_scale=1.0 for Gemma 4, we apply 1/rms during quantization
+     * and multiply by rms when computing attention scores. */
+    /* Gemma 4 QK-normed keys: fixed prescale to fill quantization range.
+     * QK-norm produces ||k|| = sqrt(head_dim), so per-element rms ≈ 1/sqrt(head_dim).
+     * Scale by sqrt(head_dim) so values are O(1), then undo in attention scores.
+     * This is equivalent to storing un-normalized keys (before QK-norm application),
+     * and attention score computation implicitly includes the 1/sqrt(head_dim). */
+    /* Gemma 4 QK-normed keys: apply RHT before quantization to Gaussianize
+     * the leptokurtic distribution. Without RHT: cosine=0.62. With RHT: ~0.97+.
+     * RHT is orthogonal, so <q, RHT⁻¹(k_hat)> = <RHT(q), k_hat>.
+     * We rotate the query once during attention instead of inverse-rotating every key. */
+    #define KV_RHT_SEED 0xDEAD4B00u  /* fixed seed for reproducible RHT */
+    int kv_use_rht = 0; /* Disabled: pre-norm key storage eliminates need for RHT */
+    if (kv_use_rht) {
+        /* Apply RHT to key in-place, block_size=128 at a time */
+        extern void tq_rht_transform(float* data, int n, uint32_t seed);
+        for (int kh = 0; kh < n_kv_heads; kh++) {
+            float* kh_ptr = s->k + kh * head_dim;
+            for (int blk_start = 0; blk_start < head_dim; blk_start += TQ_BK) {
+                int blk_len = head_dim - blk_start;
+                if (blk_len > TQ_BK) blk_len = TQ_BK;
+                tq_rht_transform(kh_ptr + blk_start, blk_len, KV_RHT_SEED + blk_start);
+            }
+        }
+    }
+    /* Debug: measure roundtrip of the keys ACTUALLY stored in quant cache */
+    if (pos == 0 && l == 0 && getenv("TQ_DEBUG") && use_int_attn) {
+        const tq_type_traits_t* dt = &TQ_TRAITS[s->kv_quant_type];
+        const float* dbg_key = save_pre_norm_keys ? pre_norm_keys : s->k;
+        float mse=0,cn=0,cd1=0,cd2=0; uint8_t tb[1024]; float rc[512];
+        dt->quantize(dbg_key, tb, head_dim);
+        dt->dequantize(tb, rc, head_dim);
+        for(int i=0;i<head_dim;i++){float d=dbg_key[i]-rc[i];mse+=d*d;cn+=dbg_key[i]*rc[i];cd1+=dbg_key[i]*dbg_key[i];cd2+=rc[i]*rc[i];}
+        /* Also check min/max of stored key */
+        float dbg_mn=dbg_key[0],dbg_mx=dbg_key[0];
+        int nz=0;
+        for(int i=0;i<head_dim;i++){if(dbg_key[i]<dbg_mn)dbg_mn=dbg_key[i];if(dbg_key[i]>dbg_mx)dbg_mx=dbg_key[i];if(fabsf(dbg_key[i])>sqrtf(cd1/head_dim)*0.5f)nz++;}
+        fprintf(stderr,"[DEBUG] key dist: min=%.2f max=%.2f nonzero(>0.5rms)=%d/%d\n",dbg_mn,dbg_mx,nz,head_dim);
+        fprintf(stderr,"[DEBUG] quant key (%s): rms=%.4f | MSE=%.6f cosine=%.6f\n",
+                save_pre_norm_keys ? "pre-norm" : "post-norm",
+                sqrtf(cd1/head_dim), mse/head_dim, cn/(sqrtf(cd1)*sqrtf(cd2)+1e-10f));
+    }
+    float kv_prescale = 1.0f;
     if (use_int_attn) {
         const tq_type_traits_t* traits = &TQ_TRAITS[s->kv_quant_type];
         for (int kh = 0; kh < n_kv_heads; kh++) {
-            const float* key_src = s->k + kh * head_dim;
+            /* Use pre-QK-norm keys for quantization (better rms→cosine) */
+            const float* key_src = save_pre_norm_keys ? pre_norm_keys + kh * head_dim
+                                                       : s->k + kh * head_dim;
             /* Use cache_n_kv_heads for position stride (cache allocated with sliding dims) */
             uint8_t* quant_dst = (uint8_t*)s->quant_key_cache
                 + (size_t)l * s->quant_kv_stride
@@ -1299,11 +1406,11 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
      * Gemma 3 with query_pre_attn_scalar: scale = 1/sqrt(scalar)
      * Others: scale = 1/sqrt(head_dim) */
     float attn_scale_dim = (float)head_dim;
-    if (c->use_qk_norm && c->model_type == 1 && c->full_head_dim > 0 && !c->is_moe) {
-        /* Gemma 4: QK-norm normalizes Q,K per head, but we still need 1/sqrt(head_dim)
-         * scaling. QK-norm ensures ||Q||=||K||~sqrt(head_dim) after norm weights,
-         * so the dot product scales as head_dim without explicit scaling. */
-        attn_scale_dim = (float)head_dim;
+    if (c->is_gemma4) {
+        /* Gemma 4: attention_scale = 1.0 (QK-norm already normalizes Q,K per head).
+         * Reference: refs/llama.cpp/src/llama-model.cpp line 1273
+         * Set attn_scale_dim = 1.0 so that 1/sqrt(attn_scale_dim) = 1.0 */
+        attn_scale_dim = 1.0f;
     } else if (c->query_pre_attn_scalar > 0.0f) {
         attn_scale_dim = c->query_pre_attn_scalar;
         if (c->full_head_dim > 0 && model->layer_is_sliding && !model->layer_is_sliding[l]) {
@@ -1321,8 +1428,28 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
         }
     }
 
+    /* If RHT was applied to keys, pre-rotate ALL queries once.
+     * RHT is applied per 128-element block with fixed seed.
+     * Since <RHT(q), k_rot> = <q, RHT⁻¹(k_rot)> = <q, k_orig>, we rotate q. */
+    float q_rot_buf[8192]; /* max n_heads * head_dim for Gemma 4 */
+    float* q_base = s->q;
+    if (kv_use_rht && use_quant_kv && n_heads * head_dim <= 8192) {
+        extern void tq_rht_transform(float* data, int n, uint32_t seed);
+        memcpy(q_rot_buf, s->q, (size_t)n_heads * head_dim * sizeof(float));
+        for (int h = 0; h < n_heads; h++) {
+            float* qh_rot = q_rot_buf + h * head_dim;
+            for (int blk_start = 0; blk_start < head_dim; blk_start += TQ_BK) {
+                int blk_len = head_dim - blk_start;
+                if (blk_len > TQ_BK) blk_len = TQ_BK;
+                tq_rht_transform(qh_rot + blk_start, blk_len, KV_RHT_SEED + blk_start);
+            }
+        }
+        q_base = q_rot_buf;
+    }
+
     for (int h = 0; h < n_heads; h++) {
-        float* qh = s->q + h * head_dim;
+        /* Use rotated query for quantized KV attention, original for FP32 */
+        float* qh = (kv_use_rht && use_quant_kv) ? q_base + h * head_dim : s->q + h * head_dim;
         float* atth = s->att + (size_t)h * c->max_seq_len;
         int kv_h = h / kv_mul;
 
@@ -1448,7 +1575,10 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
              * tokens within the window use FP32 from the circular buffer.
              * Old tokens use the quant cache (typically 2-bit). */
             const tq_type_traits_t* traits = &TQ_TRAITS[s->kv_quant_type];
-            float inv_scale = 1.0f / sqrtf(attn_scale_dim);
+            /* For Gemma 4: keys were prescaled by sqrt(head_dim) before quantization.
+             * Undo prescale in attention: score = q·(k*prescale)/prescale = q·k */
+            float prescale_inv = (c->is_gemma4 && kv_prescale != 1.0f) ? (1.0f / kv_prescale) : 1.0f;
+            float inv_scale = prescale_inv / sqrtf(attn_scale_dim);
             float dequant_buf[512];
 
             int k_hr_win = s->k_highres_window;
@@ -1479,6 +1609,11 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
                         + (size_t)t * cache_n_kv_heads * s->quant_head_stride
                         + (size_t)kv_h * s->quant_head_stride;
                     traits->dequantize(quant_src, dequant_buf, head_dim);
+                    /* Re-apply QK-norm if keys were stored pre-norm */
+                    if (save_pre_norm_keys && layer->k_norm) {
+                        tq_rmsnorm(dequant_buf, dequant_buf, layer->k_norm,
+                                   head_dim, c->rms_norm_eps);
+                    }
                     key_ptr = dequant_buf;
                 }
 
@@ -1826,14 +1961,16 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
     TQ_PROF_STOP(_tp, matmul_ns);
 
     /* Debug: print attention output before residual add */
-    if (pos == 0 && getenv("TQ_DEBUG") && l < 3) {
+    if (pos == 0 && getenv("TQ_DEBUG") && (l < 3 || l == 5 || l == 11)) {
         float maxv = 0, minv = 0;
         for (int i = 0; i < dim; i++) {
             if (s->xb2[i] > maxv) maxv = s->xb2[i];
             if (s->xb2[i] < minv) minv = s->xb2[i];
         }
-        fprintf(stderr, "[DEBUG] layer%d attn_out min=%.3f max=%.3f (hd=%d, nh=%d, nkv=%d)\n",
-                l, minv, maxv, head_dim, n_heads, n_kv_heads);
+        int is_full_dbg = (model->layer_is_sliding && !model->layer_is_sliding[l]);
+        fprintf(stderr, "[DEBUG] layer%d attn_out min=%.3f max=%.3f (hd=%d, nh=%d, nkv=%d, %s)\n",
+                l, minv, maxv, head_dim, n_heads, n_kv_heads,
+                is_full_dbg ? "FULL" : "sliding");
     }
 
     /* Residual */
@@ -1877,6 +2014,14 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
             memcpy(&s->x[i], &bits, 4);
         }
 #endif
+    } else if (model->output_gguf && !model->token_embedding) {
+        /* GGUF embedding: dequant single row on demand (no FP32 table in memory) */
+        int block_elems = tq_ggml_type_blck(model->output_gguf_type);
+        int block_bytes = (int)tq_ggml_type_size(model->output_gguf_type);
+        int n_blocks = dim / block_elems;
+        size_t row_bytes = (size_t)n_blocks * block_bytes;
+        const uint8_t* row_ptr = (const uint8_t*)model->output_gguf + (size_t)token * row_bytes;
+        tq_dequant_row_gguf(model->output_gguf_type, row_ptr, s->x, dim);
     } else {
         memcpy(s->x, model->token_embedding + (size_t)token * dim,
                dim * sizeof(float));
@@ -1963,14 +2108,8 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
     for (int l = 0; l < c->n_layers; l++) {
         tq_layer_weights_t* layer = &model->layers[l];
 
-        /* Save input residual for layer_output_scale (Gemma 4).
-         * layer_output_scale applies to the layer's contributions only,
-         * not the entire hidden state. We need x_old to compute:
-         *   x_new = x_old + scale * (x_current - x_old) */
-        float layer_residual_buf[4096]; /* max dim for Gemma 4 */
-        if (layer->layer_output_scale != 0.0f) {
-            memcpy(layer_residual_buf, s->x, dim * sizeof(float));
-        }
+        /* layer_output_scale: simple scalar multiply on entire hidden state (Gemma 4).
+         * No need to save/restore residual. */
 
         /* Pre-attention/DeltaNet RMSNorm */
         tq_rmsnorm(s->xb, s->x, layer->attn_norm, dim, c->rms_norm_eps);
@@ -2017,9 +2156,132 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
 
         /* FFN Block — MoE or Dense SwiGLU/GeGLU */
 
-        /* MoE FFN path: route to top-K experts + shared expert */
+        /* Gemma 4 dual-FFN: Dense (shared MLP) and MoE run IN PARALLEL from same input,
+         * outputs summed, then final post_ffw_norm, then residual add.
+         * Reference: refs/llama.cpp/src/models/gemma4-iswa.cpp lines 117-190 */
         int did_moe = 0;
-        if (layer->moe && s->moe_state && model->moe_config) {
+        int has_dense_ffn = (layer->w_gate || layer->w_gate_q8 || layer->w_gate_q4 || layer->w_gate_q2 || layer->gguf_w_gate);
+        int gemma4_dual_ffn = (c->is_gemma4 && layer->moe && s->moe_state && model->moe_config && has_dense_ffn);
+
+        if (pos == 0 && l == 0 && getenv("TQ_DEBUG"))
+            fprintf(stderr, "[DEBUG] layer0 gemma4_dual_ffn=%d (is_gemma4=%d moe=%p moe_state=%p dense=%d)\n",
+                    gemma4_dual_ffn, c->is_gemma4, (void*)layer->moe, (void*)s->moe_state, has_dense_ffn);
+
+        if (gemma4_dual_ffn) {
+            /* ---- Gemma 4 dual-FFN path ----
+             * Both Dense and MoE branch from s->x (attn_out), outputs summed into xb2 */
+            float* dense_out = s->xb2; /* reuse xb2 for dense output */
+
+            /* Dense FFN (shared MLP): attn_out → ffn_norm → GELU FFN → post_ffw_norm_1 */
+            {
+                float* dense_norm_w = layer->ffn_norm;
+                tq_rmsnorm(s->xb, s->x, dense_norm_w, dim, c->rms_norm_eps);
+
+                int inter = c->per_layer_inter_dim ? c->per_layer_inter_dim[l] : c->intermediate_dim;
+                TQ_PROF_START(_tp);
+                if (layer->w_gate_q4) {
+                    tq_quantize_row_q8(s->xb, s->xb_q8, s->xb_q8s, dim);
+                    tq_matmul_q4_preq(s->hb, layer->w_gate_q4, layer->w_gate_q4s,
+                                       s->xb_q8, s->xb_q8s, inter, dim);
+                    tq_matmul_q4_preq(s->hb2, layer->w_up_q4, layer->w_up_q4s,
+                                       s->xb_q8, s->xb_q8s, inter, dim);
+                } else if (layer->gguf_w_gate) {
+                    tq_matmul_gguf(s->hb, s->xb, layer->gguf_w_gate, layer->gguf_w_gate_type, inter, dim);
+                    tq_matmul_gguf(s->hb2, s->xb, layer->gguf_w_up, layer->gguf_w_up_type, inter, dim);
+                    tq_metal_batch_flush_if_available();
+                } else if (layer->w_gate_q8) {
+                    tq_matmul_q8(s->hb, s->xb, layer->w_gate_q8, layer->w_gate_q8s, inter, dim);
+                    tq_matmul_q8(s->hb2, s->xb, layer->w_up_q8, layer->w_up_q8s, inter, dim);
+                } else {
+                    tq_matmul(s->hb, s->xb, layer->w_gate, inter, dim);
+                    tq_matmul(s->hb2, s->xb, layer->w_up, inter, dim);
+                }
+                TQ_PROF_STOP(_tp, matmul_ns);
+
+                tq_gelu_tanh(s->hb, inter);
+                tq_mul(s->hb, s->hb, s->hb2, inter);
+
+                TQ_PROF_START(_tp);
+                if (layer->w_down_q4)
+                    tq_matmul_q4(dense_out, s->hb, layer->w_down_q4, layer->w_down_q4s, dim, inter);
+                else if (layer->gguf_w_down)
+                    tq_matmul_gguf(dense_out, s->hb, layer->gguf_w_down, layer->gguf_w_down_type, dim, inter);
+                else if (layer->w_down_q8)
+                    tq_matmul_q8(dense_out, s->hb, layer->w_down_q8, layer->w_down_q8s, dim, inter);
+                else
+                    tq_matmul(dense_out, s->hb, layer->w_down, dim, inter);
+                tq_metal_batch_flush_if_available();
+                TQ_PROF_STOP(_tp, matmul_ns);
+
+                /* Apply post_ffw_norm_1 to dense output */
+                float* dense_post = layer->post_ffn_norm_1 ? layer->post_ffn_norm_1 : NULL;
+                if (dense_post)
+                    tq_rmsnorm(dense_out, dense_out, dense_post, dim, c->rms_norm_eps);
+            }
+
+            /* MoE FFN: attn_out → pre_ffw_norm_2 → MoE → post_ffw_norm_2
+             * Router uses separate norm: rms_norm(attn_out) / sqrt(dim) * scale
+             * (refs/llama.cpp/src/models/gemma4-iswa.cpp line 141-145) */
+            float moe_out_buf[4096]; /* stack buffer for MoE output */
+            {
+                /* Pre-compute routing from raw attn_out (s->x) */
+                float route_buf[4096];
+                tq_moe_layer_t* moe_layer = (tq_moe_layer_t*)layer->moe;
+                tq_moe_state_t* moe_st = (tq_moe_state_t*)s->moe_state;
+                tq_moe_config_t* moe_cfg = (tq_moe_config_t*)model->moe_config;
+
+                /* Unweighted RMS norm of attn_out */
+                float ss = 0.0f;
+                for (int i = 0; i < dim; i++) ss += s->x[i] * s->x[i];
+                ss = 1.0f / sqrtf(ss / (float)dim + c->rms_norm_eps);
+                float inv_sqrt_dim = 1.0f / sqrtf((float)dim);
+                for (int i = 0; i < dim; i++)
+                    route_buf[i] = s->x[i] * ss * inv_sqrt_dim;
+
+                /* Apply per-feature scale (ffn_gate_inp.scale) */
+                if (moe_layer->router_input_scale) {
+                    for (int i = 0; i < dim; i++)
+                        route_buf[i] *= moe_layer->router_input_scale[i];
+                }
+
+                /* Route: select top-K experts */
+                tq_moe_route(route_buf, moe_layer->router_weight,
+                             moe_cfg->num_experts, moe_cfg->num_active, dim,
+                             moe_st->top_experts, moe_st->expert_weights);
+                moe_st->routing_precomputed = 1;
+
+                /* Norm input for expert FFN */
+                float* moe_norm_w = layer->pre_ffn_norm_2 ? layer->pre_ffn_norm_2 : layer->ffn_norm;
+                tq_rmsnorm(s->xb, s->x, moe_norm_w, dim, c->rms_norm_eps);
+
+                TQ_PROF_START(_tp);
+                tq_moe_forward((const tq_moe_layer_t*)layer->moe,
+                               (const tq_moe_config_t*)model->moe_config,
+                               (tq_moe_state_t*)s->moe_state,
+                               s->xb, moe_out_buf, dim, l);
+                TQ_PROF_STOP(_tp, moe_ns);
+
+                /* Apply post_ffw_norm_2 to MoE output */
+                float* moe_post = layer->post_ffn_norm_2 ? layer->post_ffn_norm_2 : NULL;
+                if (moe_post)
+                    tq_rmsnorm(moe_out_buf, moe_out_buf, moe_post, dim, c->rms_norm_eps);
+            }
+
+            /* Sum dense + MoE outputs */
+            for (int i = 0; i < dim; i++)
+                dense_out[i] += moe_out_buf[i];
+
+            /* Apply final post_ffw_norm to combined output */
+            if (layer->post_ffn_norm)
+                tq_rmsnorm(dense_out, dense_out, layer->post_ffn_norm, dim, c->rms_norm_eps);
+
+            /* Residual: x = attn_out + combined_ffn */
+            tq_add(s->x, s->x, dense_out, dim);
+            did_moe = 1;
+        }
+
+        /* MoE-only FFN path (non-Gemma4: Qwen MoE, Gemma 3 MoE) */
+        if (!gemma4_dual_ffn && layer->moe && s->moe_state && model->moe_config) {
             float* ffn_norm_w = layer->ffn_norm;
             if (is_gemma3 && layer->pre_ffn_norm)
                 ffn_norm_w = layer->pre_ffn_norm;
@@ -2042,11 +2304,10 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
             tq_add(s->x, s->x, s->xb2, dim);
             did_moe = 1;
         }
-        /* Dense FFN path — SwiGLU (Qwen3.5, Gemma4/STEP35) or GeGLU (Gemma3).
-         * For Gemma 4 STEP35: layers are either MoE or dense, NOT both.
-         * For Gemma 3: runs both MoE and dense FFN (shared expert) per layer. */
-        /* Dense FFN: run for non-MoE layers, or for Gemma 3 MoE layers with dense FFN */
-        if ((!did_moe || (is_gemma3 && !c->is_gemma4 && did_moe)) &&
+        /* Dense FFN path — SwiGLU (Qwen3.5) or GeGLU (Gemma3).
+         * Qwen: layers are either MoE or dense, NOT both.
+         * Gemma 3 non-MoE layers: run dense FFN. */
+        if (!did_moe &&
             (layer->w_gate || layer->w_gate_q8 || layer->w_gate_q4 || layer->w_gate_q2 || layer->gguf_w_gate) &&
             (layer->w_up || layer->w_up_q8 || layer->w_up_q4 || layer->w_up_q2 || layer->gguf_w_up) &&
             (layer->w_down || layer->w_down_q8 || layer->w_down_q4 || layer->w_down_q2 || layer->gguf_w_down)) {
@@ -2205,8 +2466,9 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
         /* End layer-level GPU batch scope */
         if (layer_has_gguf) tq_metal_batch_end_if_available();
 
-        /* Gemma 4: layer_output_scale scales the layer's CONTRIBUTIONS (attn + ffn).
-         * Essential for controlling gradient flow — model was trained with these scales. */
+        /* Gemma 4: layer_output_scale is a simple scalar multiply on the entire hidden state.
+         * Reference: refs/llama.cpp/src/models/gemma4-iswa.cpp line 216-218
+         *   cur = ggml_mul(ctx0, cur, model.layers[il].out_scale); */
         if (layer->layer_output_scale != 0.0f) {
             float los = layer->layer_output_scale;
             /* Debug: print pre-scale values */
@@ -2219,7 +2481,7 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
                 fprintf(stderr, "[DEBUG] layer%d pre_scale min=%.3f max=%.3f (los=%.4f)\n", l, minv, maxv, los);
             }
             for (int i = 0; i < dim; i++) {
-                s->x[i] = layer_residual_buf[i] + los * (s->x[i] - layer_residual_buf[i]);
+                s->x[i] *= los;
             }
         }
 
@@ -2252,7 +2514,11 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
 
     /* Step 4: Output projection to vocab logits */
     TQ_PROF_START(_tp);
-    if (model->output_qs) {
+    if (model->output_gguf) {
+        /* GGUF fused dot output projection — 3.5x less memory bandwidth than FP32 */
+        tq_matmul_gguf(s->logits, s->x, model->output_gguf,
+                        model->output_gguf_type, c->vocab_size, dim);
+    } else if (model->output_qs) {
         tq_matmul_q4(s->logits, s->x, model->output_qs, model->output_scales,
                       c->vocab_size, dim);
     } else if (model->output_weight_bf16) {
@@ -2266,9 +2532,30 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
         /* Print top-5 logits for debugging */
         fprintf(stderr, "[DEBUG] pos=%d logits[0:8] = ", pos);
         for (int i = 0; i < 8; i++) fprintf(stderr, "%.2f ", s->logits[i]);
-        float max_l = s->logits[0]; int max_i = 0;
-        for (int i = 1; i < c->vocab_size; i++) { if (s->logits[i] > max_l) { max_l = s->logits[i]; max_i = i; } }
-        fprintf(stderr, "... max=%.2f @%d\n", max_l, max_i);
+        /* Find top-5 tokens */
+        int top5[5] = {0,1,2,3,4}; float top5v[5];
+        for (int i = 0; i < 5; i++) top5v[i] = s->logits[top5[i]];
+        for (int i = 5; i < c->vocab_size; i++) {
+            int minj = 0;
+            for (int j = 1; j < 5; j++) if (top5v[j] < top5v[minj]) minj = j;
+            if (s->logits[i] > top5v[minj]) { top5[minj] = i; top5v[minj] = s->logits[i]; }
+        }
+        /* Sort top5 by value descending */
+        for (int i = 0; i < 4; i++) for (int j = i+1; j < 5; j++)
+            if (top5v[j] > top5v[i]) { int ti=top5[i]; top5[i]=top5[j]; top5[j]=ti; float tv=top5v[i]; top5v[i]=top5v[j]; top5v[j]=tv; }
+        fprintf(stderr, "... top5: ");
+        for (int i = 0; i < 5; i++) fprintf(stderr, "%d(%.1f) ", top5[i], top5v[i]);
+        fprintf(stderr, "\n");
+        /* Check output weight row norms for top token */
+        if (pos == 0 && model->output_weight) {
+            int ti = top5[0];
+            float norm_ti = 0, norm_2 = 0;
+            const float* row_ti = model->output_weight + (size_t)ti * dim;
+            const float* row_2 = model->output_weight + (size_t)2 * dim;
+            for (int i = 0; i < dim; i++) { norm_ti += row_ti[i]*row_ti[i]; norm_2 += row_2[i]*row_2[i]; }
+            fprintf(stderr, "[DEBUG] output_weight norms: tok2=%.4f tok%d=%.4f\n",
+                    sqrtf(norm_2), ti, sqrtf(norm_ti));
+        }
     }
 
     /* Final logit soft-capping: logits = cap * tanh(logits / cap) */

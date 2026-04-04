@@ -233,6 +233,10 @@ typedef struct {
     uint8_t* output_qs;       /* [vocab_size * n_blocks * 16] Q4 packed nibbles */
     float* output_scales;     /* [vocab_size * n_blocks] Q4 block scales */
 
+    /* GGUF output weight — keep quantized for fused dot output projection */
+    const void* output_gguf;  /* mmap'd quantized weight, or NULL */
+    int output_gguf_type;     /* tq_ggml_dtype */
+
     /* Q8 weight quantization */
     int use_q8_weights;       /* 1 if layer weights are Q8-quantized */
     void* _q8_data;           /* heap buffer for all Q8 quantized weights */
