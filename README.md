@@ -213,9 +213,37 @@ Works on Linux, macOS, Windows, iOS, Android, and WASM. Thread pool is global bu
 
 `quant.h` is the core inference engine (15K LOC) in a single file. The full build (33K LOC) adds GPU backends (Metal, CUDA, Vulkan), MoE routing, advanced quantization types, CLI tools, and benchmarks. Use quant.h for embedding; use the full build for research and development.
 
+**15K lines in a header — isn't that too big?**
+
+stb_image.h is 7.8K lines. sqlite3.c (the amalgamation) is 240K lines. quant.h sits in between at 15K — large for a header, small for an inference engine. Compile time is ~1.7 seconds on Apple M3. Binary size is 254KB. If compile time is a concern, use the full CMake build and link against `libturboquant.a` instead.
+
+**How does this compare to Karpathy's llm.c?**
+
+Similar philosophy: minimal C, educational, no dependencies. Key differences: quant.h supports quantized weight formats (Q4_K_M, Q8_0, IQ2) and multiple architectures (Llama, Qwen, Gemma) via the GGUF loader. llm.c targets a single model with FP32 weights. quant.h also includes KV cache compression. Think of llm.c as the textbook and quant.h as the production-ready version of the same idea.
+
+**No GPU — is this useless?**
+
+Depends on your use case. If you need 100+ tok/s on large models, use llama.cpp with Metal/CUDA. If you need to embed inference in an iOS app, a WASM module, a game engine, or an IoT device where there is no GPU API — quant.h works. CPU inference on Apple Silicon gets 25 tok/s on a 1.7B model, which is fine for assistants, autocomplete, and background processing.
+
+**Does it work on Windows?**
+
+Yes. The header includes `#ifdef _WIN32` guards for mmap (uses `CreateFileMapping`/`MapViewOfFile`), threading, and file I/O. Compile with MSVC or MinGW: `cl app.c /O2` or `gcc app.c -o app -lm -lpthread`.
+
+**How do I get a GGUF model file?**
+
+Download any GGUF from [Hugging Face](https://huggingface.co/models?library=gguf). Recommended starter model: [SmolLM2-1.7B-Instruct-Q8_0](https://huggingface.co/bartowski/SmolLM2-1.7B-Instruct-GGUF) (1.8GB). No conversion needed — GGUF files work directly.
+
+**Is this AI-generated code?**
+
+Developed with Claude Code as an AI-assisted development tool, same way others use Copilot. The architecture, algorithm choices, bug fixes, and every PPL measurement are human-directed and verified. The code is 33K lines of C — feel free to read it.
+
 **What about sub-3-bit quantization?**
 
 Tested extensively: 2-bit delta, sub-block scaling, multi-hash, error feedback, NF2, online SVD. None reached acceptable quality. The barrier: per-step cosine 0.997 compounds to 0.885 after 200 steps. 3-bit + delta is the practical minimum.
+
+**Can it run in the browser (WASM)?**
+
+The code is pure C11 with no platform-specific dependencies in the core path. Emscripten compilation is supported. A browser demo with a small model is on the roadmap.
 
 ---
 

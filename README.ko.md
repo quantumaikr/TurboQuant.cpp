@@ -219,9 +219,37 @@ Linux, macOS, Windows, iOS, Android, WASM에서 동작합니다.
 
 `quant.h`는 핵심 추론 엔진 (15K LOC)을 단일 파일에 담은 것. Full Build (33K LOC)에는 GPU 백엔드 (Metal, CUDA, Vulkan), MoE 라우팅, 고급 양자화 타입, CLI 도구, 벤치마크가 추가됩니다. 임베딩에는 quant.h, 연구/개발에는 Full Build.
 
+**15K줄 헤더 — 너무 크지 않나요?**
+
+stb_image.h는 7.8K줄. sqlite3.c (amalgamation)는 240K줄. quant.h는 그 사이 15K — 헤더로는 크고, 추론 엔진으로는 작습니다. 컴파일 시간은 Apple M3에서 ~1.7초. 바이너리 254KB. 컴파일 시간이 신경 쓰이면 CMake Full Build를 사용하고 `libturboquant.a`에 링크하세요.
+
+**Karpathy의 llm.c와 비교하면?**
+
+비슷한 철학: 미니멀 C, 교육적, 의존성 없음. 핵심 차이: quant.h는 양자화 가중치 (Q4_K_M, Q8_0, IQ2)와 다중 아키텍처 (Llama, Qwen, Gemma)를 GGUF 로더로 지원합니다. llm.c는 단일 모델 + FP32 가중치. quant.h에는 KV 캐시 압축도 포함. llm.c가 교과서라면 quant.h는 같은 아이디어의 프로덕션 버전.
+
+**GPU 없으면 쓸모없는 거 아닌가요?**
+
+용도에 따라 다릅니다. 대형 모델에서 100+ tok/s가 필요하면 llama.cpp + Metal/CUDA를 쓰세요. iOS 앱, WASM 모듈, 게임 엔진, GPU API가 없는 IoT 디바이스에 추론을 임베딩해야 하면 — quant.h가 적합합니다. Apple Silicon CPU에서 1.7B 모델 기준 25 tok/s, 어시스턴트나 자동완성, 백그라운드 처리에 충분합니다.
+
+**Windows에서 동작하나요?**
+
+네. `#ifdef _WIN32` 가드로 mmap (`CreateFileMapping`/`MapViewOfFile`), 스레딩, 파일 I/O를 처리합니다. MSVC 또는 MinGW로 컴파일: `cl app.c /O2` 또는 `gcc app.c -o app -lm -lpthread`.
+
+**GGUF 모델 파일은 어디서 받나요?**
+
+[Hugging Face](https://huggingface.co/models?library=gguf)에서 아무 GGUF나 다운로드. 추천 입문 모델: [SmolLM2-1.7B-Instruct-Q8_0](https://huggingface.co/bartowski/SmolLM2-1.7B-Instruct-GGUF) (1.8GB). 변환 필요 없음 — GGUF 파일을 바로 사용합니다.
+
+**AI가 만든 코드인가요?**
+
+Claude Code를 AI 개발 도구로 사용하여 개발했습니다 (Copilot 사용과 동일). 아키텍처 결정, 알고리즘 선택, 버그 수정, 모든 PPL 측정은 사람이 주도하고 검증합니다. 33K줄의 C 코드 — 직접 읽어보시면 됩니다.
+
 **3-bit 이하는요?**
 
 광범위하게 테스트했습니다: 2-bit delta, sub-block scaling, multi-hash, error feedback, NF2, online SVD. 어떤 접근도 허용 가능한 품질을 달성하지 못했습니다. 근본 장벽: step당 코사인 0.997이 200 step 후 0.885로 누적. 3-bit + delta가 실용적 최소.
+
+**브라우저(WASM)에서 돌아가나요?**
+
+코드가 순수 C11이고 코어 경로에 플랫폼 의존성이 없습니다. Emscripten 컴파일을 지원합니다. 소형 모델로 브라우저 데모를 준비 중입니다.
 
 ---
 
