@@ -179,6 +179,7 @@ Cross-model (4b K + Q4 V): SmolLM2 1.7B (-1.6%), Qwen3.5 0.8B (+0.9%), Qwen3.5 4
 | Qwen3.5-4B | Qwen3.5 (DeltaNet) | 4B | PPL verified |
 | Qwen3.5-35B-A3B | Qwen2-MoE | 35B (3B active) | Working |
 | Gemma 3 270M | Gemma 3 | 270M | Working |
+| **Llama 3.2 3B-Instruct** | **Llama 3** | **3B** | **Verified (11.6 tok/s)** |
 | **Gemma 4 26B-A4B-it** | **Gemma 4 MoE** | **26B (4B active)** | **Verified** |
 
 ### Gemma 4 26B-A4B (NEW)

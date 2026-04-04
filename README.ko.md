@@ -173,6 +173,7 @@ cmake --build build -j$(nproc)
 | Qwen3.5-4B | Qwen3.5 (DeltaNet) | 4B | PPL 검증 |
 | Qwen3.5-35B-A3B | Qwen2-MoE | 35B (3B active) | 동작 |
 | Gemma 3 270M | Gemma 3 | 270M | 동작 |
+| **Llama 3.2 3B-Instruct** | **Llama 3** | **3B** | **검증 완료 (11.6 tok/s)** |
 | **Gemma 4 26B-A4B-it** | **Gemma 4 MoE** | **26B (4B active)** | **검증 완료** |
 
 ### Gemma 4 26B-A4B (NEW)

@@ -2914,15 +2914,14 @@ tq_model_t* tq_load_gguf(const char* path) {
         c->head_dim = c->hidden_dim / c->n_heads;
     }
 
-    /* For hybrid sliding/full attention (Gemma 4):
+    /* For hybrid sliding/full attention (Gemma 3/4 only):
      * Override head_dim from first layer's K tensor shape (sliding layer),
-     * since sliding layers are the majority and determine KV cache layout. */
-    {
+     * since sliding layers are the majority and determine KV cache layout.
+     * NOTE: only for Gemma family — Llama/Qwen use uniform head_dim. */
+    if (c->model_type == 1 && c->sliding_window > 0) {
         const tq_gguf_tensor_t* k0 = tq_gguf_find_tensor(gguf, "blk.0.attn_k.weight");
         if (k0 && k0->n_dims >= 2) {
             int k_out = (int)k0->shape[1];
-            /* Try head_dim candidates: check if k_out / head_dim gives integer kv_heads */
-            /* Try from largest to smallest to prefer larger head_dim */
             int sliding_head_dim = c->head_dim;
             for (int hd = 512; hd >= 64; hd /= 2) {
                 if (k_out % hd == 0) {
@@ -2938,8 +2937,16 @@ tq_model_t* tq_load_gguf(const char* path) {
                         "sliding head_dim=%d (metadata: %d)\n", sliding_head_dim, c->head_dim);
                 c->head_dim = sliding_head_dim;
             }
-            /* Infer kv_heads from K tensor shape */
             c->n_kv_heads = k_out / c->head_dim;
+        }
+    } else {
+        /* Non-Gemma: infer kv_heads from K tensor shape with metadata head_dim */
+        const tq_gguf_tensor_t* k0 = tq_gguf_find_tensor(gguf, "blk.0.attn_k.weight");
+        if (k0 && k0->n_dims >= 2) {
+            int k_out = (int)k0->shape[1];
+            if (c->head_dim > 0 && k_out % c->head_dim == 0) {
+                c->n_kv_heads = k_out / c->head_dim;
+            }
         }
     }
 
