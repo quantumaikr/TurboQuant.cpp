@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>quant.cpp — LLM in Your Browser</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: #0a0a0a; color: #e0e0e0;
+    min-height: 100vh; display: flex; flex-direction: column;
+}
+.header {
+    padding: 20px 24px; border-bottom: 1px solid #222;
+    display: flex; align-items: center; gap: 16px;
+}
+.header h1 { font-size: 20px; font-weight: 600; }
+.header h1 span { color: #6ee7b7; }
+.header .badge {
+    font-size: 11px; padding: 2px 8px; border-radius: 12px;
+    background: #1a3a2a; color: #6ee7b7; font-weight: 500;
+}
+.header .github {
+    margin-left: auto; color: #888; text-decoration: none; font-size: 13px;
+}
+.header .github:hover { color: #6ee7b7; }
+
+.main { flex: 1; display: flex; flex-direction: column; max-width: 800px; width: 100%; margin: 0 auto; padding: 24px; }
+
+/* Drop zone */
+.dropzone {
+    border: 2px dashed #333; border-radius: 12px; padding: 48px;
+    text-align: center; cursor: pointer; transition: all 0.2s;
+    margin-bottom: 24px;
+}
+.dropzone:hover, .dropzone.drag-over { border-color: #6ee7b7; background: #0d1f17; }
+.dropzone h2 { font-size: 18px; margin-bottom: 8px; }
+.dropzone p { color: #666; font-size: 13px; }
+.dropzone.loaded { border-color: #2a5a3a; background: #0d1a14; padding: 16px; }
+.dropzone.loaded h2 { font-size: 14px; color: #6ee7b7; }
+
+/* Chat */
+.chat { flex: 1; overflow-y: auto; margin-bottom: 16px; }
+.message { padding: 12px 16px; margin-bottom: 8px; border-radius: 8px; font-size: 14px; line-height: 1.6; }
+.message.user { background: #1a1a2e; border: 1px solid #2a2a4e; }
+.message.assistant { background: #111; border: 1px solid #222; }
+.message.assistant .cursor { animation: blink 1s step-end infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+.message.system { color: #666; font-size: 12px; text-align: center; }
+.message code { background: #1a1a1a; padding: 1px 4px; border-radius: 3px; font-size: 13px; }
+.message pre { background: #1a1a1a; padding: 12px; border-radius: 6px; overflow-x: auto; margin: 8px 0; }
+.message pre code { background: none; padding: 0; }
+.message strong { color: #6ee7b7; }
+
+/* Input */
+.input-row {
+    display: flex; gap: 8px;
+}
+.input-row input {
+    flex: 1; padding: 12px 16px; background: #111; border: 1px solid #333;
+    border-radius: 8px; color: #e0e0e0; font-size: 14px; outline: none;
+}
+.input-row input:focus { border-color: #6ee7b7; }
+.input-row input:disabled { opacity: 0.4; }
+.input-row button {
+    padding: 12px 24px; background: #6ee7b7; color: #000; border: none;
+    border-radius: 8px; font-weight: 600; font-size: 14px; cursor: pointer;
+}
+.input-row button:hover { background: #5cd4a4; }
+.input-row button:disabled { opacity: 0.3; cursor: not-allowed; }
+
+/* Stats */
+.stats {
+    display: flex; gap: 16px; padding: 12px 0; font-size: 12px; color: #555;
+    border-top: 1px solid #1a1a1a; margin-top: 8px;
+}
+.stats span { display: flex; align-items: center; gap: 4px; }
+
+/* Loading */
+.loading { display: none; align-items: center; gap: 8px; padding: 16px; color: #6ee7b7; }
+.loading.active { display: flex; }
+.spinner { width: 16px; height: 16px; border: 2px solid #333; border-top-color: #6ee7b7; border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div class="header">
+    <h1>quant<span>.cpp</span></h1>
+    <span class="badge">WASM</span>
+    <span class="badge" id="kvBadge" style="display:none">7x Context</span>
+    <a class="github" href="https://github.com/quantumaikr/quant.cpp" target="_blank">GitHub ↗</a>
+</div>
+
+<div class="main">
+    <div class="dropzone" id="dropzone" onclick="document.getElementById('fileInput').click()">
+        <h2>Drop a GGUF model here</h2>
+        <p>Or click to browse. Recommended: SmolLM2-135M-Instruct (270MB) for browser use.</p>
+        <p style="margin-top:8px; color:#444">Runs entirely in your browser. Nothing uploaded to any server.</p>
+        <input type="file" id="fileInput" accept=".gguf" style="display:none">
+    </div>
+
+    <div class="loading" id="loading">
+        <div class="spinner"></div>
+        <span id="loadingText">Loading...</span>
+    </div>
+
+    <div class="chat" id="chat"></div>
+
+    <div class="input-row">
+        <input type="text" id="prompt" placeholder="Ask anything..." disabled
+               onkeydown="if(event.key==='Enter') generate()">
+        <button id="sendBtn" onclick="generate()" disabled>Send</button>
+    </div>
+
+    <div class="stats">
+        <span id="statTokens"></span>
+        <span id="statSpeed"></span>
+        <span id="statMemory"></span>
+    </div>
+</div>
+
+<script>
+// State
+let modelLoaded = false;
+let generating = false;
+
+// File handling
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('fileInput');
+
+['dragenter','dragover'].forEach(e => {
+    dropzone.addEventListener(e, ev => { ev.preventDefault(); dropzone.classList.add('drag-over'); });
+});
+['dragleave','drop'].forEach(e => {
+    dropzone.addEventListener(e, ev => { ev.preventDefault(); dropzone.classList.remove('drag-over'); });
+});
+
+dropzone.addEventListener('drop', e => {
+    const file = e.dataTransfer.files[0];
+    if (file && file.name.endsWith('.gguf')) loadModel(file);
+});
+
+fileInput.addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (file) loadModel(file);
+});
+
+function showLoading(msg) {
+    document.getElementById('loading').classList.add('active');
+    document.getElementById('loadingText').textContent = msg;
+}
+function hideLoading() {
+    document.getElementById('loading').classList.remove('active');
+}
+
+function addMessage(role, text) {
+    const chat = document.getElementById('chat');
+    const div = document.createElement('div');
+    div.className = `message ${role}`;
+    div.innerHTML = formatText(text);
+    chat.appendChild(div);
+    chat.scrollTop = chat.scrollHeight;
+    return div;
+}
+
+function formatText(text) {
+    // Basic markdown: **bold**, `code`, ```blocks```
+    return text
+        .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
+        .replace(/`([^`]+)`/g, '<code>$1</code>')
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+}
+
+async function loadModel(file) {
+    showLoading(`Loading ${file.name} (${(file.size/1024/1024).toFixed(0)} MB)...`);
+    addMessage('system', `Loading ${file.name}...`);
+
+    try {
+        const buffer = await file.arrayBuffer();
+        const bytes = new Uint8Array(buffer);
+
+        // Write to WASM filesystem
+        Module.FS.writeFile('/model.gguf', bytes);
+
+        showLoading('Initializing model...');
+
+        // Call C function to load
+        const rc = Module._wasm_load_model(Module.allocateUTF8('/model.gguf'));
+
+        if (rc === 0) {
+            modelLoaded = true;
+            dropzone.classList.add('loaded');
+            dropzone.innerHTML = `<h2>✓ ${file.name} (${(file.size/1024/1024).toFixed(0)} MB)</h2>`;
+            document.getElementById('kvBadge').style.display = '';
+            document.getElementById('prompt').disabled = false;
+            document.getElementById('sendBtn').disabled = false;
+            document.getElementById('prompt').focus();
+            addMessage('system', 'Model loaded! KV compression active (7x longer context).');
+        } else {
+            addMessage('system', 'Failed to load model. Try a smaller GGUF file.');
+        }
+    } catch(e) {
+        addMessage('system', `Error: ${e.message}`);
+    }
+    hideLoading();
+}
+
+async function generate() {
+    if (!modelLoaded || generating) return;
+    const input = document.getElementById('prompt');
+    const text = input.value.trim();
+    if (!text) return;
+
+    input.value = '';
+    generating = true;
+    document.getElementById('sendBtn').disabled = true;
+
+    addMessage('user', text);
+    const assistantDiv = addMessage('assistant', '<span class="cursor">▌</span>');
+    let output = '';
+
+    // Set callbacks
+    Module.onToken = (token) => {
+        output += token;
+        assistantDiv.innerHTML = formatText(output) + '<span class="cursor">▌</span>';
+        document.getElementById('chat').scrollTop = document.getElementById('chat').scrollHeight;
+    };
+    Module.onDone = (nTokens, elapsedMs) => {
+        assistantDiv.innerHTML = formatText(output);
+        const tps = (nTokens / (elapsedMs / 1000)).toFixed(1);
+        document.getElementById('statTokens').textContent = `${nTokens} tokens`;
+        document.getElementById('statSpeed').textContent = `${tps} tok/s`;
+        generating = false;
+        document.getElementById('sendBtn').disabled = false;
+        document.getElementById('prompt').focus();
+    };
+    Module.onStatus = (msg) => {
+        addMessage('system', msg);
+    };
+
+    // Call generation
+    const promptPtr = Module.allocateUTF8(text);
+    Module._wasm_generate(promptPtr, 0.7, 256);
+    Module._free(promptPtr);
+
+    if (!output) {
+        assistantDiv.innerHTML = '<em style="color:#666">No output generated</em>';
+    }
+    generating = false;
+    document.getElementById('sendBtn').disabled = false;
+}
+</script>
+
+<!-- Emscripten-generated JS will be loaded here -->
+<script>
+var Module = {
+    onToken: null,
+    onDone: null,
+    onStatus: null,
+    print: function(text) { console.log(text); },
+    printErr: function(text) { console.warn(text); },
+    onRuntimeInitialized: function() {
+        console.log('quant.cpp WASM ready');
+        addMessage('system', 'Runtime ready. Drop a GGUF model file to begin.');
+    }
+};
+</script>
+<script src="quant.js"></script>
+
+</body>
+</html>

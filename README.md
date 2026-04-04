@@ -285,7 +285,15 @@ Tested extensively: 2-bit delta, sub-block scaling, multi-hash, error feedback, 
 
 **Can it run in the browser (WASM)?**
 
-The code is pure C11 with no platform-specific dependencies in the core path. Emscripten compilation is supported. A browser demo with a small model is on the roadmap.
+Yes! The `wasm/` directory contains a complete browser demo:
+
+```bash
+cd wasm && bash build.sh          # Build with Emscripten
+python3 -m http.server 8080       # Serve locally
+# Open http://localhost:8080, drag & drop a GGUF model
+```
+
+The WASM build is 192KB (quant.wasm) + 64KB (quant.js). Drop a small GGUF model (e.g., SmolLM2-135M, 270MB) and chat directly in the browser. Everything runs client-side — nothing is uploaded.
 
 ---
 
