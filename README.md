@@ -28,13 +28,12 @@ LLM memory is dominated by the **KV cache**, not model weights. At 32K context, 
 
 ```
   +------------+-------------------------------+
-  |            |  16GB Mac Memory              |
-  | Model(4GB) +-------------------------------+
   |            | KV Cache (FP16)               |
-  |            | [##############] 8K  <-- OOM  |
+  | Model(4GB) | [##############] 8K  <-- OOM  |
   +------------+-------------------------------+
-  | Model(4GB) | KV (4-bit) [##] --> 350K ctx  |
-  |            |          6.9x smaller         |
+  |            | KV (4-bit)                    |
+  | Model(4GB) | [##] -----------> 350K ctx    |
+  |            |      6.9x smaller             |
   +------------+-------------------------------+
 ```
 
