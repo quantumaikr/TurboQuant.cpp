@@ -2,7 +2,7 @@
  * quant — Minimal C inference engine. Zero dependencies.
  *
  * Usage:
- *   quant <model.safetensors> [options]
+ *   quant <model.gguf> [options]
  *
  * Options:
  *   -t <tokenizer>   Path to tokenizer binary file
@@ -95,7 +95,7 @@ static void print_version(void) {
 
 static void print_usage(const char* prog) {
     fprintf(stderr, "quant — Minimal C inference engine. Zero dependencies.\n");
-    fprintf(stderr, "Usage: %s <model.safetensors> [options]\n\n", prog);
+    fprintf(stderr, "Usage: %s <model.gguf> [options]\n\n", prog);
     fprintf(stderr, "Options:\n");
     fprintf(stderr, "  -t <tokenizer>   Tokenizer binary file\n");
     fprintf(stderr, "  -p <prompt>      Input prompt (default: \"Hello\")\n");
@@ -109,6 +109,7 @@ static void print_usage(const char* prog) {
     fprintf(stderr, "  -q <type>        Quantize weights: q2 (2-bit Lloyd-Max, ~12x reduction),\n");
     fprintf(stderr, "                   q4 (4-bit, ~6x reduction, default),\n");
     fprintf(stderr, "                   q8 (int8, ~3.5x reduction), or none (FP32)\n");
+    fprintf(stderr, "  -c, --chat       Auto-wrap prompt with model chat template\n");
     fprintf(stderr, "  --info           Print model info and exit\n");
     fprintf(stderr, "  -M, --memory     Print KV cache memory stats after generation\n");
     fprintf(stderr, "  --profile        Profile forward pass timing (matmul/recurrent/moe/conv/attn)\n");
@@ -159,6 +160,7 @@ int main(int argc, char** argv) {
     int delta_iframe_int = 0; /* I-frame interval for delta KV (0 = auto = 64) */
     int k_highres_window = 0; /* age-based: recent N keys at FP32, rest at 2-bit */
     int json_output = 0;     /* 1 = JSON output for --ppl */
+    int chat_mode = 0;       /* 1 = auto-wrap prompt with chat template */
 
     for (int i = 1; i < argc; i++) {
         if (argv[i][0] != '-') {
@@ -248,6 +250,8 @@ int main(int argc, char** argv) {
             return 0;
         } else if (strcmp(argv[i], "--json") == 0) {
             json_output = 1;
+        } else if (strcmp(argv[i], "--chat") == 0 || strcmp(argv[i], "-c") == 0) {
+            chat_mode = 1;
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]);
             return 0;
@@ -1072,6 +1076,25 @@ int main(int argc, char** argv) {
         if (tokenizer) tq_free_tokenizer(tokenizer);
         tq_free_model(model);
         return 0;
+    }
+
+    /* Auto-wrap prompt with chat template when --chat is used */
+    char chat_prompt[8192];
+    if (chat_mode) {
+        tq_model_config_t* mc = &model->config;
+        if (mc->model_type == 1) {
+            /* Gemma 3/4: <start_of_turn>user\n...\n<end_of_turn>\n<start_of_turn>model\n */
+            snprintf(chat_prompt, sizeof(chat_prompt),
+                "<start_of_turn>user\n%s<end_of_turn>\n<start_of_turn>model\n", prompt);
+        } else if (strstr(prompt, "<|start_header_id|>") == NULL) {
+            /* Llama 3 / generic: wrap if not already wrapped */
+            snprintf(chat_prompt, sizeof(chat_prompt),
+                "<|start_header_id|>user<|end_header_id|>\n\n%s<|eot_id|>"
+                "<|start_header_id|>assistant<|end_header_id|>\n\n", prompt);
+        } else {
+            snprintf(chat_prompt, sizeof(chat_prompt), "%s", prompt);
+        }
+        prompt = chat_prompt;
     }
 
     /* Configure generation */
