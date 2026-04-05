@@ -14,6 +14,7 @@
   <a href="#"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License"></a>
   <a href="#"><img src="https://img.shields.io/badge/tests-34%20pass-brightgreen" alt="Tests"></a>
   <a href="#"><img src="https://img.shields.io/badge/score-99.2%25-brightgreen" alt="Score"></a>
+  <br>
   <a href="#"><img src="https://img.shields.io/badge/models-7%20verified-blue" alt="Models"></a>
   <a href="https://quantumaikr.github.io/quant.cpp/"><img src="https://img.shields.io/badge/WASM_데모-192KB-purple" alt="WASM"></a>
   <a href="#"><img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows%20%7C%20WASM-orange" alt="Platforms"></a>
