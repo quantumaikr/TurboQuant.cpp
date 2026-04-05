@@ -523,6 +523,70 @@ kernel void matmul_q4_k(
  * dequant: (nibble - 8) * scale
  * Optimized: 4-byte unroll, SIMD reduce
  * ============================================================ */
+/**
+ * Q4 matmul with SIMD-group coalesced access (repacked weights).
+ *
+ * Weight layout (repacked, tile_size=32):
+ *   For each tile of 32 rows and each block position:
+ *     32 consecutive blocks (one per row) → 32 * 16 = 512 bytes
+ *     32 consecutive scales (one per row) → 32 * 4 = 128 bytes
+ *
+ * Each SIMD-group thread processes one row within the tile.
+ * All 32 threads read from consecutive memory addresses → fully coalesced.
+ */
+kernel void matmul_tq_q4_repacked(
+    device const float*   input       [[buffer(0)]],
+    device float*         output      [[buffer(1)]],
+    device const uint8_t* weight_qs   [[buffer(2)]],  /* repacked Q4 nibbles */
+    device const float*   weight_sc   [[buffer(3)]],  /* repacked scales */
+    constant uint&        in_dim_u    [[buffer(4)]],
+    constant uint&        out_dim_u   [[buffer(5)]],
+    uint                  tile_id     [[threadgroup_position_in_grid]],
+    uint                  tid         [[thread_index_in_threadgroup]])
+{
+    const uint TILE = 32;
+    const uint row = tile_id * TILE + (tid % TILE);
+    if (row >= out_dim_u) return;
+
+    const uint in_dim = in_dim_u;
+    const uint n_blocks = in_dim / 32;
+    const uint n_tiles = (out_dim_u + TILE - 1) / TILE;
+
+    /* Repacked layout offsets:
+     * qs: tile_id * n_blocks * TILE * 16 + block * TILE * 16 + (tid%TILE) * 16
+     * sc: tile_id * n_blocks * TILE + block * TILE + (tid%TILE) */
+    const uint tile_row = tid % TILE;
+    const uint qs_tile_base = tile_id * n_blocks * TILE * 16;
+    const uint sc_tile_base = tile_id * n_blocks * TILE;
+
+    float sum = 0.0f;
+
+    for (uint b = 0; b < n_blocks; b++) {
+        /* All 32 threads read consecutive scales (coalesced!) */
+        const float sc = weight_sc[sc_tile_base + b * TILE + tile_row];
+        /* All 32 threads read consecutive 16-byte blocks (coalesced!) */
+        device const uint8_t* qs = weight_qs + qs_tile_base + b * TILE * 16 + tile_row * 16;
+        const uint base = b * 32;
+
+        float block_sum = 0.0f;
+        for (uint k = 0; k < 16; k += 4) {
+            uint8_t p0 = qs[k], p1 = qs[k+1], p2 = qs[k+2], p3 = qs[k+3];
+            block_sum += float(int(p0 & 0xF) - 8) * input[base + 2*k]
+                      +  float(int(p0 >> 4)  - 8) * input[base + 2*k + 1]
+                      +  float(int(p1 & 0xF) - 8) * input[base + 2*(k+1)]
+                      +  float(int(p1 >> 4)  - 8) * input[base + 2*(k+1) + 1]
+                      +  float(int(p2 & 0xF) - 8) * input[base + 2*(k+2)]
+                      +  float(int(p2 >> 4)  - 8) * input[base + 2*(k+2) + 1]
+                      +  float(int(p3 & 0xF) - 8) * input[base + 2*(k+3)]
+                      +  float(int(p3 >> 4)  - 8) * input[base + 2*(k+3) + 1];
+        }
+        sum += block_sum * sc;
+    }
+
+    output[row] = sum;
+}
+
+/* Original Q4 matmul (non-repacked, backward compat) */
 kernel void matmul_tq_q4(
     device const float*   input       [[buffer(0)]],
     device float*         output      [[buffer(1)]],

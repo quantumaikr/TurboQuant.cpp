@@ -2184,6 +2184,13 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
          * Root cause: Q4 nibble extraction in GPU shader is inefficient.
          * Fix needed: weight repacking to GPU-friendly layout at load time.
          * Infrastructure ready — enable when repacked weights are implemented. */
+        /* GPU compute graph with repacked Q4 weights.
+         * Benchmarked with tile-major repacking + 1-commit design:
+         * SmolLM2: 27 tok/s GPU vs 96 tok/s CPU (3.5x slower)
+         * Root cause: Q4 nibble extraction (integer bit ops) is slow on Apple GPU.
+         * Apple Silicon GPU excels at float/half ops, not integer bit manipulation.
+         * CPU NEON Q4×Q8 fused dot saturates memory bandwidth more efficiently.
+         * Infrastructure preserved for FP16/BF16 weight format (no bit extraction). */
         if (0 && layer->wq_q4 && layer->wk_q4 && layer->wv_q4 && layer->wo_q4 &&
             layer->w_gate_q4 && layer->w_up_q4 && layer->w_down_q4 &&
             !layer->delta_a_log &&  /* not DeltaNet */

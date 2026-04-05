@@ -53,6 +53,7 @@ static id<MTLComputePipelineState> tq_pipe_matmul_iq2_s    = nil;
 static id<MTLComputePipelineState> tq_pipe_matmul_q8_0     = nil;
 static id<MTLComputePipelineState> tq_pipe_matmul_q4_k     = nil;
 static id<MTLComputePipelineState> tq_pipe_matmul_tq_q4   = nil;
+static id<MTLComputePipelineState> tq_pipe_matmul_tq_q4_repacked = nil;
 
 /* Cached pipelines — element-wise kernels */
 static id<MTLComputePipelineState> tq_pipe_rmsnorm         = nil;
@@ -429,6 +430,7 @@ int tq_init_metal_backend(void) {
         tq_pipe_matmul_q8_0 = makePipe(@"matmul_q8_0");
         tq_pipe_matmul_q4_k = makePipe(@"matmul_q4_k");
         tq_pipe_matmul_tq_q4 = makePipe(@"matmul_tq_q4");
+        tq_pipe_matmul_tq_q4_repacked = makePipe(@"matmul_tq_q4_repacked");
 
         /* Create compute pipelines — element-wise ops */
         tq_pipe_rmsnorm         = makePipe(@"rmsnorm");
@@ -1714,6 +1716,17 @@ int tq_metal_graph_available(void) {
 }
 
 /* ---- Helper: encode a Q4 matmul into an existing encoder ---- */
+/* Forward declaration */
+void tq_metal_repack_q4(const uint8_t* src_qs, const float* src_scales,
+                         id<MTLBuffer>* out_qs_buf, id<MTLBuffer>* out_sc_buf,
+                         int out_dim, int in_dim);
+
+/* Repacked weight cache: maps (w_qs pointer) → (repacked MTLBuffer pair) */
+#define TQ_REPACK_CACHE_SIZE 128
+static struct { const void* key; id<MTLBuffer> qs; id<MTLBuffer> sc; int out_dim; int in_dim; }
+    g_repack_cache[TQ_REPACK_CACHE_SIZE];
+static int g_repack_count = 0;
+
 static void encode_q4_matmul(id<MTLComputeCommandEncoder> enc,
                               id<MTLBuffer> input_buf,
                               id<MTLBuffer> output_buf,
@@ -1723,6 +1736,53 @@ static void encode_q4_matmul(id<MTLComputeCommandEncoder> enc,
     if (!tq_pipe_matmul_tq_q4) return;
 
     int n_blocks = in_dim / 32;
+    const int TILE = 32;
+    int n_tiles = (out_dim + TILE - 1) / TILE;
+
+    /* Try repacked path: look up in cache, lazy-repack on miss */
+    if (tq_pipe_matmul_tq_q4_repacked) {
+        id<MTLBuffer> rp_qs = nil, rp_sc = nil;
+        /* Cache lookup */
+        for (int i = 0; i < g_repack_count; i++) {
+            if (g_repack_cache[i].key == w_qs && g_repack_cache[i].out_dim == out_dim) {
+                rp_qs = g_repack_cache[i].qs;
+                rp_sc = g_repack_cache[i].sc;
+                break;
+            }
+        }
+        /* Cache miss: repack and store */
+        if (!rp_qs && g_repack_count < TQ_REPACK_CACHE_SIZE) {
+            tq_metal_repack_q4(w_qs, w_scales, &rp_qs, &rp_sc, out_dim, in_dim);
+            if (rp_qs && rp_sc) {
+                g_repack_cache[g_repack_count] = (typeof(g_repack_cache[0])){
+                    .key = w_qs, .qs = rp_qs, .sc = rp_sc,
+                    .out_dim = out_dim, .in_dim = in_dim
+                };
+                g_repack_count++;
+            }
+        }
+        if (rp_qs && rp_sc) {
+            id<MTLBuffer> indim_buf  = tq_get_dim_buffer((uint32_t)in_dim);
+            id<MTLBuffer> outdim_buf = tq_get_dim_buffer((uint32_t)out_dim);
+
+            [enc setComputePipelineState:tq_pipe_matmul_tq_q4_repacked];
+            [enc setBuffer:input_buf offset:0 atIndex:0];
+            [enc setBuffer:output_buf offset:0 atIndex:1];
+            [enc setBuffer:rp_qs     offset:0 atIndex:2];
+            [enc setBuffer:rp_sc     offset:0 atIndex:3];
+            [enc setBuffer:indim_buf offset:0 atIndex:4];
+            [enc setBuffer:outdim_buf offset:0 atIndex:5];
+
+            /* One threadgroup per tile (32 rows), 32 threads per group */
+            MTLSize grid  = MTLSizeMake((NSUInteger)n_tiles, 1, 1);
+            MTLSize group = MTLSizeMake(TILE, 1, 1);
+            [enc dispatchThreadgroups:grid threadsPerThreadgroup:group];
+            [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+            return;
+        }
+    }
+
+    /* Fallback: original non-repacked kernel */
     size_t qs_size = (size_t)out_dim * n_blocks * 16;
     size_t sc_size = (size_t)out_dim * n_blocks * sizeof(float);
 
@@ -1997,18 +2057,31 @@ void tq_metal_repack_q4(const uint8_t* src_qs, const float* src_scales,
     uint8_t* dst_qs = (uint8_t*)[*out_qs_buf contents];
     float*   dst_sc = (float*)[*out_sc_buf contents];
 
-    /* Transpose: for each block column b and row r, copy block (r,b) to position (b*out_dim + r) */
-    for (int b = 0; b < n_blocks_per_row; b++) {
-        for (int r = 0; r < out_dim; r++) {
-            /* Source: row r, block b */
-            size_t src_qs_off = ((size_t)r * n_blocks_per_row + b) * 16;
-            size_t src_sc_off = (size_t)r * n_blocks_per_row + b;
-            /* Destination: column b, row r (column-major) */
-            size_t dst_qs_off = ((size_t)b * out_dim + r) * 16;
-            size_t dst_sc_off = (size_t)b * out_dim + r;
-
-            memcpy(dst_qs + dst_qs_off, src_qs + src_qs_off, 16);
-            dst_sc[dst_sc_off] = src_scales[src_sc_off];
+    /* Repack to tile-major layout (TILE=32 rows per tile).
+     * For each tile t and block b:
+     *   dst[t * n_blocks * TILE + b * TILE + row_in_tile] = src[row, b]
+     * This ensures SIMD-group threads (32 wide) read consecutive memory. */
+    const int TILE = 32;
+    int n_tiles = (out_dim + TILE - 1) / TILE;
+    for (int t = 0; t < n_tiles; t++) {
+        for (int b = 0; b < n_blocks_per_row; b++) {
+            for (int tr = 0; tr < TILE; tr++) {
+                int row = t * TILE + tr;
+                if (row >= out_dim) {
+                    /* Pad with zeros for incomplete last tile */
+                    size_t dst_qs_off = ((size_t)t * n_blocks_per_row * TILE + (size_t)b * TILE + tr) * 16;
+                    size_t dst_sc_off = (size_t)t * n_blocks_per_row * TILE + (size_t)b * TILE + tr;
+                    memset(dst_qs + dst_qs_off, 0, 16);
+                    dst_sc[dst_sc_off] = 0.0f;
+                    continue;
+                }
+                size_t src_qs_off = ((size_t)row * n_blocks_per_row + b) * 16;
+                size_t src_sc_off = (size_t)row * n_blocks_per_row + b;
+                size_t dst_qs_off = ((size_t)t * n_blocks_per_row * TILE + (size_t)b * TILE + tr) * 16;
+                size_t dst_sc_off = (size_t)t * n_blocks_per_row * TILE + (size_t)b * TILE + tr;
+                memcpy(dst_qs + dst_qs_off, src_qs + src_qs_off, 16);
+                dst_sc[dst_sc_off] = src_scales[src_sc_off];
+            }
         }
     }
 }
