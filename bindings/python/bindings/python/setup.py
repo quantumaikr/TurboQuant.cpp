@@ -1,5 +1,5 @@
 """
-quant.cpp Python package setup.
+quantcpp Python package setup.
 
 Install in development mode:
     pip install -e .
@@ -14,8 +14,8 @@ You must build the C library first:
     cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON
     cmake --build build -j$(nproc)
 
-Then set QUANT_LIB_PATH if the library is not in a standard location:
-    export QUANT_LIB_PATH=/path/to/quant.cpp/build
+Then set TURBOQUANT_LIB if the library is not in a standard location:
+    export TURBOQUANT_LIB=/path/to/build/libturboquant.dylib
 """
 
 from setuptools import setup, find_packages
@@ -29,19 +29,16 @@ if readme_path.exists():
     long_description = readme_path.read_text(encoding="utf-8")
 
 setup(
-    name="turboquant",
-    version="0.1.0",
-    description="Python bindings for quant.cpp KV cache compression",
+    name="quantcpp",
+    version="0.5.0",
+    description="Python bindings for quant.cpp -- LLM inference with 7x KV compression",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    author="QuantumAI Contributors",
-    license="Apache-2.0",
-    url="https://github.com/turboquant/quant.cpp",
+    author="quant.cpp contributors",
+    license="MIT",
+    url="https://github.com/hunscompany/quant.cpp",
     packages=find_packages(),
     python_requires=">=3.8",
-    install_requires=[
-        "numpy>=1.20",
-    ],
     extras_require={
         "dev": [
             "pytest>=7.0",
@@ -52,7 +49,7 @@ setup(
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Developers",
         "Intended Audience :: Science/Research",
-        "License :: OSI Approved :: Apache Software License",
+        "License :: OSI Approved :: MIT License",
         "Programming Language :: Python :: 3",
         "Programming Language :: Python :: 3.8",
         "Programming Language :: Python :: 3.9",
@@ -66,8 +63,8 @@ setup(
     ],
     keywords="llm inference quantization kv-cache compression",
     project_urls={
-        "Documentation": "https://github.com/turboquant/quant.cpp/tree/main/docs",
-        "Source": "https://github.com/turboquant/quant.cpp",
-        "Tracker": "https://github.com/turboquant/quant.cpp/issues",
+        "Documentation": "https://github.com/hunscompany/quant.cpp/tree/main/docs",
+        "Source": "https://github.com/hunscompany/quant.cpp",
+        "Tracker": "https://github.com/hunscompany/quant.cpp/issues",
     },
 )
