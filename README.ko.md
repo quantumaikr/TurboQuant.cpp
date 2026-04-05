@@ -77,21 +77,25 @@ hf download bartowski/SmolLM2-135M-Instruct-GGUF SmolLM2-135M-Instruct-Q8_0.gguf
 ```
                     KV 양자화 품질 (SmolLM2 1.7B, WikiText-2)
                     
-  llama.cpp Q4_0 KV │██████████████████████████████████████ PPL +10.6%  ← 깨짐
+  llama.cpp Q4_0 KV │██████████████████████████████████████ PPL +10.6%
                     │
-   quant.cpp 4-bit  │▏ PPL +0.0%  ← 무손실
+  llama.cpp Q8K+Q5V │▎ PPL ~+1%  ← 추천 설정 (1.6x 압축)
                     │
-   quant.cpp 3-bit  │█ PPL +1.3%  ← delta 압축
+   quant.cpp 4-bit  │▏ PPL +0.0%  ← 무손실 (3.8x 압축)
+                    │
+   quant.cpp 3-bit  │█ PPL +1.3%  ← delta 압축 (4.3x)
                     └────────────────────────────────────────────────
                      0%                                         +12%
                               Perplexity 저하 →
 ```
 
+둘 다 per-block 방식입니다. 품질 차이는 블록 크기(128 vs 32), min-max 범위 인코딩, 독립적 K/V 처리, delta 압축에서 옵니다. ~1.6x 압축이면 llama.cpp Q8+Q5가 우수합니다. quant.cpp는 차이가 큰 **4-7x 범위**를 타겟합니다.
+
 ### vs 다른 엔진들
 
 |  | quant.cpp | llama.cpp | vLLM | MLX | ONNX RT |
 |:--|:---------:|:---------:|:----:|:---:|:-------:|
-| KV 압축 | **7x, +0% PPL** | +10.6% PPL | -- | -- | -- |
+| KV 압축 | **7x, +0% PPL** | 1.6x ~+1% PPL | -- | -- | -- |
 | 코드 크기 | **72K LOC** | 250K+ | 100K+ | 50K+ | 500K+ |
 | 의존성 | **제로** | ggml | PyTorch | Apple fw | 런타임 |
 | 임베더블 | **단일 헤더** | -- | -- | -- | 복잡 |
@@ -163,7 +167,8 @@ quant.cpp: key를 4-bit으로 양자화           → 4 bits/원소  → 3.8x
   4b K + FP16 V       14.63 │ ● 동일
   4b K + Q4 V         14.57 │ ● 약간 더 좋음 (!)
   delta 3b K + Q4 V   14.82 │  ●  +1.3%
-  llama.cpp Q4 KV     16.18 │          ● +10.6%
+  llama.cpp Q8K+Q5V   ~14.8 │  ●  ~+1% (1.6x 압축)
+  llama.cpp Q4_0 KV   16.18 │          ● +10.6% (3.8x 압축)
   3b K (delta 없음)     ——  │                              ● +62%
                             └──┬──┬──┬──┬──┬──┬──┬──┬──┬──┬──
                               14  15  16  17  18  19  20  21+
@@ -317,9 +322,9 @@ llama.cpp는 전체 기능을 갖춘 추론 프레임워크 (250K+ LOC). quant.c
 </details>
 
 <details>
-<summary><b>llama.cpp에도 Q4 KV가 있는데, 뭐가 다른가요?</b></summary>
+<summary><b>llama.cpp에도 KV 양자화가 있는데, 뭐가 다른가요?</b></summary>
 
-둘 다 4-bit이지만 품질 차이가 큽니다: llama.cpp Q4_0 KV는 PPL +10.6%, quant.cpp는 +0.0%. quant.cpp는 K와 V를 각각 최적 방식으로 독립 양자화하며, delta 압축(3-bit에서 PPL +1.3%)도 제공합니다. llama.cpp에는 이 기능이 없습니다.
+llama.cpp도 KV 캐시 양자화를 지원합니다 (Q8_0 K + Q5_0 V 추천, ~1.6x 압축에 품질 손실 거의 없음). quant.cpp는 더 높은 압축을 목표로 합니다: 4-bit K + Q4 V로 3.8x에서 PPL +0.0%, delta 압축으로 4.3x에서 +1.3%. 품질 우위는 128-element min-max 블록(vs 32-element), 독립적 K/V 양자화, 인접 키의 delta 인코딩에서 옵니다. 1.6x면 llama.cpp KV 양자화로 충분합니다. 4-7x가 필요하면 quant.cpp를 쓰세요.
 
 </details>
 

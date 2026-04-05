@@ -77,21 +77,25 @@ hf download bartowski/SmolLM2-135M-Instruct-GGUF SmolLM2-135M-Instruct-Q8_0.gguf
 ```
                     KV Quantization Quality (SmolLM2 1.7B, WikiText-2)
                     
-  llama.cpp Q4_0 KV │██████████████████████████████████████ PPL +10.6%  ← broken
+  llama.cpp Q4_0 KV │██████████████████████████████████████ PPL +10.6%
                     │
-   quant.cpp 4-bit  │▏ PPL +0.0%  ← lossless
+  llama.cpp Q8 K+Q5 V │▎ PPL ~+1%  ← recommended (1.6x compression)
                     │
-   quant.cpp 3-bit  │█ PPL +1.3%  ← delta compression
+   quant.cpp 4-bit  │▏ PPL +0.0%  ← lossless (3.8x compression)
+                    │
+   quant.cpp 3-bit  │█ PPL +1.3%  ← delta compression (4.3x)
                     └────────────────────────────────────────────────
                      0%                                         +12%
                               Perplexity Degradation →
 ```
 
+Both are per-block methods. The quality gap comes from block size (128 vs 32), min-max range encoding, independent K/V treatment, and delta compression — not from a fundamental design flaw in llama.cpp. At ~1.6x compression, llama.cpp Q8+Q5 is excellent. quant.cpp targets the **4-7x range** where the difference matters.
+
 ### vs every other engine
 
 |  | quant.cpp | llama.cpp | vLLM | MLX | ONNX RT |
 |:--|:---------:|:---------:|:----:|:---:|:-------:|
-| KV compression | **7x, +0% PPL** | +10.6% PPL | -- | -- | -- |
+| KV compression | **7x, +0% PPL** | 1.6x at ~+1% PPL | -- | -- | -- |
 | Code size | **72K LOC** | 250K+ | 100K+ | 50K+ | 500K+ |
 | Dependencies | **zero** | ggml | PyTorch | Apple fw | runtime |
 | Embeddable | **single header** | -- | -- | -- | complex |
@@ -163,7 +167,8 @@ Like video compression: I-frames (FP32) every 64 tokens, P-frames (3-bit delta) 
   4b K + FP16 V       14.63 │ ● identical
   4b K + Q4 V         14.57 │ ● slightly better (!)
   delta 3b K + Q4 V   14.82 │  ●  +1.3%
-  llama.cpp Q4 KV     16.18 │          ● +10.6%
+  llama.cpp Q8K+Q5V   ~14.8 │  ●  ~+1% (1.6x compression)
+  llama.cpp Q4_0 KV   16.18 │          ● +10.6% (3.8x compression)
   3b K (no delta)       ——  │                              ● +62%
                             └──┬──┬──┬──┬──┬──┬──┬──┬──┬──┬──
                               14  15  16  17  18  19  20  21+
@@ -317,9 +322,9 @@ llama.cpp is a full-featured inference framework (250K+ LOC). quant.cpp is a min
 </details>
 
 <details>
-<summary><b>llama.cpp already has Q4 KV. How is yours better?</b></summary>
+<summary><b>llama.cpp already has KV quantization. How is yours different?</b></summary>
 
-Both use 4 bits, but quality differs: llama.cpp Q4_0 KV gives PPL +10.6%, quant.cpp gives +0.0%. The difference: quant.cpp quantizes K and V independently with type-appropriate methods, and offers delta compression (3-bit at +1.3% PPL). llama.cpp has no equivalent.
+llama.cpp supports KV cache quantization (Q8_0 K + Q5_0 V is the recommended config, ~1.6x compression with minimal quality loss). quant.cpp targets higher compression: 4-bit K + Q4 V gives 3.8x at +0.0% PPL, and delta compression pushes to 4.3x at +1.3% PPL. The quality advantage comes from 128-element min-max blocks (vs 32-element), independent K/V quantization methods, and delta encoding of adjacent keys — a technique llama.cpp doesn't have. Use llama.cpp's KV quant if 1.6x is enough; use quant.cpp if you need 4-7x.
 
 </details>
 
