@@ -8,7 +8,7 @@ We present quant.cpp, a minimal LLM inference engine that achieves 6.9x KV cache
 
 Large language model inference is increasingly memory-bound. At 32K context length, an 8B model's KV cache consumes 4GB — more than the model weights themselves. While weight quantization (Q4, Q8) is well-studied, KV cache compression receives less attention despite dominating memory usage at long contexts.
 
-Existing KV cache quantization in production engines (llama.cpp Q4_0) introduces +10.6% perplexity degradation — noticeable quality loss. We show that type-aware independent K/V quantization achieves +0.0% degradation at the same bit budget.
+Existing KV cache quantization in production engines offers a range of quality-compression tradeoffs. llama.cpp's recommended Q8_0 K + Q5_0 V config achieves ~1.6x compression with ~+1% PPL, while aggressive Q4_0 symmetric gives 3.8x but +10.6% PPL. We show that type-aware independent K/V quantization achieves +0.0% degradation at 3.8x compression — bridging the gap between high compression and quality preservation.
 
 quant.cpp is designed around three principles:
 1. **Readable**: The full transformer forward pass fits in one file (tq_transformer.c, 2500 lines).
@@ -102,7 +102,8 @@ WikiText-2 PPL on SmolLM2 1.7B:
 | 4b K + FP16 V | 14.63 | +0.00% | 1.6x |
 | 4b K + Q4 V | 14.57 | -0.4% | 6.9x |
 | Delta 3b K + Q4 V | 14.82 | +1.3% | 8.5x |
-| llama.cpp Q4_0 KV | 16.18 | +10.6% | 3.8x |
+| llama.cpp Q8_0 K + Q5_0 V | ~14.8 | ~+1% | 1.6x |
+| llama.cpp Q4_0 K+V (symmetric) | 16.18 | +10.6% | 3.8x |
 
 ### 5.3 Context Extension
 
@@ -118,7 +119,7 @@ On 16GB Mac M1 Pro:
 - **TurboQuant** (Zandieh et al., ICLR 2026): KV cache compression theory
 - **QJL** (AAAI 2025): Quantized Johnson-Lindenstrauss transform
 - **PolarQuant** (AISTATS 2026): Polar coordinate quantization
-- **llama.cpp**: Production inference engine with Q4 KV quantization
+- **llama.cpp**: Production inference engine with asymmetric KV quantization (Q8 K + Q5 V recommended)
 - **llm.c** (Karpathy): Minimal C training/inference, educational focus
 
 ## 7. Conclusion

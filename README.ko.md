@@ -95,7 +95,7 @@ hf download bartowski/SmolLM2-135M-Instruct-GGUF SmolLM2-135M-Instruct-Q8_0.gguf
 
 |  | quant.cpp | llama.cpp | vLLM | MLX | ONNX RT |
 |:--|:---------:|:---------:|:----:|:---:|:-------:|
-| KV 압축 | **7x, +0% PPL** | 1.6x ~+1% PPL | -- | -- | -- |
+| KV 압축 | **3.8-6.9x, +0% PPL** | 1.6x ~+1% PPL | -- | -- | -- |
 | 코드 크기 | **72K LOC** | 250K+ | 100K+ | 50K+ | 500K+ |
 | 의존성 | **제로** | ggml | PyTorch | Apple fw | 런타임 |
 | 임베더블 | **단일 헤더** | -- | -- | -- | 복잡 |

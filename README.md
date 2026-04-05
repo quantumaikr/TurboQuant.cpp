@@ -95,7 +95,7 @@ Both are per-block methods. The quality gap comes from block size (128 vs 32), m
 
 |  | quant.cpp | llama.cpp | vLLM | MLX | ONNX RT |
 |:--|:---------:|:---------:|:----:|:---:|:-------:|
-| KV compression | **7x, +0% PPL** | 1.6x at ~+1% PPL | -- | -- | -- |
+| KV compression | **3.8-6.9x, +0% PPL** | 1.6x at ~+1% PPL | -- | -- | -- |
 | Code size | **72K LOC** | 250K+ | 100K+ | 50K+ | 500K+ |
 | Dependencies | **zero** | ggml | PyTorch | Apple fw | runtime |
 | Embeddable | **single header** | -- | -- | -- | complex |

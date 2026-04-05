@@ -10,7 +10,7 @@ The obvious fix is quantization: store those vectors in fewer bits. We spent thr
 
 ## The descent into fewer bits
 
-4-bit works. We implemented a straightforward uniform min-max quantizer for KV cache keys and ran WikiText-2 perplexity on SmolLM2 1.7B. FP32 baseline: 14.63 PPL. With 4-bit keys and Q4 values: 14.57 PPL. That is -0.4%, which is within noise -- essentially free compression. For comparison, llama.cpp's built-in Q4_0 KV cache quantization scores +10.6% PPL degradation on the same model. The difference comes from quantizing K and V independently with type-appropriate methods, while llama.cpp applies the same scheme to both.
+4-bit works. We implemented a straightforward uniform min-max quantizer for KV cache keys and ran WikiText-2 perplexity on SmolLM2 1.7B. FP32 baseline: 14.63 PPL. With 4-bit keys and Q4 values: 14.57 PPL. That is -0.4%, which is within noise -- essentially free compression. For comparison, llama.cpp's Q4_0 KV cache quantization (symmetric K+V) scores +10.6% PPL on the same model. Note: llama.cpp also supports asymmetric configs like Q8_0 K + Q5_0 V (~+1% PPL, ~1.6x compression). The quality advantage at high compression (3.8x+) comes from 128-element min-max blocks, independent K/V quantization, and delta compression of adjacent keys.
 
 3-bit is where things get ugly. Naive 3-bit uniform quantization blows up to +62% PPL. The 8 reconstruction levels simply cannot capture the post-RHT distribution with enough fidelity. We tried Lloyd-Max optimal codebooks, asymmetric ranges, per-channel scales. Nothing brought it under +40%.
 
