@@ -1,5 +1,64 @@
 # Changelog
 
+## [0.5.0] — 2026-04-05
+
+### Highlights
+
+- **Gemma 4 26B-A4B MoE** — Full support for 128-expert MoE, dual-FFN, hybrid attention, QK-norm, learned RoPE, GeGLU
+- **Llama 3.2 3B** — Verified at 17 tok/s with correct code generation
+- **7x KV cache compression** — 350K tokens on 16GB Mac (was 50K), PPL +0.0%
+- **quant.h synced** — Single header now includes IQ3_XXS, Gemma 4, Llama 3 support
+- **WASM browser demo** — 192KB binary, GitHub Pages deployed
+- **MSVC Windows** — Visual Studio 2019/2022 compilation support
+- **Metal GPU infrastructure** — 7 compute kernels, full-layer pipeline (disabled for batch-1, ready for batch inference)
+
+### Architecture
+
+- Gemma 4 MoE: 10 architecture bugs fixed (dual-FFN loading, layer_output_scale, attention_scale, V-norm, etc.)
+- QK-norm aware KV compression: auto FP32 keys for sparse distributions (cosine 0.62 → 1.00)
+- IQ3_XXS dequantization with 256-entry grid codebook
+- NEON fused dot for IQ3_XXS, IQ4_NL, Q8_0 (two-accumulator with prefetch)
+- GeGLU NEON (fast tanh via Schraudolph approximation)
+- GGUF embedding: skip 2.8GB FP32 allocation, use Q6_K fused dot directly
+
+### Performance
+
+- Gemma 4 26B: 549ms → 257ms/token (-53%)
+- SmolLM2 135M: 96 tok/s (CPU NEON Q4×Q8)
+- Llama 3.2 3B: 17 tok/s
+- KV compression: uniform_4b + Q4V = 6.9x, delta 3b + Q4V = 8.5x
+
+### Platform
+
+- MSVC: pthread shim (CRITICAL_SECTION), _Interlocked atomics, QueryPerformanceCounter
+- WASM: Emscripten build (192KB), drag-and-drop GGUF, streaming output
+- Metal: RoPE, GELU, softmax, attention_qk, attention_v, kv_cache_write, matmul_tq_q4_fast kernels
+- GitHub Pages: live demo at quantumaikr.github.io/quant.cpp
+
+### Documentation
+
+- docs/api.md: Full C API reference (730 lines) — single-header + full library
+- docs/custom-quantization.md: Step-by-step guide to add new KV quantization types
+- docs/papers/quant_cpp_tech_report.md: Arxiv tech report draft
+- ROADMAP.md: Project direction ("LLM의 SQLite" + research platform)
+- 3 embedding examples: minimal (30 lines), chat (60 lines), KV compare
+
+### Bug Fixes
+
+- Fix Gemma 4 NaN regression (model_type set after hybrid detection)
+- Fix Llama GQA head_dim misdetection (was 64 instead of 128)
+- Fix TQ_STATIC_ASSERT no-op in C mode (now C11 _Static_assert)
+- Fix stack buffer overflow in attention debug (recon[256] → recon[512])
+- Fix Accelerate macro redefinition warning
+
+### Community
+
+- llama.cpp Discussion #20969: shared TurboQuant implementation status
+- vLLM-omni Issue #2215: KV compression RFC contribution
+- Closed Issues #5 (Q3_K_M), #7 (API docs), #10 (MSVC), #11 (static_assert)
+
+---
+
 ## [0.1.0] — 2026-03-29
 
 ### Highlights

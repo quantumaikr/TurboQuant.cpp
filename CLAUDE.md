@@ -1,10 +1,21 @@
 # quant.cpp — Agent Development Guide
 
+## Project Vision
+
+**"LLM의 SQLite"** — 가장 작고, 가장 읽기 쉽고, 가장 쉽게 임베딩할 수 있는 LLM 엔진.
+
+Two directions:
+1. **Embedding Engine**: quant.h 단일 헤더(15K LOC)로 어디든 LLM 추가
+2. **KV Compression Research**: 함수 3개로 새 양자화 타입 추가 가능한 연구 플랫폼
+
+**Non-goals**: GPU 속도 경쟁 (llama.cpp 영역), 배치 서빙 (vLLM 영역), 학습
+
 ## Project Overview
 
 quant.cpp is a minimal C inference engine for local LLM with KV cache compression.
-55K LOC, pure C, zero dependencies. Supports 5 architectures via GGUF.
-Killer feature: delta KV compression — 3-bit keys with PPL -3.2% vs FP32.
+67K LOC, pure C, zero dependencies. Supports 7 architectures via GGUF.
+Killer feature: KV cache compression — 7x compression with PPL +0.0% vs FP32.
+Ships as quant.h (15K LOC single header) and WASM (192KB).
 
 ## Architecture
 
@@ -14,8 +25,12 @@ src/core/             — Algorithms (tq_polar.c, tq_qjl.c, tq_turbo.c, tq_unifo
 src/cache/            — Paged cache + progressive compression
 src/backend/cpu/      — CPU kernels (generic, AVX2, NEON)
 src/backend/cuda/     — CUDA kernels
-src/backend/metal/    — Metal compute shaders
-tests/                — Google Test unit tests
+src/backend/metal/    — Metal compute shaders (7 kernels: matmul, rmsnorm, rope, attention, etc.)
+src/engine/           — GGUF loader, transformer forward, tokenizer, generate
+tests/                — Google Test unit tests (34 tests)
+wasm/                 — Browser demo (quant.wasm 192KB + index.html)
+docs/                 — API reference, custom quantization guide, tech report
+examples/             — Embedding examples (minimal, chat, kv_compare)
 bench/                — Performance benchmarks
 spec/                 — Format specification + test vectors
 integrations/         — llama.cpp, vLLM, Python bindings

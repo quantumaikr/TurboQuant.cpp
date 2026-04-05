@@ -59,3 +59,5 @@ libturboquant.a
 tq_run
 tq_run.dSYM/
 .claude/worktrees/
+.claude/worktrees/
+docs/assets/hero_backup.png
