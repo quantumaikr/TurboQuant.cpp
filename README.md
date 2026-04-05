@@ -27,15 +27,15 @@
 LLM memory is dominated by the **KV cache**, not model weights. At 32K context, a 8B model's KV cache consumes **4GB** — more than the model itself. Every existing engine stores KV in FP16. We compress it.
 
 ```
-┌──────────────────────────────────────────────┐
-│              16GB Mac Memory                 │
-├────────────┬─────────────────────────────────┤
-│ Model(4GB) │ KV (FP16)                       │
-│            │ ██████████████  8K ctx  ← OOM   │
-├────────────┼─────────────────────────────────┤
-│ Model(4GB) │ KV (4-bit) ██ →→ 350K ctx       │
-│            │            ↑ 6.9x smaller       │
-└────────────┴─────────────────────────────────┘
+  +------------+-------------------------------+
+  |            |  16GB Mac Memory              |
+  | Model(4GB) +-------------------------------+
+  |            | KV Cache (FP16)               |
+  |            | [##############] 8K  <-- OOM  |
+  +------------+-------------------------------+
+  | Model(4GB) | KV (4-bit) [##] --> 350K ctx  |
+  |            |          6.9x smaller         |
+  +------------+-------------------------------+
 ```
 
 ## The Result
