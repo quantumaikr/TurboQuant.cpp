@@ -657,6 +657,10 @@ typedef struct {
     /* GGUF context (non-NULL when loaded from GGUF, owns mmap lifetime) */
     void* gguf_ctx;           /* tq_gguf_ctx_t* */
 
+    /* GGUF embedding for output projection (large-vocab models keep quantized) */
+    const void* output_gguf;  /* raw GGUF quantized embedding data (NULL if using FP32/BF16) */
+    int output_gguf_type;     /* tq_ggml_dtype of output_gguf */
+
     /* MoE config (valid when config.is_moe) */
     void* moe_config;         /* tq_moe_config_t* */
 
@@ -1248,6 +1252,7 @@ typedef struct {
     int has_shared_expert;          /* 1 if shared expert exists */
     int shared_expert_intermediate_dim;
     int norm_topk_prob;             /* 1 = renormalize top-K weights */
+    int use_gelu;                   /* 1 = GeGLU (Gemma 4), 0 = SwiGLU (Qwen) */
 } tq_moe_config_t;
 
 /* Per-expert weight pointers (into GGUF mmap) */
@@ -6001,6 +6006,88 @@ static void dequant_iq4_xs(const void* src, float* dst, int n) {
     }
 }
 
+/* ============================================================
+ * IQ3_XXS dequantization — 3.0625 bpw grid codebook
+ *
+ * Block: 98 bytes per 256 elements
+ *   - d (fp16): super-block scale
+ *   - qs[64]: grid indices (8 groups × 8 bytes each)
+ *     First 64 bytes: 2 uint8 grid indices per sub-group (4 sub-groups × 2 = 8 per group)
+ *     Next 32 bytes: scales_and_signs (4 bytes per group × 8 groups)
+ *       Each uint32: bits 0-27 = 4×7-bit sign fields → ksigns_iq2xs
+ *                    bits 28-31 = 4-bit sub-block scale
+ *   Each grid index lookups iq3xxs_grid[idx] → 4 uint8 values (4 floats)
+ *   2 grid indices per sub-group → 8 floats, 4 sub-groups per group → 32 floats
+ * ============================================================ */
+
+static const uint32_t iq3xxs_grid[256] = {
+    0x04040404, 0x04040414, 0x04040424, 0x04040c0c, 0x04040c1c, 0x04040c3e, 0x04041404, 0x04041414,
+    0x04041c0c, 0x04042414, 0x04043e1c, 0x04043e2c, 0x040c040c, 0x040c041c, 0x040c0c04, 0x040c0c14,
+    0x040c140c, 0x040c142c, 0x040c1c04, 0x040c1c14, 0x040c240c, 0x040c2c24, 0x040c3e04, 0x04140404,
+    0x04140414, 0x04140424, 0x04140c0c, 0x04141404, 0x04141414, 0x04141c0c, 0x04141c1c, 0x04141c3e,
+    0x04142c0c, 0x04142c3e, 0x04143e2c, 0x041c040c, 0x041c043e, 0x041c0c04, 0x041c0c14, 0x041c142c,
+    0x041c3e04, 0x04240c1c, 0x04241c3e, 0x04242424, 0x04242c3e, 0x04243e1c, 0x04243e2c, 0x042c040c,
+    0x042c043e, 0x042c1c14, 0x042c2c14, 0x04341c2c, 0x04343424, 0x043e0c04, 0x043e0c24, 0x043e0c34,
+    0x043e241c, 0x043e340c, 0x0c04040c, 0x0c04041c, 0x0c040c04, 0x0c040c14, 0x0c04140c, 0x0c04141c,
+    0x0c041c04, 0x0c041c14, 0x0c041c24, 0x0c04243e, 0x0c042c04, 0x0c0c0404, 0x0c0c0414, 0x0c0c0c0c,
+    0x0c0c1404, 0x0c0c1414, 0x0c14040c, 0x0c14041c, 0x0c140c04, 0x0c140c14, 0x0c14140c, 0x0c141c04,
+    0x0c143e14, 0x0c1c0404, 0x0c1c0414, 0x0c1c1404, 0x0c1c1c0c, 0x0c1c2434, 0x0c1c3434, 0x0c24040c,
+    0x0c24042c, 0x0c242c04, 0x0c2c1404, 0x0c2c1424, 0x0c2c2434, 0x0c2c3e0c, 0x0c34042c, 0x0c3e1414,
+    0x0c3e2404, 0x14040404, 0x14040414, 0x14040c0c, 0x14040c1c, 0x14041404, 0x14041414, 0x14041434,
+    0x14041c0c, 0x14042414, 0x140c040c, 0x140c041c, 0x140c042c, 0x140c0c04, 0x140c0c14, 0x140c140c,
+    0x140c1c04, 0x140c341c, 0x140c343e, 0x140c3e04, 0x14140404, 0x14140414, 0x14140c0c, 0x14140c3e,
+    0x14141404, 0x14141414, 0x14141c3e, 0x14142404, 0x14142c2c, 0x141c040c, 0x141c0c04, 0x141c0c24,
+    0x141c3e04, 0x141c3e24, 0x14241c2c, 0x14242c1c, 0x142c041c, 0x142c143e, 0x142c240c, 0x142c3e24,
+    0x143e040c, 0x143e041c, 0x143e0c34, 0x143e242c, 0x1c04040c, 0x1c040c04, 0x1c040c14, 0x1c04140c,
+    0x1c04141c, 0x1c042c04, 0x1c04342c, 0x1c043e14, 0x1c0c0404, 0x1c0c0414, 0x1c0c1404, 0x1c0c1c0c,
+    0x1c0c2424, 0x1c0c2434, 0x1c14040c, 0x1c14041c, 0x1c140c04, 0x1c14142c, 0x1c142c14, 0x1c143e14,
+    0x1c1c0c0c, 0x1c1c1c1c, 0x1c241c04, 0x1c24243e, 0x1c243e14, 0x1c2c0404, 0x1c2c0434, 0x1c2c1414,
+    0x1c2c2c2c, 0x1c340c24, 0x1c341c34, 0x1c34341c, 0x1c3e1c1c, 0x1c3e3404, 0x24040424, 0x24040c3e,
+    0x24041c2c, 0x24041c3e, 0x24042c1c, 0x24042c3e, 0x240c3e24, 0x24141404, 0x24141c3e, 0x24142404,
+    0x24143404, 0x24143434, 0x241c043e, 0x241c242c, 0x24240424, 0x24242c0c, 0x24243424, 0x242c142c,
+    0x242c241c, 0x242c3e04, 0x243e042c, 0x243e0c04, 0x243e0c14, 0x243e1c04, 0x2c040c14, 0x2c04240c,
+    0x2c043e04, 0x2c0c0404, 0x2c0c0434, 0x2c0c1434, 0x2c0c2c2c, 0x2c140c24, 0x2c141c14, 0x2c143e14,
+    0x2c1c0414, 0x2c1c2c1c, 0x2c240c04, 0x2c24141c, 0x2c24143e, 0x2c243e14, 0x2c2c0414, 0x2c2c1c0c,
+    0x2c342c04, 0x2c3e1424, 0x2c3e2414, 0x34041424, 0x34042424, 0x34042434, 0x34043424, 0x340c140c,
+    0x340c340c, 0x34140c3e, 0x34143424, 0x341c1c04, 0x341c1c34, 0x34242424, 0x342c042c, 0x342c2c14,
+    0x34341c1c, 0x343e041c, 0x343e140c, 0x3e04041c, 0x3e04042c, 0x3e04043e, 0x3e040c04, 0x3e041c14,
+    0x3e042c14, 0x3e0c1434, 0x3e0c2404, 0x3e140c14, 0x3e14242c, 0x3e142c14, 0x3e1c0404, 0x3e1c0c2c,
+    0x3e1c1c1c, 0x3e1c3404, 0x3e24140c, 0x3e24240c, 0x3e2c0404, 0x3e2c0414, 0x3e2c1424, 0x3e341c04,
+};
+
+static void dequant_iq3_xxs(const void* src, float* dst, int n) {
+    const int nb = n / 256;
+    const uint8_t* base = (const uint8_t*)src;
+
+    for (int b = 0; b < nb; b++) {
+        const uint8_t* blk = base + b * 98; /* 98 bytes per block */
+        uint16_t d_raw;
+        memcpy(&d_raw, blk, 2);
+        const float d = fp16_to_fp32(d_raw);
+        const uint8_t* qs = blk + 2;
+        const uint8_t* scales_and_signs = qs + 64; /* QK_K/4 = 64 */
+        float* y = dst + b * 256;
+
+        for (int ib32 = 0; ib32 < 8; ib32++) {
+            uint32_t aux32;
+            memcpy(&aux32, scales_and_signs + 4 * ib32, sizeof(uint32_t));
+            const float db = d * (0.5f + (float)(aux32 >> 28)) * 0.5f;
+
+            for (int l = 0; l < 4; l++) {
+                const uint8_t signs = ksigns_iq2xs[(aux32 >> (7 * l)) & 127];
+                const uint8_t* grid1 = (const uint8_t*)(iq3xxs_grid + qs[2 * l + 0]);
+                const uint8_t* grid2 = (const uint8_t*)(iq3xxs_grid + qs[2 * l + 1]);
+                for (int j = 0; j < 4; j++) {
+                    y[j + 0] = db * (float)grid1[j] * ((signs & kmask_iq2xs[j + 0]) ? -1.0f : 1.0f);
+                    y[j + 4] = db * (float)grid2[j] * ((signs & kmask_iq2xs[j + 4]) ? -1.0f : 1.0f);
+                }
+                y += 8;
+            }
+            qs += 8;
+        }
+    }
+}
+
 /* --- Other IQ type stubs --- */
 static void dequant_iq_stub(const char* type_name, float* dst, int n) {
     static int warned = 0;
@@ -6066,7 +6153,7 @@ void tq_dequant_row_gguf(tq_ggml_dtype type, const void* src, float* dst, int n)
             dequant_iq_stub("IQ2_XS", dst, n);
             break;
         case TQ_GGML_TYPE_IQ3_XXS:
-            dequant_iq_stub("IQ3_XXS", dst, n);
+            dequant_iq3_xxs(src, dst, n);
             break;
         case TQ_GGML_TYPE_IQ1_S:
             dequant_iq_stub("IQ1_S", dst, n);
@@ -6396,6 +6483,49 @@ static float fused_dot_iq4_nl(const void* row, const float* x, int n) {
     const block_iq4_nl* blk = (const block_iq4_nl*)row;
     float sum = 0.0f;
 
+#if TQ_HAS_NEON
+    /* Preload IQ4_NL lookup table into 2 NEON registers (16 values split into 2x8).
+     * kvalues_iq4nl[0..15] are int8 values, we load as two int8x8 for tbl lookup. */
+    int8x16_t vlut = vld1q_s8(kvalues_iq4nl);
+    float32x4_t vsum0 = vdupq_n_f32(0.0f);
+    uint8x16_t vmask_lo = vdupq_n_u8(0x0f);
+
+    for (int b = 0; b < nb; b++) {
+        const float d = fp16_to_fp32(blk[b].d);
+        const uint8_t* qs = blk[b].qs;
+        const float* xp = x + b * 32;
+
+        /* Load 16 bytes of qs, split into low/high nibbles -> lookup -> signed int8 weights */
+        uint8x16_t vqs = vld1q_u8(qs);
+        uint8x16_t vlo = vandq_u8(vqs, vmask_lo);         /* low nibbles [0..15] */
+        uint8x16_t vhi = vshrq_n_u8(vqs, 4);              /* high nibbles [0..15] */
+        int8x16_t wlo = vqtbl1q_s8(vlut, vlo);            /* lookup low -> signed weights */
+        int8x16_t whi = vqtbl1q_s8(vlut, vhi);            /* lookup high -> signed weights */
+
+        /* Convert to float and accumulate: wlo[j]*xp[j] for j=0..15, whi[j]*xp[j+16] */
+        float32x4_t vacc = vdupq_n_f32(0.0f);
+        for (int k = 0; k < 4; k++) {
+            /* Low nibble: 4 elements */
+            int16x8_t w16 = vmovl_s8(vget_low_s8(wlo));
+            if (k >= 2) w16 = vmovl_s8(vget_high_s8(wlo));
+            int16x4_t w16_part = (k & 1) ? vget_high_s16(w16) : vget_low_s16(w16);
+            float32x4_t vw = vcvtq_f32_s32(vmovl_s16(w16_part));
+            float32x4_t vx = vld1q_f32(xp + k * 4);
+            vacc = vfmaq_f32(vacc, vw, vx);
+
+            /* High nibble: 4 elements at xp+16 */
+            int16x8_t wh16 = vmovl_s8(vget_low_s8(whi));
+            if (k >= 2) wh16 = vmovl_s8(vget_high_s8(whi));
+            int16x4_t wh16_part = (k & 1) ? vget_high_s16(wh16) : vget_low_s16(wh16);
+            float32x4_t vwh = vcvtq_f32_s32(vmovl_s16(wh16_part));
+            float32x4_t vxh = vld1q_f32(xp + 16 + k * 4);
+            vacc = vfmaq_f32(vacc, vwh, vxh);
+        }
+        float block_sum = vaddvq_f32(vacc);
+        vsum0 = vfmaq_n_f32(vsum0, vdupq_n_f32(block_sum), d);
+    }
+    sum = vaddvq_f32(vsum0);
+#else
     for (int b = 0; b < nb; b++) {
         const float d = fp16_to_fp32(blk[b].d);
         const uint8_t* qs = blk[b].qs;
@@ -6408,6 +6538,7 @@ static float fused_dot_iq4_nl(const void* row, const float* x, int n) {
         }
         sum += d * block_sum;
     }
+#endif
     return sum;
 }
 
@@ -6437,6 +6568,107 @@ static float fused_dot_iq4_xs(const void* row, const float* x, int n) {
             qs += 16;
         }
     }
+    return sum;
+}
+
+/* Fused IQ3_XXS dot product: 98 bytes per 256 elements
+ * Same layout as dequant_iq3_xxs but computes dot product without materializing FP32.
+ * 8 groups of 32 elements per block. Each group: 4 sub-groups of 8 elements.
+ * Grid lookup + sign application + dot in one pass. */
+static float fused_dot_iq3_xxs(const void* row, const float* x, int n) {
+    const int nb = n / 256;
+    const uint8_t* base = (const uint8_t*)row;
+    float sum = 0.0f;
+
+#if TQ_HAS_NEON
+    const uint8x8_t vbit_masks = vld1_u8(iq2_sign_bit_masks);
+
+    for (int b = 0; b < nb; b++) {
+        const uint8_t* blk = base + b * 98;
+        uint16_t d_raw;
+        memcpy(&d_raw, blk, 2);
+        const float d = fp16_to_fp32(d_raw);
+        const uint8_t* qs = blk + 2;
+        const uint8_t* scales_and_signs = qs + 64;
+        const float* xbase = x + b * 256;
+
+        float block_sum = 0.0f;
+        for (int ib32 = 0; ib32 < 8; ib32++) {
+            uint32_t aux32;
+            memcpy(&aux32, scales_and_signs + 4 * ib32, sizeof(uint32_t));
+            const float db = (0.5f + (float)(aux32 >> 28)) * 0.5f;
+            const float* xb = xbase + ib32 * 32;
+
+            float32x4_t vacc0 = vdupq_n_f32(0.0f);
+            float32x4_t vacc1 = vdupq_n_f32(0.0f);
+
+            for (int l = 0; l < 4; l++) {
+                const uint8_t signs = ksigns_iq2xs[(aux32 >> (7 * l)) & 127];
+                const uint8_t* grid1 = (const uint8_t*)(iq3xxs_grid + qs[2 * l + 0]);
+                const uint8_t* grid2 = (const uint8_t*)(iq3xxs_grid + qs[2 * l + 1]);
+
+                /* Load 4+4 grid bytes, combine into one 8-byte vector */
+                uint8_t grid8[8];
+                memcpy(grid8, grid1, 4);
+                memcpy(grid8 + 4, grid2, 4);
+                uint8x8_t vgrid = vld1_u8(grid8);
+
+                /* Vectorized sign: broadcast sign byte, AND with masks, compare */
+                uint8x8_t vsign_bcast = vdup_n_u8(signs);
+                uint8x8_t vsign_bits = vtst_u8(vsign_bcast, vbit_masks);
+                int8x8_t vgrid_s = vreinterpret_s8_u8(vgrid);
+                int8x8_t vneg = vreinterpret_s8_u8(vsign_bits);
+                int8x8_t vsigned = vsub_s8(veor_s8(vgrid_s, vneg), vneg);
+
+                /* Widen to float and dot with input */
+                int16x8_t vs16 = vmovl_s8(vsigned);
+                float32x4_t vf_lo = vcvtq_f32_s32(vmovl_s16(vget_low_s16(vs16)));
+                float32x4_t vf_hi = vcvtq_f32_s32(vmovl_s16(vget_high_s16(vs16)));
+
+                const float* xp = xb + l * 8;
+                vacc0 = vfmaq_f32(vacc0, vf_lo, vld1q_f32(xp));
+                vacc1 = vfmaq_f32(vacc1, vf_hi, vld1q_f32(xp + 4));
+            }
+            block_sum += db * vaddvq_f32(vaddq_f32(vacc0, vacc1));
+            qs += 8;
+        }
+        sum += d * block_sum;
+    }
+#else
+    for (int b = 0; b < nb; b++) {
+        const uint8_t* blk = base + b * 98;
+        uint16_t d_raw;
+        memcpy(&d_raw, blk, 2);
+        const float d = fp16_to_fp32(d_raw);
+        const uint8_t* qs = blk + 2;
+        const uint8_t* scales_and_signs = qs + 64;
+        const float* xbase = x + b * 256;
+
+        float block_sum = 0.0f;
+        for (int ib32 = 0; ib32 < 8; ib32++) {
+            uint32_t aux32;
+            memcpy(&aux32, scales_and_signs + 4 * ib32, sizeof(uint32_t));
+            const float db = (0.5f + (float)(aux32 >> 28)) * 0.5f;
+            const float* xb = xbase + ib32 * 32;
+
+            float group_sum = 0.0f;
+            for (int l = 0; l < 4; l++) {
+                const uint8_t signs = ksigns_iq2xs[(aux32 >> (7 * l)) & 127];
+                const uint8_t* grid1 = (const uint8_t*)(iq3xxs_grid + qs[2 * l + 0]);
+                const uint8_t* grid2 = (const uint8_t*)(iq3xxs_grid + qs[2 * l + 1]);
+                const float* xp = xb + l * 8;
+                for (int j = 0; j < 4; j++) {
+                    float w1 = (float)grid1[j] * ((signs & kmask_iq2xs[j])     ? -1.0f : 1.0f);
+                    float w2 = (float)grid2[j] * ((signs & kmask_iq2xs[j + 4]) ? -1.0f : 1.0f);
+                    group_sum += w1 * xp[j] + w2 * xp[j + 4];
+                }
+            }
+            block_sum += db * group_sum;
+            qs += 8;
+        }
+        sum += d * block_sum;
+    }
+#endif
     return sum;
 }
 
@@ -6724,6 +6956,9 @@ void tq_matmul_gguf(float* out, const float* x,
             break;
         case TQ_GGML_TYPE_IQ4_XS:
             fused_dot = fused_dot_iq4_xs;
+            break;
+        case TQ_GGML_TYPE_IQ3_XXS:
+            fused_dot = fused_dot_iq3_xxs;
             break;
         default:
             break;
@@ -11139,6 +11374,7 @@ tq_model_t* tq_load_gguf(const char* path) {
         moe_cfg->has_shared_expert = c->has_shared_expert;
         moe_cfg->shared_expert_intermediate_dim = c->shared_expert_intermediate_dim;
         moe_cfg->norm_topk_prob = 1;
+        moe_cfg->use_gelu = c->is_gemma4 ? 1 : 0; /* Gemma 4: GeGLU, others: SwiGLU */
         model->moe_config = moe_cfg;
     }
 
@@ -11659,6 +11895,11 @@ tq_model_t* tq_load_gguf(const char* path) {
         } else if (emb_t->type == TQ_GGML_TYPE_BF16 || emb_t->type == TQ_GGML_TYPE_F16) {
             /* Keep as-is for streaming dequant */
             model->embed_bf16 = (const uint16_t*)emb_t->data;
+        } else if (c->vocab_size > 100000 || emb_t->shape[1] > 100000) {
+            /* Large vocab: keep GGUF for output projection, dequant rows on demand */
+            model->output_gguf = emb_t->data;
+            model->output_gguf_type = emb_t->type;
+            model->token_embedding = NULL;
         } else {
             model->token_embedding = dequant_tensor_fp32(emb_t);
         }
@@ -11682,6 +11923,7 @@ tq_model_t* tq_load_gguf(const char* path) {
         /* Weight tying: output weight = embedding weight */
         model->output_weight = model->token_embedding;
         model->output_weight_bf16 = model->embed_bf16;
+        /* GGUF weight tying: output_gguf already set from embedding */
     }
 
     const tq_gguf_tensor_t* onorm_t = find_gguf_tensor(gguf, "output_norm.weight");
@@ -13641,6 +13883,11 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
      * cache is the single source of truth.  This eliminates the duplicate
      * FP32 copy and is the basis for real memory savings. */
     int use_quant_kv = (s->kv_quant_type < TQ_TYPE_COUNT && s->quant_key_cache != NULL);
+    /* Gemma 4: QK-normed keys are too sparse for low-bit quantization (cosine=0.62).
+     * Force FP32 key storage while keeping quantized V cache for memory savings. */
+    if (use_quant_kv && c->is_gemma4 && c->use_qk_norm) {
+        use_quant_kv = 0; /* fall through to FP32 key storage */
+    }
     float* key_cache_layer = s->key_cache + l * kv_layer_stride;
     if (!use_quant_kv) {
         /* Use cache_kv_dim for position stride (cache allocated with sliding dims).
@@ -14401,6 +14648,14 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
             memcpy(&s->x[i], &bits, 4);
         }
 #endif
+    } else if (model->output_gguf && !model->token_embedding) {
+        /* GGUF embedding: dequant single row on demand (no FP32 table in memory) */
+        int block_elems = tq_ggml_type_blck(model->output_gguf_type);
+        int block_bytes = (int)tq_ggml_type_size(model->output_gguf_type);
+        int n_blocks = dim / block_elems;
+        size_t row_bytes = (size_t)n_blocks * block_bytes;
+        const uint8_t* row_ptr = (const uint8_t*)model->output_gguf + (size_t)token * row_bytes;
+        tq_dequant_row_gguf(model->output_gguf_type, row_ptr, s->x, dim);
     } else {
         memcpy(s->x, model->token_embedding + (size_t)token * dim,
                dim * sizeof(float));
@@ -14763,7 +15018,11 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
 
     /* Step 4: Output projection to vocab logits */
     TQ_PROF_START(_tp);
-    if (model->output_qs) {
+    if (model->output_gguf) {
+        /* GGUF fused dot output projection — less memory bandwidth than FP32 */
+        tq_matmul_gguf(s->logits, s->x, model->output_gguf,
+                        model->output_gguf_type, c->vocab_size, dim);
+    } else if (model->output_qs) {
         tq_matmul_q4(s->logits, s->x, model->output_qs, model->output_scales,
                       c->vocab_size, dim);
     } else if (model->output_weight_bf16) {
