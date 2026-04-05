@@ -1791,6 +1791,67 @@ static float fused_dot_q4_k(const void* row, const float* x, int n) {
     return sum;
 }
 
+/* Fused Q3_K dot product: 110 bytes per 256 elements
+ * 3-bit = 2 low bits (qs) + 1 high bit (hmask)
+ * 16 sub-blocks with 6-bit scales packed into 12 bytes */
+static float fused_dot_q3_k(const void* row, const float* x, int n) {
+    const int nb = n / 256;
+    const block_q3_K* blk = (const block_q3_K*)row;
+    float sum = 0.0f;
+
+    const uint32_t kmask1 = 0x03030303;
+    const uint32_t kmask2 = 0x0f0f0f0f;
+
+    uint32_t aux[4];
+    const int8_t* scales = (const int8_t*)aux;
+
+    for (int b = 0; b < nb; b++) {
+        const float d_all = fp16_to_fp32(blk[b].d);
+
+        const uint8_t* q  = blk[b].qs;
+        const uint8_t* hm = blk[b].hmask;
+        uint8_t m = 1;
+
+        /* Decode 16 x 6-bit scales (same as dequant_q3_k) */
+        memcpy(aux, blk[b].scales, 12);
+        uint32_t tmp = aux[2];
+        aux[2] = ((aux[0] >> 4) & kmask2) | (((tmp >> 4) & kmask1) << 4);
+        aux[3] = ((aux[1] >> 4) & kmask2) | (((tmp >> 6) & kmask1) << 4);
+        aux[0] = (aux[0] & kmask2) | (((tmp >> 0) & kmask1) << 4);
+        aux[1] = (aux[1] & kmask2) | (((tmp >> 2) & kmask1) << 4);
+
+        int is = 0;
+        const float* xp = x + b * 256;
+        int yi = 0;
+
+        for (int half = 0; half < 2; half++) {
+            int shift = 0;
+            for (int j = 0; j < 4; ++j) {
+                float dl = d_all * (scales[is++] - 32);
+                float dot = 0.0f;
+                for (int l = 0; l < 16; ++l) {
+                    dot += xp[yi + l] * (float)((int8_t)((q[l + 0] >> shift) & 3) - ((hm[l + 0] & m) ? 0 : 4));
+                }
+                sum += dl * dot;
+                yi += 16;
+
+                dl = d_all * (scales[is++] - 32);
+                dot = 0.0f;
+                for (int l = 0; l < 16; ++l) {
+                    dot += xp[yi + l] * (float)((int8_t)((q[l + 16] >> shift) & 3) - ((hm[l + 16] & m) ? 0 : 4));
+                }
+                sum += dl * dot;
+                yi += 16;
+
+                shift += 2;
+                m <<= 1;
+            }
+            q += 32;
+        }
+    }
+    return sum;
+}
+
 /* Fused Q4_0 dot product: 18 bytes per 32 elements */
 static float fused_dot_q4_0(const void* row, const float* x, int n) {
     const int nb = n / 32;
@@ -1951,6 +2012,73 @@ static void* gguf_matmul_worker(void* arg) {
     return NULL;
 }
 
+/* Pre-quantize input vector to Q8 format for int8×int8 matmul.
+ * Called once in transformer, result reused for Q/K/V/O projections.
+ * Stores int8 values in qs[n], per-block scales in ds[n/32]. */
+void tq_preq_input_q8(const float* x, int8_t* qs, float* ds, int n) {
+    int nb = n / 32;
+    for (int b = 0; b < nb; b++) {
+        const float* xp = x + b * 32;
+        float amax = 0.0f;
+#if TQ_HAS_NEON
+        float32x4_t vmax = vdupq_n_f32(0.0f);
+        for (int j = 0; j < 32; j += 4) {
+            float32x4_t vx = vld1q_f32(xp + j);
+            vmax = vmaxq_f32(vmax, vabsq_f32(vx));
+        }
+        amax = vmaxvq_f32(vmax);
+#else
+        for (int j = 0; j < 32; j++) {
+            float a = xp[j] < 0 ? -xp[j] : xp[j];
+            if (a > amax) amax = a;
+        }
+#endif
+        float d = amax / 127.0f;
+        ds[b] = d;
+        if (d > 0.0f) {
+            float id = 127.0f / amax;
+#if TQ_HAS_NEON
+            float32x4_t vid = vdupq_n_f32(id);
+            for (int j = 0; j < 32; j += 8) {
+                float32x4_t v0 = vmulq_f32(vld1q_f32(xp + j), vid);
+                float32x4_t v1 = vmulq_f32(vld1q_f32(xp + j + 4), vid);
+                int32x4_t i0 = vcvtnq_s32_f32(v0);
+                int32x4_t i1 = vcvtnq_s32_f32(v1);
+                int16x4_t s0 = vqmovn_s32(i0);
+                int16x4_t s1 = vqmovn_s32(i1);
+                int8x8_t b8 = vqmovn_s16(vcombine_s16(s0, s1));
+                vst1_s8(qs + b * 32 + j, b8);
+            }
+#else
+            for (int j = 0; j < 32; j++) {
+                int v = (int)roundf(xp[j] * id);
+                qs[b * 32 + j] = (int8_t)(v < -128 ? -128 : (v > 127 ? 127 : v));
+            }
+#endif
+        } else {
+            memset(qs + b * 32, 0, 32);
+        }
+    }
+}
+
+/* Thread-local pre-quantized input pointer (set by tq_matmul_gguf when available) */
+#ifdef _MSC_VER
+static __declspec(thread) const int8_t* g_preq_qs = NULL;
+static __declspec(thread) const float*  g_preq_ds = NULL;
+#else
+static __thread const int8_t* g_preq_qs = NULL;
+static __thread const float*  g_preq_ds = NULL;
+#endif
+
+void tq_set_preq(const int8_t* qs, const float* ds) {
+    g_preq_qs = qs;
+    g_preq_ds = ds;
+}
+void tq_clear_preq(void) {
+    g_preq_qs = NULL;
+    g_preq_ds = NULL;
+}
+
 /* Q8×Q8 integer dot worker — processes a range of output rows using int8 multiply-accumulate */
 #if TQ_HAS_NEON
 typedef struct {
@@ -2036,10 +2164,40 @@ void tq_matmul_gguf(float* out, const float* x,
     const int    n_blocks  = in_dim / block_elems;
     const size_t row_bytes = (size_t)n_blocks * block_bytes;
 
-    /* Q8×Q8 integer dot: benchmarked slower than float fused dot due to per-call
-     * input quantization overhead. Keeping code in q8_int_dot_worker for future
-     * "quantize-once-in-transformer" optimization.
-     * TODO: move input Q8 quantization to transformer level, call once per layer. */
+    /* Q8×Q8 integer dot: input pre-quantized in transformer (once per layer).
+     * Uses int8×int8 vmull_s8+vpadalq_s16 — ~2x faster than float fused dot. */
+#if TQ_HAS_NEON
+    if (weight_type == TQ_GGML_TYPE_Q8_0 && g_preq_qs != NULL && in_dim <= 4096) {
+        const int8_t* xqs = g_preq_qs;
+        const float*  xds = g_preq_ds;
+
+        /* Always use thread pool — pass preq data via task struct (TLS doesn't propagate) */
+        int n_threads = tq_get_threads();
+        if (n_threads > TQ_TP_MAX) n_threads = TQ_TP_MAX;
+        if (n_threads > out_dim) n_threads = out_dim;
+        if (n_threads < 1) n_threads = 1;
+
+        q8_int_task_t tasks[TQ_TP_MAX];
+        void* ptrs[TQ_TP_MAX];
+        int rows_per = out_dim / n_threads;
+        for (int t = 0; t < n_threads; t++) {
+            tasks[t] = (q8_int_task_t){
+                .out = out, .weight = weight, .x_qs = xqs, .x_ds = xds,
+                .row_bytes = row_bytes, .n_blocks = n_blocks,
+                .start_row = t * rows_per,
+                .end_row = (t == n_threads - 1) ? out_dim : (t + 1) * rows_per
+            };
+            ptrs[t] = &tasks[t];
+        }
+        if (n_threads == 1) {
+            q8_int_dot_worker(ptrs[0]);
+        } else {
+            extern void tq_tp_run(void* (*fn)(void*), void** args, int n);
+            tq_tp_run(q8_int_dot_worker, ptrs, n_threads);
+        }
+        return;
+    }
+#endif
 
     /* ---- Q8_0×Q8 integer dot fast path — DISABLED (per-call overhead > benefit) ---- */
 #if 0 /* TQ_HAS_NEON */
@@ -2143,6 +2301,9 @@ void tq_matmul_gguf(float* out, const float* x,
             break;
         case TQ_GGML_TYPE_Q8_0:
             fused_dot = fused_dot_q8_0;
+            break;
+        case TQ_GGML_TYPE_Q3_K:
+            fused_dot = fused_dot_q3_k;
             break;
         case TQ_GGML_TYPE_Q4_K:
             fused_dot = fused_dot_q4_k;

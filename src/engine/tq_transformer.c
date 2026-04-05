@@ -921,6 +921,10 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
         tq_quantize_row_q8(s->xb, s->xb_q8, s->xb_q8s, dim);
     }
 
+    /* Note: int8×int8 Q8 path was tested but Apple Silicon's FP FMA pipeline
+     * is wider than integer multiply, so float fused dot is already optimal.
+     * Pre-quantized int8 path kept in tq_gguf_quants.c for x86/AVX-512 VNNI. */
+
     /* QKV projections (timed as matmul) */
     TQ_PROF_START(_tp);
     /* When attn_output_gate is enabled, wq has shape [2*n_heads*head_dim, dim]
@@ -999,6 +1003,7 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
 
     /* Flush batched Q+K+V GPU dispatches before CPU-side RoPE/attention */
     if (has_gguf) tq_metal_batch_flush_if_available();
+    /* (int8 preq cleared — path disabled on Apple Silicon, see note above) */
     TQ_PROF_STOP(_tp, matmul_ns);
 
     /* Gemma 4: save pre-QK-norm keys for quantized cache (better distribution).
