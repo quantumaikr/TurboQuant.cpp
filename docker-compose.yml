@@ -1,18 +1,10 @@
 services:
+  # CLI inference (one-shot)
   inference:
     build: .
     image: quant.cpp:latest
     volumes:
       - ./models:/models
-    environment:
-      # KV cache compression settings (passed as CLI args below)
-      - TQ_KV_TYPE=uniform_4b
-      - TQ_VALUE_QUANT=q4
-      - TQ_THREADS=4
-    ports:
-      - "8080:8080"
-    # Default: run model with KV compression
-    # Override command to change model path, prompt, or options
     command:
       - /models/model.gguf
       - -k
@@ -23,3 +15,22 @@ services:
       - "4"
       - -p
       - "Hello, world"
+
+  # OpenAI-compatible server (persistent)
+  server:
+    build: .
+    image: quant.cpp:latest
+    entrypoint: ["quant-server"]
+    volumes:
+      - ./models:/models
+    ports:
+      - "8080:8080"
+    command:
+      - /models/model.gguf
+      - -p
+      - "8080"
+      - -k
+      - uniform_4b
+      - -j
+      - "4"
+    restart: unless-stopped

@@ -419,6 +419,8 @@ Linux, macOS, Windows (MSVC/MinGW), iOS, Android, WASM에서 동작합니다.
 |:-----|:-----|
 | **[API 레퍼런스](docs/api.md)** | quant.h + libturboquant 전체 C API (730줄) |
 | **[커스텀 양자화 가이드](docs/custom-quantization.md)** | 함수 3개로 새 KV 양자화 타입 추가 |
+| **[H2H 벤치마크](bench/head_to_head/)** | 재현 가능한 quant.cpp vs llama.cpp 비교 |
+| **[KV 압축 랜드스케이프](docs/blog/kv-cache-landscape.md)** | Eviction vs Architecture vs Compression 가이드 |
 | **[로드맵](ROADMAP.md)** | 프로젝트 방향과 계획 |
 | **[변경 이력](CHANGELOG.md)** | 버전별 릴리스 노트 |
 | **[기술 리포트](docs/papers/quant_cpp_tech_report.md)** | 아키텍처와 벤치마크 (Arxiv 초안) |
