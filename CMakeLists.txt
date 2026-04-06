@@ -265,9 +265,11 @@ target_link_libraries(quant turboquant)
 add_executable(debug_compare tools/debug_compare.c)
 target_link_libraries(debug_compare turboquant)
 
-# TQM converter tool
-add_executable(tq_convert tools/tq_convert.c)
-target_link_libraries(tq_convert turboquant)
+# TQM converter tool (not on Windows — uses POSIX dirent/mmap)
+if(NOT MSVC)
+    add_executable(tq_convert tools/tq_convert.c)
+    target_link_libraries(tq_convert turboquant)
+endif()
 
 # Examples (always built)
 file(GLOB EXAMPLE_C_SOURCES examples/*.c)
