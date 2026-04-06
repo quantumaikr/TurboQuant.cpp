@@ -13,7 +13,7 @@
 #include <windows.h>
 #define pthread_mutex_t SRWLOCK
 #define PTHREAD_MUTEX_INITIALIZER SRWLOCK_INIT
-#define pthread_mutex_init(m, a) InitializeSRWLock(m)
+#define pthread_mutex_init(m, a) (InitializeSRWLock(m), 0)
 #define pthread_mutex_lock(m) AcquireSRWLockExclusive(m)
 #define pthread_mutex_unlock(m) ReleaseSRWLockExclusive(m)
 #define pthread_mutex_destroy(m) ((void)0)
