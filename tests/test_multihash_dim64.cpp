@@ -1,3 +1,5 @@
+#define _USE_MATH_DEFINES
+#include <cmath>
 /**
  * Multi-hash prototype: does averaging K independent sign hashes
  * fix 1-bit KV failure at head_dim=64?

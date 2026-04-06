@@ -1,3 +1,5 @@
+#define _USE_MATH_DEFINES
+#include <cmath>
 /**
  * test_attention_distribution.cpp -- Attention score distribution preservation
  *

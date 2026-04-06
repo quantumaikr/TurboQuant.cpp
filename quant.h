@@ -87,7 +87,17 @@ const char* quant_version(void);
 #include <float.h>
 #include <time.h>
 #include <errno.h>
+#ifdef _WIN32
+#include <windows.h>
+#define pthread_mutex_t SRWLOCK
+#define PTHREAD_MUTEX_INITIALIZER SRWLOCK_INIT
+#define pthread_mutex_init(m,a) (InitializeSRWLock(m),0)
+#define pthread_mutex_lock(m) AcquireSRWLockExclusive(m)
+#define pthread_mutex_unlock(m) ReleaseSRWLockExclusive(m)
+#define pthread_mutex_destroy(m) ((void)0)
+#else
 #include <pthread.h>
+#endif
 #include <limits.h>
 
 #if defined(__APPLE__) && !defined(CLOCK_MONOTONIC)
