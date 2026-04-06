@@ -8,7 +8,18 @@
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#define pthread_mutex_t SRWLOCK
+#define PTHREAD_MUTEX_INITIALIZER SRWLOCK_INIT
+#define pthread_mutex_init(m, a) InitializeSRWLock(m)
+#define pthread_mutex_lock(m) AcquireSRWLockExclusive(m)
+#define pthread_mutex_unlock(m) ReleaseSRWLockExclusive(m)
+#define pthread_mutex_destroy(m) ((void)0)
+#else
 #include <pthread.h>
+#endif
 
 struct tq_context {
     tq_backend backend;
