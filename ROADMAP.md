@@ -49,6 +49,8 @@ The world's simplest way to add LLM to a C/C++ project.
 A C reference engine for KV cache quantization research.
 
 ### Production-ready
+- [x] **`turbo_kv_4b` ⭐** — RHT + 4-bit Lloyd-Max codebook, beats `uniform_4b` and llama.cpp `q4_0` KV at the same bit budget (Llama 3.2 3B PPL 14.28, +5.3% vs FP32)
+- [x] **`turbo_kv_3b`** — RHT + 3-bit Lloyd-Max codebook (PPL 15.39, +13.5%)
 - [x] `uniform_4b` KV quantization (4–7x compression, +6.3% PPL on Llama 3.2 3B)
 - [x] `uniform_4b` + Q4 V combo (6.9x KV memory reduction)
 - [x] Delta compression (P-frame encoding)
@@ -56,19 +58,18 @@ A C reference engine for KV cache quantization research.
 - [x] Plugin architecture (3 functions to add new type)
 - [x] 35 unit tests
 
-### Building blocks (research, not yet production-ready)
+### Building blocks
 - [x] Random Hadamard Transform (`tq_rht.c`)
-- [x] Lloyd-Max-Gaussian codebook quantizer (`tq_codebook.c`)
-- [x] 1-bit QJL sign hash (`tq_qjl.c`)
+- [x] Lloyd-Max-Gaussian codebook quantizer (`tq_codebook.c`, 1–4 bit)
+- [x] 1-bit QJL sign hash (`tq_qjl.c`) — research, contributes ~0 to scores in our regime
 - [x] PolarQuant (polar coordinate) compression (`tq_polar.c`)
-- [x] `turbo_kv_*` types composing the building blocks (paper structure, gap in quality)
 
-### Open: TurboQuant paper reproduction
-- [ ] Close the gap on `turbo_kv_*` quality vs Google paper — see issue #14
-- [ ] Per-channel outlier handling (paper's 32-channel split)
-- [ ] QJL constant verification for Rademacher rows
-- [ ] Per-head rotation seeds
-- [ ] Regression test pinning `turbo_kv_4b` PPL on Llama 3.2 3B ≤ 14.5
+### TurboQuant paper reproduction (issue #14, partially resolved)
+- [x] Identify the gap in literal port (commit 4da6915 — QJL contributes byte-identical zero)
+- [x] Variant F: drop QJL stage, double codebook size (commit ac3c46a — beats baseline)
+- [ ] Per-channel outlier handling (Google paper's 32-channel split)
+- [ ] Paper-faithful Llama 3.1 8B + LongBench-E reproduction
+- [ ] 5-bit codebook variant for ~5 bpc quality budget
 
 ### Planned (after Direction 2 reproduction)
 - [ ] "Add Your Own Type" tutorial polish (docs/custom-quantization.md)

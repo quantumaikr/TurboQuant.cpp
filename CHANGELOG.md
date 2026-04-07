@@ -1,5 +1,54 @@
 # Changelog
 
+## [0.6.0] — 2026-04-08
+
+### Highlights
+
+- **🏆 turbo_kv_4b is the new champion** — Beats both `uniform_4b` and llama.cpp `q4_0` KV at the same 4-bit budget on Llama 3.2 3B (PPL 14.28 vs 14.41 vs ~14.99). Reached after 6 rounds of Karpathy-loop iteration starting from a literal port of [Google TurboQuant (ICLR 2026)](https://arxiv.org/abs/2504.19874).
+- **CLI default switched** — `quant model.gguf` now uses `turbo_kv_4b` automatically. `uniform_4b` remains available via `-k uniform_4b`.
+- **Honest TurboQuant reproduction story** — full ablation history, public issue #14, no overstated claims. The shipped `turbo_kv_*` is structurally simpler than the paper (single-stage RHT + Lloyd-Max codebook + ‖x‖) but empirically beats the literal two-stage port on our benchmark.
+- **@quantcpp/wasm npm package** — `npm install @quantcpp/wasm` to drop a 192KB GGUF inference engine into any web project.
+- **Windows CI green** — pthread_cond_wait SRWLOCK deadlock fixed, MSVC `__builtin_*` shims, /tmp paths in tests, M_PI in test_neon_scalar. 35/35 tests pass on macOS / Linux / Windows.
+- **Public PR & issue triage** — PR #12 (5 critical bug fixes from MChorfa) cherry-picked into main; PR #13 reformatting noise rejected, examples README + CMake separation salvaged.
+
+### KV quantization
+
+The `turbo_kv_3b` / `turbo_kv_4b` block layouts changed in this release. The `qjl_signs` field is gone — Karpathy-loop ablation showed it contributed byte-identical zero to attention scores. The freed 16 bytes per block are now used for a 2× larger Lloyd-Max codebook. Same total block size, finer reconstruction, single-stage estimator.
+
+| KV type | Bits/elem | Llama 3.2 3B PPL | Δ vs FP32 |
+|---|---:|---:|---:|
+| FP32 baseline | 32 | 13.56 | — |
+| **`turbo_kv_4b`** ⭐ | 4 | **14.28** | **+5.3%** |
+| `uniform_4b` | 4 | 14.41 | +6.3% |
+| `turbo_kv_3b` | 3 | 15.39 | +13.5% |
+| llama.cpp q4_0 KV (rough) | 4 | ~14.99 | +10.6% |
+
+### Strategy & positioning
+
+- New `docs/positioning.md` — quant.cpp = the single-header C reference engine for the embedded niche (iOS, Android, WASM, MSVC, microcontrollers, game engines)
+- README repositioned to honest "production = turbo_kv_4b, research = building blocks" framing with full PPL methodology
+- Citations to Google TurboQuant, PolarQuant, QJL papers added throughout
+
+### Tooling & ecosystem
+
+- `wasm/package.json` + ESM `index.mjs` + `index.d.ts` for npm publishing
+- `examples/README.md` (cherry-picked from PR #13) — comprehensive embedding examples doc
+- CMake `TQ_BUILD_EXAMPLES` option, single-header examples link only against libm + threads
+- Windows CI test timeouts bumped to 600s for slow non-vectorized builds
+
+### Bug fixes (cherry-picked from PR #12)
+
+- `tq_qjl.c`: NaN guard requires `dim > 0`
+- `tq_uniform.c`: heap-allocate Q8 query buffer (was 512B stack array)
+- `tq_transformer.c`: NULL-check key/value cache calloc results
+- `tq_ops.c`: Windows pthread_cond_wait must use `SleepConditionVariableSRW` not `CS` (caused test_ops deadlock on first Windows green run)
+
+### Tracked for next release (issue #14 follow-ups)
+
+- Per-channel outlier handling (Google paper's 32-channel split)
+- Paper-faithful Llama 3.1 8B + LongBench-E reproduction
+- 5-bit codebook variant for higher quality at ~5 bpc
+
 ## [0.5.0] — 2026-04-05
 
 ### Highlights
