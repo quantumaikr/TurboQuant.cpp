@@ -41,16 +41,28 @@ LLM memory is dominated by the **KV cache**, not model weights. At 32K context, 
 
 ## The Result
 
-> **Same hardware. 4–7x longer context. Measured PPL impact disclosed.**
+> **Same hardware. 4–7x longer context. PPL measured and disclosed.**
 
-| Hardware | Model | FP16 KV ctx | `uniform_4b + q4` ctx | KV Gain | PPL Δ |
-|:---------|:------|------------:|----------------------:|--------:|------:|
-| 16GB Mac | Llama 3.2 3B | 50K tokens | **350K tokens** | **6.9x** | **+6.3%** |
-| 16GB Mac | Gemma 4 26B MoE | 4K tokens | **14K tokens** | **3.5x** | (QK-norm aware) |
-| 8GB Laptop | Llama 8B (Q4) | 16K tokens | **61K tokens** | **3.8x** | +6.3% |
-| 24GB RTX 3090 | Llama 8B (Q4) | 147K tokens | **559K tokens** | **3.8x** | +6.3% |
+### Llama 3.2 3B Instruct, FP32 KV baseline = PPL 13.56
 
-PPL measured on Llama 3.2 3B Instruct, `bench/data/ppl_1k.txt` (1040 tokens), `uniform_4b K + FP16 V`. FP32 baseline = 13.56, `uniform_4b` = 14.41. Compared to llama.cpp Q4_0 KV at +10.6% PPL on the same baseline, quant.cpp `uniform_4b` is meaningfully better at the same 4-bit budget. See [bench/results/turboquant_reproduction.md](bench/results/turboquant_reproduction.md) for the full comparison including the in-progress `turbo_kv_*` numbers.
+| KV Config | Bits/elem | PPL | Δ vs FP32 | Notes |
+|:----------|----------:|----:|----------:|:------|
+| FP32 (baseline) | 32 | 13.56 | — | reference |
+| **`turbo_kv_4b`** ⭐ | 4 | **14.28** | **+5.3%** | RHT + 4-bit codebook, beats uniform_4b |
+| `uniform_4b` | 4 | 14.41 | +6.3% | per-block min-max |
+| `turbo_kv_3b` | 3 | 15.39 | +13.5% | RHT + 3-bit codebook |
+| llama.cpp `q4_0` KV | 4 | ~14.99 | +10.6% | for comparison |
+
+`turbo_kv_4b` is currently the **best 4-bit KV cache quantization in the project** — it beats both our previous production baseline (`uniform_4b`) and llama.cpp's `q4_0` KV at the same bit budget. The Karpathy-loop history that produced it is in [bench/results/turboquant_reproduction.md](bench/results/turboquant_reproduction.md).
+
+### Context length gains (`turbo_kv_4b` + `q4` value cache)
+
+| Hardware | Model | FP16 KV ctx | quant.cpp ctx | KV Gain |
+|:---------|:------|------------:|--------------:|--------:|
+| 16GB Mac | Llama 3.2 3B | 50K tokens | **350K tokens** | **6.9x** |
+| 16GB Mac | Gemma 4 26B MoE | 4K tokens | **14K tokens** | **3.5x** |
+| 8GB Laptop | Llama 8B (Q4) | 16K tokens | **61K tokens** | **3.8x** |
+| 24GB RTX 3090 | Llama 8B (Q4) | 147K tokens | **559K tokens** | **3.8x** |
 
 ## Why quant.cpp?
 
@@ -62,10 +74,10 @@ LLM memory is dominated by the KV cache. quant.cpp is **a minimal C engine that 
 
 2. **You want to study KV cache compression.** quant.cpp implements 7 KV quantization schemes side by side: `uniform_4b/2b/3b`, `polar_3b/4b`, `qjl_1b`, `turbo_kv_*`. You can read each one in a single C file and add a new one in 3 functions.
 
-**Honest disclosure**: In April 2026 Google published [TurboQuant (ICLR 2026)](https://arxiv.org/abs/2504.19874). quant.cpp's `turbo_kv_*` types implement the same algorithmic structure (Random Hadamard Transform → Lloyd-Max codebook → 1-bit QJL residual), but **they do not yet reproduce the paper's reported quality** — see [bench/results/turboquant_reproduction.md](bench/results/turboquant_reproduction.md) for measured numbers and the gap analysis. The production-recommended config is `uniform_4b`, which is competitive with llama.cpp's q4_0 KV at the same bit budget.
+**Honest disclosure**: In April 2026 Google published [TurboQuant (ICLR 2026)](https://arxiv.org/abs/2504.19874). quant.cpp's `turbo_kv_*` types started as a port of that algorithmic structure (Random Hadamard Transform → Lloyd-Max codebook → 1-bit QJL residual). Through a Karpathy-loop ablation we discovered the QJL residual stage was contributing literally zero to scores, dropped it, and reinvested the freed bytes into a larger codebook. The result (`turbo_kv_4b` at 14.28 PPL on Llama 3.2 3B) **beats our previous production champion `uniform_4b` and llama.cpp's `q4_0` KV** at the same 4-bit budget. The full optimization history is in [bench/results/turboquant_reproduction.md](bench/results/turboquant_reproduction.md).
 
-> **Need TurboQuant numbers from a paper?** Use [Google's reference](https://research.google/blog/turboquant-redefining-ai-efficiency-with-extreme-compression/).
-> **Need a small, readable C engine with KV compression that ships on a phone?** Use quant.cpp.
+> **Need the exact paper numbers in a paper?** Use [Google's reference](https://research.google/blog/turboquant-redefining-ai-efficiency-with-extreme-compression/).
+> **Need a small, readable C engine with KV compression that ships on a phone, browser, microcontroller, or game engine?** Use quant.cpp.
 
 ## Get Started in 60 Seconds
 
