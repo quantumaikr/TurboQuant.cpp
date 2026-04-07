@@ -27,11 +27,9 @@ The world's simplest way to add LLM to a C/C++ project.
 - [x] WASM build (192KB binary)
 - [x] MSVC/MinGW Windows support
 - [x] Zero external dependencies
-
-### In Progress
-- [ ] API documentation (docs/api.md)
-- [ ] quant.h sync with latest source
-- [ ] Embedding examples (minimal, chat, KV compare)
+- [x] API documentation (docs/api.md)
+- [x] quant.h sync with latest source
+- [x] Embedding examples (minimal, chat, KV compare)
 
 ### Planned
 - [ ] pip install quantcpp (Python bindings)
