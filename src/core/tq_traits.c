@@ -53,6 +53,11 @@ extern void tq_turbo_kv_5b_dequantize_ref(const void* src, float* dst, int n);
 extern void tq_turbo_kv_5b_attention_ref(const float* query, const void* kv,
                                           float* scores, int seq_len, int head_dim);
 
+extern void tq_turbo_kv_4bo_quantize_ref(const float* src, void* dst, int n);
+extern void tq_turbo_kv_4bo_dequantize_ref(const void* src, float* dst, int n);
+extern void tq_turbo_kv_4bo_attention_ref(const float* query, const void* kv,
+                                          float* scores, int seq_len, int head_dim);
+
 extern void tq_turbo_kv_1b_quantize_ref(const float* src, void* dst, int n);
 extern void tq_turbo_kv_1b_dequantize_ref(const void* src, float* dst, int n);
 extern void tq_turbo_kv_1b_attention_ref(const float* query, const void* kv,
@@ -175,6 +180,16 @@ tq_type_traits_t TQ_TRAITS[TQ_TYPE_COUNT] = {
         .attention  = tq_turbo_kv_5b_attention_ref,
         .residual_type = TQ_TYPE_COUNT,
     },
+    [TQ_TYPE_TURBO_KV_4BO] = {
+        .name       = "turbo_kv_4bo",
+        .block_size = TQ_BK,
+        .type_size  = sizeof(block_tq_turbo_kv_4bo),
+        .bpe        = (float)sizeof(block_tq_turbo_kv_4bo) * 8.0f / TQ_BK,
+        .quantize   = tq_turbo_kv_4bo_quantize_ref,
+        .dequantize = tq_turbo_kv_4bo_dequantize_ref,
+        .attention  = tq_turbo_kv_4bo_attention_ref,
+        .residual_type = TQ_TYPE_COUNT,
+    },
     [TQ_TYPE_TURBO_KV_1B] = {
         .name       = "turbo_kv_1b",
         .block_size = TQ_BK,
@@ -276,6 +291,8 @@ tq_format_spec_t tq_get_format_spec(tq_type type) {
             spec.algorithm = TQ_ALG_TURBO; spec.key_bits = 4; break;
         case TQ_TYPE_TURBO_KV_5B:
             spec.algorithm = TQ_ALG_TURBO; spec.key_bits = 5; break;
+        case TQ_TYPE_TURBO_KV_4BO:
+            spec.algorithm = TQ_ALG_TURBO; spec.key_bits = 4; break;
         case TQ_TYPE_TURBO_KV_1B:
             spec.algorithm = TQ_ALG_TURBO; spec.key_bits = 1; break;
         case TQ_TYPE_TURBO_KV_2B:

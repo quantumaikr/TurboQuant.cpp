@@ -82,6 +82,7 @@ static tq_type parse_kv_type(const char* s) {
     if (strcmp(s, "turbo_kv_3b") == 0) return TQ_TYPE_TURBO_KV_3B;
     if (strcmp(s, "turbo_kv_4b") == 0) return TQ_TYPE_TURBO_KV_4B;
     if (strcmp(s, "turbo_kv_5b") == 0) return TQ_TYPE_TURBO_KV_5B;
+    if (strcmp(s, "turbo_kv_4bo") == 0) return TQ_TYPE_TURBO_KV_4BO;
     if (strcmp(s, "turbo_kv_1b") == 0) return TQ_TYPE_TURBO_KV_1B;
     if (strcmp(s, "qjl_1b") == 0)     return TQ_TYPE_QJL_1B;
     if (strcmp(s, "mixed_4b8") == 0)  return TQ_TYPE_MIXED_4B8;
