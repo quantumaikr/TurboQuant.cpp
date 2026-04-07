@@ -12,7 +12,7 @@
  *   -P <top_p>       Top-p nucleus sampling (default: 0.9)
  *   -k <kv_type>     KV cache type: fp32, uniform_4b, uniform_2b,
  *                     polar_3b, polar_4b, turbo_3b, turbo_4b,
- *                     turbo_kv_1b, turbo_kv_3b, turbo_kv_4b (default: uniform_4b)
+ *                     turbo_kv_1b, turbo_kv_3b, turbo_kv_4b (default: turbo_kv_4b)
  *   -v <vq>          Value cache quantization: q4 (4-bit), q2 (2-bit),
  *                     or fp16 (default: fp16 when -k is set, fp32 otherwise)
  *   -j <threads>     Number of threads for matmul (default: 4)
@@ -71,7 +71,7 @@ static void print_token(const char* text, void* user_data) {
 
 /* Parse KV type from string */
 static tq_type parse_kv_type(const char* s) {
-    if (!s) return TQ_TYPE_UNIFORM_4B;
+    if (!s) return TQ_TYPE_TURBO_KV_4B;
     if (strcmp(s, "fp32") == 0)       return TQ_TYPE_COUNT; /* sentinel for FP32 */
     if (strcmp(s, "uniform_4b") == 0) return TQ_TYPE_UNIFORM_4B;
     if (strcmp(s, "uniform_2b") == 0) return TQ_TYPE_UNIFORM_2B;
@@ -85,8 +85,8 @@ static tq_type parse_kv_type(const char* s) {
     if (strcmp(s, "qjl_1b") == 0)     return TQ_TYPE_QJL_1B;
     if (strcmp(s, "mixed_4b8") == 0)  return TQ_TYPE_MIXED_4B8;
     if (strcmp(s, "uniform_3b") == 0) return TQ_TYPE_UNIFORM_3B;
-    fprintf(stderr, "Unknown KV type: %s (using uniform_4b)\n", s);
-    return TQ_TYPE_UNIFORM_4B;
+    fprintf(stderr, "Unknown KV type: %s (using turbo_kv_4b)\n", s);
+    return TQ_TYPE_TURBO_KV_4B;
 }
 
 #define QUANT_VERSION "0.2.0"
@@ -145,7 +145,7 @@ int main(int argc, char** argv) {
     int max_tokens = 256;
     float temperature = 0.7f;
     float top_p = 0.9f;
-    tq_type kv_type = TQ_TYPE_UNIFORM_4B;
+    tq_type kv_type = TQ_TYPE_TURBO_KV_4B;
     int n_threads = 4;
     int quant_mode = 0;   /* 0 = none (default), 2 = Q2, 4 = Q4, 8 = Q8 */
     int value_quant_bits = 0; /* 0 = FP16/FP32 (default), 4 = Q4, 2 = Q2 */
