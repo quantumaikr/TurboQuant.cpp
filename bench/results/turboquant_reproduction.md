@@ -1,4 +1,8 @@
-# TurboQuant Paper Reproduction — From "Broken" to "Beats Production"
+# Variant F derivation — from TurboQuant literal port to HIGGS-style simplification
+
+> **Important attribution update (2026-04-08)**: Following [Tim Dettmers' comment in llama.cpp #20969](https://github.com/ggml-org/llama.cpp/discussions/20969), we now credit **HIGGS** (Malinovskii et al., Nov 2024, [arXiv:2411.17525](https://arxiv.org/abs/2411.17525)) for the Random Hadamard Transform + scalar grid quantization pattern. The shipped Variant F is structurally closest to HIGGS (RHT + MSE-optimal grids on rotated values), applied to KV cache like TurboQuant, with both the QJL residual stage and the per-channel outlier split removed through ablation. We do **not** claim our shipped variant is the published TurboQuant algorithm — it is an empirically-derived simplification arrived at through 9 Karpathy-loop rounds.
+
+
 
 > Run date: 2026-04-08  
 > Paper: [Zandieh et al., *TurboQuant*, ICLR 2026](https://arxiv.org/abs/2504.19874)  

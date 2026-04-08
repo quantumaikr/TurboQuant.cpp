@@ -480,14 +480,15 @@ Linux, macOS, Windows (MSVC/MinGW), iOS, Android, WASM에서 동작합니다.
 
 ## 참고 논문 및 인용
 
-quant.cpp는 발표된 연구의 독립 구현체입니다. 학술적 사용 시 원본 논문을 인용해주세요:
+quant.cpp는 발표된 연구의 독립 구현체입니다. Variant F 아키텍처 (RHT 전처리 + scalar Lloyd-Max codebook, QJL stage 없음)는 두 prior work의 계보에 위치합니다:
 
-- **TurboQuant** — Zandieh, Daliri, Hadian, Mirrokni. *TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate*. ICLR 2026. [arXiv:2504.19874](https://arxiv.org/abs/2504.19874)
-- **PolarQuant** — *Quantizing KV Caches with Polar Transformation*. AISTATS 2026. [arXiv:2502.02617](https://arxiv.org/abs/2502.02617)
-- **QJL** — *Quantized Johnson-Lindenstrauss Transform for KV Cache Compression*. AAAI 2025. [arXiv:2406.03482](https://arxiv.org/abs/2406.03482)
+- **HIGGS** — Malinovskii, Panferov, Ilin, Guo, Richtárik, Alistarh. *Pushing the Limits of Large Language Model Quantization via the Linearity Theorem*. Nov 2024. [arXiv:2411.17525](https://arxiv.org/abs/2411.17525). HIGGS가 **Random Hadamard Transform + MSE-optimal grid quantization** 패턴을 weight 양자화에 도입. 우리 `tq_rht.c` (Walsh-Hadamard + Rademacher)가 이 패턴을 따름. *Tim Dettmers가 [llama.cpp #20969 discussion](https://github.com/ggml-org/llama.cpp/discussions/20969#discussioncomment-16481725)에서 이 점을 지적해주신 데 감사드립니다.*
+- **TurboQuant** — Zandieh, Daliri, Hadian, Mirrokni. *TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate*. ICLR 2026. [arXiv:2504.19874](https://arxiv.org/abs/2504.19874). TurboQuant는 rotation 패턴을 **KV cache**에 적용 + 1-bit QJL residual + per-channel outlier handling. 우리 작업은 TurboQuant 직접 포팅으로 시작했으나, 9 라운드 Karpathy 루프로 단순화 (QJL 제거, outlier channel 제거)하여 현재 Variant F가 됨. 우리는 shipped variant가 TurboQuant 알고리즘이라고 주장하지 않습니다 — 경험적으로 도출된 단순화입니다.
+- **PolarQuant** — *Quantizing KV Caches with Polar Transformation*. AISTATS 2026. [arXiv:2502.02617](https://arxiv.org/abs/2502.02617). 우리 `tq_polar.c` baseline의 polar-coordinate KV quantization.
+- **QJL** — *Quantized Johnson-Lindenstrauss Transform for KV Cache Compression*. AAAI 2025. [arXiv:2406.03482](https://arxiv.org/abs/2406.03482). 1-bit sketch building block. `tq_qjl.c` baseline에 사용; Variant F regime에서 attention 점수에 ~0 기여한다는 것을 발견하고 제거.
 - [TurboQuant — Google Research 블로그](https://research.google/blog/turboquant-redefining-ai-efficiency-with-extreme-compression/)
 
-학술 작업에서 quant.cpp를 사용하는 경우, 원 논문과 본 저장소를 함께 인용해주세요.
+**정직한 attribution**: Variant F의 구조 (RHT + scalar grid quantization)는 정신적으로 HIGGS에 가장 가깝고, TurboQuant처럼 KV cache에 적용되며, QJL residual과 outlier channel split을 ablation으로 제거. 학술 작업에서 quant.cpp를 사용하면 세 논문 (HIGGS, TurboQuant, PolarQuant)과 본 저장소를 함께 인용해주세요.
 
 ---
 

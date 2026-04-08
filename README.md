@@ -495,14 +495,15 @@ Tested extensively (2-bit delta, NF2, online SVD, multi-hash). None reached acce
 
 ## References & Citations
 
-quant.cpp is an independent implementation of published research. Please cite the original papers:
+quant.cpp is an independent implementation of published research. The Variant F architecture (RHT preprocessing + scalar Lloyd-Max codebook on rotated values, no QJL stage) sits in a lineage that combines two prior works:
 
-- **TurboQuant** — Zandieh, Daliri, Hadian, Mirrokni. *TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate*. ICLR 2026. [arXiv:2504.19874](https://arxiv.org/abs/2504.19874)
-- **PolarQuant** — *Quantizing KV Caches with Polar Transformation*. AISTATS 2026. [arXiv:2502.02617](https://arxiv.org/abs/2502.02617)
-- **QJL** — *Quantized Johnson-Lindenstrauss Transform for KV Cache Compression*. AAAI 2025. [arXiv:2406.03482](https://arxiv.org/abs/2406.03482)
+- **HIGGS** — Malinovskii, Panferov, Ilin, Guo, Richtárik, Alistarh. *Pushing the Limits of Large Language Model Quantization via the Linearity Theorem*. Nov 2024. [arXiv:2411.17525](https://arxiv.org/abs/2411.17525). HIGGS introduced the **Random Hadamard Transform + MSE-optimal grid quantization** pattern (for weight quantization). Our `tq_rht.c` Walsh-Hadamard + Rademacher implementation follows this pattern. *Credit to Tim Dettmers ([discussion thread](https://github.com/ggml-org/llama.cpp/discussions/20969#discussioncomment-16481725)) for pointing this out.*
+- **TurboQuant** — Zandieh, Daliri, Hadian, Mirrokni. *TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate*. ICLR 2026. [arXiv:2504.19874](https://arxiv.org/abs/2504.19874). TurboQuant applies the rotation pattern to **KV cache** with a 1-bit QJL residual stage and per-channel outlier handling. Our work started as a literal port of TurboQuant; through 9 rounds of Karpathy-loop iteration we simplified it (dropped QJL, dropped outlier channels) into the current Variant F. We do not claim our shipped variant is the TurboQuant algorithm — it is an empirically-derived simplification.
+- **PolarQuant** — *Quantizing KV Caches with Polar Transformation*. AISTATS 2026. [arXiv:2502.02617](https://arxiv.org/abs/2502.02617). The polar-coordinate KV quantization that our `tq_polar.c` baseline implements.
+- **QJL** — *Quantized Johnson-Lindenstrauss Transform for KV Cache Compression*. AAAI 2025. [arXiv:2406.03482](https://arxiv.org/abs/2406.03482). The 1-bit sketch building block. Used in our `tq_qjl.c` baseline; we found it contributed ~zero to attention scores in the Variant F regime and dropped it.
 - [Google Research blog post on TurboQuant](https://research.google/blog/turboquant-redefining-ai-efficiency-with-extreme-compression/)
 
-If you use quant.cpp in academic work, please cite both the underlying paper(s) and this repository.
+**Honest attribution**: Variant F's structure (RHT + scalar grid quantization) is closest to HIGGS in spirit, applied to KV cache like TurboQuant, with both the QJL residual and the outlier channel split removed through ablation. If you use quant.cpp in academic work, please cite all three (HIGGS, TurboQuant, PolarQuant) and this repository.
 
 ---
 
