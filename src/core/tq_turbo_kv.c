@@ -339,10 +339,11 @@ void tq_turbo_kv_3b_attention_ref(const float* query, const void* kv_cache,
      * 3-bit codebook has 8 entries which fit in 8 bytes — store in lower half
      * of a 16-byte register. Indices in 0-7. */
     const float* cb = tq_codebook_centroids(3);
+    /* Used by both NEON and scalar paths — keep outside the NEON guard. */
+    static const float CB3_I8_RECIP = 2.1520f / 127.0f;
 #ifdef __ARM_NEON
     static int8_t s_cb3_i8[16] = {0};
     static int s_cb3_i8_init = 0;
-    static const float CB3_I8_RECIP = 2.1520f / 127.0f;
     if (!s_cb3_i8_init) {
         for (int j = 0; j < 8; j++) {
             float v = cb[j] * (127.0f / 2.1520f);
@@ -559,11 +560,12 @@ void tq_turbo_kv_4b_attention_ref(const float* query, const void* kv_cache,
      * scale gives 16-element processing per ~10 NEON instructions vs
      * the previous ~32 scalar instructions.
      */
+    /* Used by both NEON and scalar paths — keep outside the NEON guard. */
+    static const float CB_I8_RECIP = 2.7326f / 127.0f; /* fp32 = int8 * recip */
 #ifdef __ARM_NEON
     /* Static int8 codebook (computed once at startup; safe across blocks) */
     static int8_t s_cb_i8[16] = {0};
     static int s_cb_i8_init = 0;
-    static const float CB_I8_RECIP = 2.7326f / 127.0f; /* fp32 = int8 * recip */
     if (!s_cb_i8_init) {
         for (int j = 0; j < 16; j++) {
             float v = cb[j] * (127.0f / 2.7326f);
@@ -1299,10 +1301,11 @@ void tq_turbo_kv_5b_attention_ref(const float* query, const void* kv_cache,
      * within regression test thresholds).
      */
     const float* cb = tq_codebook_centroids(5);
+    /* Used by both NEON and scalar paths — keep outside the NEON guard. */
+    static const float CB5_I8_RECIP = 1.9956f / 127.0f; /* 5-bit max centroid */
 #ifdef __ARM_NEON
     static int8_t s_cb5_i8[32] = {0};
     static int s_cb5_i8_init = 0;
-    static const float CB5_I8_RECIP = 1.9956f / 127.0f; /* 5-bit max centroid */
     if (!s_cb5_i8_init) {
         for (int j = 0; j < 32; j++) {
             float v = cb[j] * (127.0f / 1.9956f);
