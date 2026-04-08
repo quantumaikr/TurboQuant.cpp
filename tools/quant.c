@@ -510,6 +510,21 @@ int main(int argc, char** argv) {
         /* Machine-parseable */
         fprintf(stderr, "PPL_CSV:%d,%.6f,%.4f\n", n_eval, avg_nll, perplexity);
 
+#ifdef TQ_HAS_METAL
+        {
+            extern void tq_metal_diag_get(unsigned long*, unsigned long*);
+            unsigned long n_flushes = 0, n_ops = 0;
+            tq_metal_diag_get(&n_flushes, &n_ops);
+            if (n_flushes > 0 && n_eval > 0) {
+                fprintf(stderr, "Metal diag: %lu flushes, %lu ops total, "
+                                "%.1f flushes/token, %.1f ops/flush\n",
+                        n_flushes, n_ops,
+                        (double)n_flushes / (double)n_eval,
+                        (double)n_ops / (double)n_flushes);
+            }
+        }
+#endif
+
         /* JSON output (--json flag) */
         if (json_output) {
             const char* kv_name = kv_type < TQ_TYPE_COUNT ? tq_type_name(kv_type) : "fp32";

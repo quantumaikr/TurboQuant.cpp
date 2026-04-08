@@ -667,6 +667,22 @@ void tq_metal_batch_begin(void) {
  * Flush the current batch: end encoding, commit, wait, copy results.
  * Safe to call when no batch is active (no-op).
  */
+/* Diagnostic counters (Issue #16: dispatch overhead investigation).
+ * Reset by callers via tq_metal_diag_reset(); read via tq_metal_diag_get().
+ * No-op when batch path isn't taken — overhead is one atomic add per flush. */
+static unsigned long g_metal_flush_count    = 0;
+static unsigned long g_metal_flush_op_count = 0; /* total dispatched ops across flushes */
+
+void tq_metal_diag_reset(void) {
+    g_metal_flush_count = 0;
+    g_metal_flush_op_count = 0;
+}
+
+void tq_metal_diag_get(unsigned long* flushes, unsigned long* ops) {
+    if (flushes) *flushes = g_metal_flush_count;
+    if (ops)     *ops     = g_metal_flush_op_count;
+}
+
 void tq_metal_batch_flush(void) {
     if (!tq_batch.active) return;
 
@@ -677,6 +693,8 @@ void tq_metal_batch_flush(void) {
         }
 
         if (tq_batch.cmd_buf && tq_batch.n_copies > 0) {
+            g_metal_flush_count    += 1;
+            g_metal_flush_op_count += (unsigned long)tq_batch.n_copies;
             [tq_batch.cmd_buf commit];
             [tq_batch.cmd_buf waitUntilCompleted];
 
