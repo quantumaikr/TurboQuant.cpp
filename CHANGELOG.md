@@ -1,5 +1,52 @@
 # Changelog
 
+## [0.6.4] — 2026-04-08
+
+### Honest validation pass
+
+This patch release exists to publish the **corrected** speed numbers
+for v0.6.3 prominently. The v0.6.3 release shipped with the wrong
+headline ('turbo_kv beats fp32 KV speed') because the fp32 attention
+path was being compared in unoptimized scalar form. After NEON fix,
+the honest gap is **−7% to −12%**, not **+5% to +10%**.
+
+### What changed in this release
+
+- **`tq_transformer.c`**: NEON-optimized the fp32 attention path
+  (commit `4490c83`). FP32 attention went from 12.6 → 14.83 tok/s
+  on Llama 3.2 3B (+18% standalone improvement).
+- **README.md / README.ko.md**: corrected the headline tables and
+  ASCII charts to reflect the honest fp32-NEON comparison
+  (commit `33b6315`).
+- **GitHub release notes for v0.6.3**: updated with a prominent
+  Correction notice at the top.
+- **`tq_transformer.c`**: Round 8 prefetch attempt reverted (no
+  measurable benefit on Apple M1 Pro). Round 9 strided-attention
+  not pursued (would require ABI change with no clear win).
+
+### Final honest numbers (3 runs each, Llama 3.2 3B PPL eval)
+
+| Type | Avg tok/s | vs FP32 | PPL Δ | Compression |
+|---|---:|---:|---:|---:|
+| **FP32 KV** (NEON) | **14.63** | baseline | — | 1× |
+| **`turbo_kv_4b`** ⭐ default | 13.57 | **−7.2%** | +5.7% | **7.1×** |
+| **`turbo_kv_3b`** | 13.13 | −10.2% | +13.3% | 9.1× |
+| **`turbo_kv_5b`** 🏆 quality | 12.90 | −11.8% | +0.7% | 5.8× |
+
+### What we learned
+
+1. **Validation is the most valuable step.** It found the wrong claim
+   before it spread to users.
+2. **The Round 5 win is real.** turbo_kv_4b went from 6.9 → 13.6 tok/s
+   (+97%). Just the comparison baseline was wrong.
+3. **Local optimum reached.** Rounds 8 and 9 (prefetch, strided gather)
+   gave no measurable improvement. Further wins would need structural
+   changes (e.g., a different KV cache memory layout, or true parallel
+   attention dispatch).
+4. **Pareto improvement is still real.** turbo_kv_4b dominates
+   `uniform_4b` on quality (14.33 vs 14.60 PPL) AND speed (13.57 vs
+   11.7 tok/s) AND compression (7.1× vs 7.5× — close enough).
+
 ## [0.6.3] — 2026-04-08
 
 ### Karpathy round 5+6: closes turbo_kv speed gap from −45% to −8%
