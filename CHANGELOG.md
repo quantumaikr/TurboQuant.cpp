@@ -2,19 +2,18 @@
 
 ## [0.6.3] — 2026-04-08
 
-### 🏆 turbo_kv now BEATS fp32 KV speed at 7× compression
+### Karpathy round 5+6: closes turbo_kv speed gap from −45% to −8%
 
-After 6 rounds of Karpathy iteration on the attention path, all three
-production turbo_kv types are now **both more compressed AND faster**
-than uncompressed FP32 KV on Llama 3.2 3B PPL eval (1040 tokens, 28
-layers, attention-heavy):
+> **Correction**: this entry originally claimed 'turbo_kv beats fp32 KV speed'. That was an artifact of the fp32 attention path being unoptimized scalar. After NEON-optimizing fp32 too (commit `4490c83`), the honest gap is `−7%` to `−12%`, not `+5%` to `+10%`. We caught the wrong claim during validation and corrected it before publishing widely.
+
+After 9 rounds of Karpathy iteration, all three production turbo_kv types now run within 8–12% of fp32 KV speed while compressing 5.8–9.1×:
 
 | Type | Bytes/block | tok/s | vs FP32 | PPL | Δ vs FP32 |
 |---|---:|---:|---:|---:|---:|
-| FP32 KV | — | 12.6 | baseline | 13.56 | — |
-| **`turbo_kv_4b`** ⭐ | 72 | **13.9** | **+10% ⬆** | 14.33 | +5.7% |
-| **`turbo_kv_3b`** | 56 | **13.4** | **+6% ⬆** | 15.36 | +13.3% |
-| **`turbo_kv_5b`** 🏆 | 88 | **13.2** | **+5% ⬆** | 13.65 | +0.7% |
+| FP32 KV (NEON) | — | **14.83** | baseline | 13.56 | — |
+| **`turbo_kv_4b`** ⭐ | 72 | 13.67 | **−7.8%** | 14.33 | +5.7% |
+| **`turbo_kv_3b`** | 56 | 13.4 | −9.6% | 15.36 | +13.3% |
+| **`turbo_kv_5b`** 🏆 | 88 | 13.13 | −11.5% | 13.65 | +0.7% |
 
 ### What changed (Round 5: the real bottleneck)
 

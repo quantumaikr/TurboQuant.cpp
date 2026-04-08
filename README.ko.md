@@ -43,22 +43,23 @@ LLM 메모리의 병목은 모델 가중치가 아니라 **KV 캐시**입니다.
 
 > **같은 하드웨어. 4–7배 긴 컨텍스트. PPL 측정 + 공개.**
 
-### Llama 3.2 3B Instruct — PPL × 속도 (FP32 KV = 13.56 PPL @ 12.6 tok/s)
+### Llama 3.2 3B Instruct — PPL × 속도 (FP32 KV NEON = 13.56 PPL @ 14.8 tok/s)
 
-> **`turbo_kv_4b`는 fp32 KV보다 7배 더 압축되었으면서 더 빠릅니다** (long context 기준). Karpathy 루프로 속도 격차를 완전히 없앴습니다.
+> 9 라운드 Karpathy 루프로 quant-KV vs FP32-KV 속도 격차를 **−45%에서 −8%로** 줄였습니다. 5.8–7.1× 메모리 압축. fp32 raw 속도를 능가하지는 못하지만 **8% 이내까지 따라잡음.**
 
 | KV 설정 | 블록 바이트 | 압축 | PPL | Δ vs FP32 | tok/s | vs FP32 속도 |
 |:--------|----:|----:|----:|----:|----:|----:|
-| FP32 reference | — | 1× | 13.56 | — | 12.6 | baseline |
-| **`turbo_kv_5b`** 🏆 quality | 88 | 5.8× | **13.65** | **+0.7%** | **13.2** | **+5%** ⬆ |
-| `turbo_kv_4bo` 🧪 | 96 | 5.3× | 13.90 | +2.5% | 12.7 | +1% |
-| `turbo_kv_3bo` 🧪 | 80 | 6.4× | 14.17 | +4.5% | 9.3 | -26% |
-| **`turbo_kv_4b`** ⭐ 기본 | **72** | **7.1×** | **14.33** | **+5.7%** | **13.9** | **+10%** ⬆ |
-| `uniform_4b` | 68 | 7.5× | 14.60 | +7.7% | 11.7 | -7% |
-| **`turbo_kv_3b`** | **56** | **9.1×** | 15.36 | +13.3% | **13.4** | **+6%** ⬆ |
-| llama.cpp `q4_0` KV (lit.) | ~70 | ~7.3× | ~14.99 | +10.6% | — | — |
+| FP32 reference (NEON) | — | 1× | 13.56 | — | 14.83 | baseline |
+| **`turbo_kv_5b`** 🏆 quality | 88 | 5.8× | **13.65** | **+0.7%** | **13.13** | **−11.5%** |
+| `turbo_kv_4bo` 🧪 | 96 | 5.3× | 13.90 | +2.5% | 12.7 | −14% |
+| **`turbo_kv_4b`** ⭐ 기본 | **72** | **7.1×** | **14.33** | **+5.7%** | **13.67** | **−7.8%** |
+| `turbo_kv_3b` | 56 | 9.1× | 15.36 | +13.3% | 13.4 | −9.6% |
+| `turbo_kv_3bo` 🧪 | 80 | 6.4× | 14.17 | +4.5% | 9.3 | −37% |
+| `uniform_4b` | 68 | 7.5× | 14.60 | +7.7% | 11.7 | −21% |
 
-`turbo_kv_4b` (기본)와 `turbo_kv_5b` (quality)가 Pareto-optimal 추천. **둘 다 5.8–7.1× 압축 + uncompressed FP32 KV보다 빠름.** 전체 Karpathy 루프 이력 (9 rounds across 3 sessions): [bench/results/turboquant_reproduction.md](bench/results/turboquant_reproduction.md).
+`turbo_kv_4b` (기본)와 `turbo_kv_5b` (quality)가 Pareto 추천: **5.8–7.1× 메모리 압축 + FP32 KV 92% 속도.** 전체 Karpathy 루프 이력: [bench/results/turboquant_reproduction.md](bench/results/turboquant_reproduction.md).
+
+> **이 비교에 대해**: v0.6.3 릴리스 노트에서 처음 "turbo_kv가 fp32 KV 속도를 능가"라고 주장했습니다. 그건 fp32 attention path가 scalar였기 때문에 발생한 artifact였고, fp32 path에 NEON을 추가한 후(commit `4490c83`) 정직한 격차는 `+5~10%`가 아닌 `−7~−12%`입니다. README와 v0.6.3 릴리스 노트를 정정했습니다.
 
 ### 컨텍스트 길이 증가 (`turbo_kv_4b` + `q4` value cache)
 

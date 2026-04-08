@@ -43,37 +43,38 @@ LLM memory is dominated by the **KV cache**, not model weights. At 32K context, 
 
 > **Same hardware. 4–7x longer context. PPL measured and disclosed.**
 
-### Llama 3.2 3B Instruct — PPL × Speed (FP32 KV = 13.56 PPL @ 12.6 tok/s)
+### Llama 3.2 3B Instruct — PPL × Speed (FP32 KV NEON = 13.56 PPL @ 14.8 tok/s)
 
-> **`turbo_kv_4b` is now both 7× more compressed AND faster than fp32 KV** at long context. The Karpathy loop closed the speed gap completely (PPL eval throughput).
+> 9 rounds of Karpathy iteration closed the quant-KV speed gap to FP32 KV from **−45% to −8%**, while delivering 5.8–7.1× memory compression. We do not (yet) beat fp32 in raw speed, but we get within 8% of it for ~7× less memory.
 
 | KV Config | Bytes/block | Compression | PPL | Δ vs FP32 | tok/s | vs FP32 speed |
 |:----------|------------:|------------:|----:|----------:|------:|--------------:|
-| FP32 reference | — | 1× | 13.56 | — | 12.6 | baseline |
-| **`turbo_kv_5b`** 🏆 quality | 88 | 5.8× | **13.65** | **+0.7%** | **13.2** | **+5%** ⬆ |
-| `turbo_kv_4bo` 🧪 | 96 | 5.3× | 13.90 | +2.5% | 12.7 | +1% |
-| `turbo_kv_3bo` 🧪 | 80 | 6.4× | 14.17 | +4.5% | 9.3 | -26% |
-| **`turbo_kv_4b`** ⭐ default | **72** | **7.1×** | **14.33** | **+5.7%** | **13.9** | **+10%** ⬆ |
-| `uniform_4b` | 68 | 7.5× | 14.60 | +7.7% | 11.7 | -7% |
-| **`turbo_kv_3b`** | **56** | **9.1×** | 15.36 | +13.3% | **13.4** | **+6%** ⬆ |
-| llama.cpp `q4_0` KV (lit. survey) | ~70 | ~7.3× | ~14.99 | +10.6% | — | — |
+| FP32 reference (NEON) | — | 1× | 13.56 | — | 14.83 | baseline |
+| **`turbo_kv_5b`** 🏆 quality | 88 | 5.8× | **13.65** | **+0.7%** | **13.13** | **−11.5%** |
+| `turbo_kv_4bo` 🧪 | 96 | 5.3× | 13.90 | +2.5% | 12.7 | −14% |
+| **`turbo_kv_4b`** ⭐ default | **72** | **7.1×** | **14.33** | **+5.7%** | **13.67** | **−7.8%** |
+| `turbo_kv_3b` | 56 | 9.1× | 15.36 | +13.3% | 13.4 | −9.6% |
+| `turbo_kv_3bo` 🧪 | 80 | 6.4× | 14.17 | +4.5% | 9.3 | −37% |
+| `uniform_4b` | 68 | 7.5× | 14.60 | +7.7% | 11.7 | −21% |
+| llama.cpp `q4_0` KV (lit.) | ~70 | ~7.3× | ~14.99 | +10.6% | — | — |
 
 ```
-                  PPL Degradation vs FP32           Throughput vs FP32
+                  PPL Degradation vs FP32           Speed vs FP32 KV
                        (lower is better)              (higher is better)
 
-  turbo_kv_5b     │█ +0.7%                       ████████████ +5%   ⬆
-  turbo_kv_4bo    │██▌ +2.5%                     ██████████▌ +1%
-  turbo_kv_3bo    │████▌ +4.5%                   ██████████ -26%   ↓
-  turbo_kv_4b ⭐  │█████ +5.7%                   ████████████▌ +10% ⬆
-  uniform_4b      │██████ +7.7%                  ████████████ -7%
-  turbo_kv_3b     │█████████████ +13.3%          ████████████ +6%   ⬆
+  turbo_kv_5b     │█ +0.7%                       █████████ −11.5%
+  turbo_kv_4bo    │██▌ +2.5%                     ████████ −14%
+  turbo_kv_4b ⭐  │█████ +5.7%                   ██████████ −7.8%
+  turbo_kv_3b     │█████████████ +13.3%          █████████ −9.6%
+  uniform_4b      │██████ +7.7%                  ███████ −21%
   llama.cpp q4_0  │██████████ +10.6%             — (not measured)
-  FP32 reference  │ ← 0%                         12.6 tok/s
-                   0%   +5%   +10%               9    10    11    12    13    14
+  FP32 reference  │ ← 0%                         14.83 tok/s ←
+                   0%   +5%   +10%               0   25%   50%   75%   100%
 ```
 
-`turbo_kv_4b` (default) and `turbo_kv_5b` (quality) are the Pareto-optimal recommendations. **Both compress 5.8–7.1× and run faster than uncompressed FP32 KV.** Full Karpathy-loop history (9 rounds across 3 sessions) in [bench/results/turboquant_reproduction.md](bench/results/turboquant_reproduction.md).
+`turbo_kv_4b` (default) and `turbo_kv_5b` (quality) are the Pareto-optimal recommendations: **5.8–7.1× memory compression at 92% of FP32 KV speed.** Full Karpathy-loop history (9 rounds across 3 sessions) in [bench/results/turboquant_reproduction.md](bench/results/turboquant_reproduction.md).
+
+> **About this comparison**: We previously published v0.6.3 release notes claiming `turbo_kv` beats `fp32` KV speed. That was an artifact of the fp32 attention path being unoptimized scalar — once we added NEON to the fp32 path (commit `4490c83`), the honest gap is `−7%` to `−12%`, not `+5%` to `+10%`. We've corrected the README and the v0.6.3 release notes.
 
 ### Context length gains (`turbo_kv_4b` + `q4` value cache)
 
