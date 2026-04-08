@@ -265,7 +265,7 @@ The full Karpathy-loop history is in `bench/results/turboquant_reproduction.md` 
 
 ## Acknowledgements
 
-Tim Dettmers ([discussion thread](https://github.com/ggml-org/llama.cpp/discussions/20969)) for pointing out the HIGGS attribution. Mohamed Chorfa for the bug fix PRs (#12, #13). The ggml-org / llama.cpp community for the Discussion #20969 venue for KV quantization research.
+We thank Tim Dettmers, whose [general comment in llama.cpp discussion #20969](https://github.com/ggml-org/llama.cpp/discussions/20969) (a thread where 6+ independent forks were all loosely calling their work "TurboQuant") asked the discussion participants to credit HIGGS instead. His comment was not directed at us specifically, but the substance applied to our naming as well, and we updated our docs and this paper accordingly. Mohamed Chorfa for the bug fix PRs (#12, #13). The ggml-org / llama.cpp community for the Discussion #20969 venue for KV quantization research.
 
 ## References
 

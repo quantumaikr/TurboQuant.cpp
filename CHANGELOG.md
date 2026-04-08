@@ -42,11 +42,12 @@ No source code changes — the CMake default was already `OFF`. The bug was in o
 
 ### Honest corrections so far in the v0.6.x series
 
-This is now the **third** honest correction we've caught and fixed before it spread:
+This is now the **fourth** honest correction we've caught and fixed before it spread:
 
 1. **v0.6.0**: "lossless 7× compression" → measured "+6.3% PPL on Llama 3.2 3B"
 2. **v0.6.4**: "turbo_kv beats fp32 KV speed" → measured "−7% vs fp32 (NEON)"
 3. **v0.6.5**: "benchmarks with Metal" → re-measured "benchmarks without Metal (which is the user default)"
+4. **v0.6.5 (post-release)**: "Tim Dettmers gave us direct feedback" → "Tim's general comment to a thread we participate in happened to apply to us; we incorporated it voluntarily, not as a direct response". Earlier docs and the v0.6.4 commit message overstated the relationship; the substance of HIGGS attribution is unchanged but the framing has been corrected in README, README.ko, the arXiv draft, and `bench/results/turboquant_reproduction.md`.
 
 Each correction was caught by the validation discipline documented in our `feedback_validation_first` memory. **Validation > marketing.**
 
