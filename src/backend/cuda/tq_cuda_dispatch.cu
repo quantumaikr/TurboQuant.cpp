@@ -358,4 +358,29 @@ extern "C" void* tq_cuda_get_attention_fn(int type_id) {
     return (void*)g_cuda_dispatch[type_id].attention;
 }
 
+/* Override TQ_TRAITS with CUDA-accelerated KV quantize/attention functions.
+ * Mirror of tq_vulkan_override_traits() — only KV cache ops are dispatched
+ * to GPU; weight matmul still runs on CPU. */
+#include "turboquant/tq_types.h"
+extern "C" void tq_cuda_override_traits(void) {
+    for (int i = 0; i < 7 && i < TQ_TYPE_COUNT; i++) {
+        void* cu_quant = tq_cuda_get_quantize_fn(i);
+        void* cu_attn  = tq_cuda_get_attention_fn(i);
+        if (cu_quant) {
+            void (*fn)(const float*, void*, int);
+            memcpy(&fn, &cu_quant, sizeof(fn));
+            TQ_TRAITS[i].quantize = fn;
+            fprintf(stderr, "  CUDA: GPU-accelerated quantize for %s\n", TQ_TRAITS[i].name);
+        }
+        if (cu_attn) {
+            void (*fn)(const float*, const void*, float*, int, int);
+            memcpy(&fn, &cu_attn, sizeof(fn));
+            TQ_TRAITS[i].attention = fn;
+            fprintf(stderr, "  CUDA: GPU-accelerated attention for %s\n", TQ_TRAITS[i].name);
+        }
+    }
+    fprintf(stderr, "quant.cpp CUDA: GPU acceleration covers KV cache "
+                    "quantize/attention only; weight matmul runs on CPU.\n");
+}
+
 #endif /* TQ_BUILD_CUDA */

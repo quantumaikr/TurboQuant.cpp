@@ -10,9 +10,13 @@
 #ifdef TQ_BUILD_VULKAN
 
 #include "tq_vulkan.h"
+#include "turboquant/tq_types.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* Forward decl: defined below, called from tq_init_vulkan_backend(). */
+void tq_vulkan_override_traits(void);
 
 /* ============================================================
  * Global state
@@ -465,6 +469,8 @@ int tq_init_vulkan_backend(void) {
 
     fprintf(stderr, "quant.cpp Vulkan: Initialized on %s (subgroup size %u)\n",
            g_vk_state.device_name, g_vk_state.subgroup_size);
+    fprintf(stderr, "quant.cpp Vulkan: GPU acceleration covers KV cache "
+                    "quantize/attention only; weight matmul runs on CPU.\n");
 
     g_vk_state.initialized = 1;
 

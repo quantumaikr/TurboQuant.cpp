@@ -324,6 +324,18 @@ int main(int argc, char** argv) {
         }
     }
 #endif
+#ifdef TQ_BUILD_CUDA
+    {
+        extern int  tq_init_cuda_backend(void);
+        extern void tq_cuda_override_traits(void);
+        if (tq_init_cuda_backend() == 0) {
+            tq_cuda_override_traits();
+            fprintf(stderr, "CUDA backend: ready (KV cache quantization on GPU)\n");
+        } else {
+            fprintf(stderr, "CUDA backend: init failed, falling back to CPU\n");
+        }
+    }
+#endif
 
     if (info_only) {
         tq_free_model(model);
