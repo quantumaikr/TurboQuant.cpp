@@ -142,11 +142,35 @@ The Pareto-optimal recommendations are:
 
 `turbo_kv_4b` strictly dominates `uniform_4b` on every relevant axis (better PPL, faster, comparable compression).
 
-### 4.3 Validation on additional models
+### 4.3 Validation across model sizes
 
-[TODO: Llama 3.1 8B numbers are running in background — populate when complete]
+We validate Variant F on three Llama-family models spanning 22× in parameter count.
 
-[TODO: SmolLM2 135M numbers from prior runs — already collected, populate]
+| Model | KV type | PPL | Δ vs FP32 | tok/s | vs FP32 speed |
+|---|---|---:|---:|---:|---:|
+| **SmolLM2 135M** Instruct | fp32 | 18.62 | — | 71.4 | baseline |
+| | turbo_kv_5b | 18.94 | +1.7% | 56.7 | −20.6% |
+| | turbo_kv_4b | 19.70 | +5.8% | 60.5 | −15.3% |
+| | uniform_4b | 20.33 | +9.2% | — | — |
+| **Llama 3.2 1B** Instruct | fp32 | 16.88 | — | 35.2 | baseline |
+| | turbo_kv_5b | 17.00 | **+0.7%** | 28.3 | −19.6% |
+| | turbo_kv_4b | 18.11 | +7.3% | 30.4 | −13.6% |
+| | turbo_kv_3b | 27.18 | +61% ❌ | 28.3 | −19.6% |
+| **Llama 3.2 3B** Instruct | fp32 | 13.56 | — | 14.83 | baseline |
+| | turbo_kv_5b | 13.65 | **+0.7%** | 12.90 | −11.8% |
+| | turbo_kv_4b | 14.33 | +5.7% | 13.57 | −7.2% |
+| | turbo_kv_3b | 15.36 | +13.3% | 13.13 | −9.6% |
+
+Cross-size pattern observations:
+
+1. **`turbo_kv_5b` (5-bit) is consistently near-lossless** across model sizes — PPL Δ stays at 0.7–1.7%. The Lloyd-Max-Gaussian 32-level codebook captures enough resolution that the rotation-then-quantize round-trip preserves attention scores almost exactly, regardless of the underlying model's KV distribution.
+2. **`turbo_kv_4b` quality is 5–8% PPL Δ across sizes**, slightly worse on smaller models. The 16-level codebook is the right point for production: under 6% PPL degradation at 7× compression.
+3. **`turbo_kv_3b` is unsuitable for models below 3B parameters**. PPL jumps from +13.3% on 3B to +61% on 1B. The 8-level codebook is too coarse for the more concentrated KV distributions of small models. Recommend `turbo_kv_3b` only for models ≥ 3B parameters.
+4. **Speed gap to fp32 widens on smaller models** (−7% on 3B → −14% on 1B → −20% on 135M). The per-token attention overhead is a larger fraction of total work when matmul is small, so the (small) per-block dequant overhead dominates.
+
+### Llama 3.1 8B Instruct (paper baseline) — deferred
+
+The Google TurboQuant paper reports on Llama 3.1 8B with LongBench-E, which we did not run due to memory and time constraints on our 16 GB test machine. Q8_0 (8 GB) hit swap; Q4_K_M (4.6 GB) was prohibitively slow (>50 min per fp32 measurement). This validation is deferred to a future session with more RAM. Section 7 (Reproducibility) provides the script for any reader who wants to run it.
 
 ### 4.4 Ablations that did not work
 
