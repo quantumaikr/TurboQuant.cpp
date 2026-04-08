@@ -335,39 +335,113 @@ void tq_turbo_kv_3b_attention_ref(const float* query, const void* kv_cache,
     for (int i = dim; i < TQ_BK; i++) q_rot[i] = 0.0f;
     tq_rht_transform(q_rot, dim, TKV_DEFAULT_SEED);
 
+    /* Round 11: NEON 8-entry table lookup via vqtbl1q_s8 (using lower 8 bytes).
+     * 3-bit codebook has 8 entries which fit in 8 bytes — store in lower half
+     * of a 16-byte register. Indices in 0-7. */
+    const float* cb = tq_codebook_centroids(3);
+#ifdef __ARM_NEON
+    static int8_t s_cb3_i8[16] = {0};
+    static int s_cb3_i8_init = 0;
+    static const float CB3_I8_RECIP = 2.1520f / 127.0f;
+    if (!s_cb3_i8_init) {
+        for (int j = 0; j < 8; j++) {
+            float v = cb[j] * (127.0f / 2.1520f);
+            int q = (int)(v >= 0 ? v + 0.5f : v - 0.5f);
+            if (q < -127) q = -127;
+            if (q >  127) q =  127;
+            s_cb3_i8[j] = (int8_t)q;
+        }
+        for (int j = 8; j < 16; j++) s_cb3_i8[j] = 0;
+        s_cb3_i8_init = 1;
+    }
+    int8x16_t cb_vec = vld1q_s8(s_cb3_i8);
+#endif
+
     for (int seq = 0; seq < seq_len; seq++) {
         const block_tq_turbo_kv_3b* block = &blocks[seq];
         float norm = tkv_fp16_to_fp32(block->norm);
+        float inv_std = tkv_fp16_to_fp32(block->inv_std_fp16);
+        if (inv_std < 1e-10f) inv_std = sqrtf((float)dim);
+        float per_block_scale = CB3_I8_RECIP / inv_std;
 
-        float rotated[TQ_BK];
-        dequant_mse_rotated_3bit_v2(block, rotated, dim);
-
+        const uint8_t* mi = block->mse_indices;
         float mse_dot = 0.0f;
+
 #ifdef __ARM_NEON
-        {
-            float32x4_t acc0 = vdupq_n_f32(0.0f);
-            float32x4_t acc1 = vdupq_n_f32(0.0f);
-            float32x4_t acc2 = vdupq_n_f32(0.0f);
-            float32x4_t acc3 = vdupq_n_f32(0.0f);
-            int d = 0;
-            for (; d + 15 < dim; d += 16) {
-                acc0 = vfmaq_f32(acc0, vld1q_f32(&q_rot[d]),      vld1q_f32(&rotated[d]));
-                acc1 = vfmaq_f32(acc1, vld1q_f32(&q_rot[d + 4]),  vld1q_f32(&rotated[d + 4]));
-                acc2 = vfmaq_f32(acc2, vld1q_f32(&q_rot[d + 8]),  vld1q_f32(&rotated[d + 8]));
-                acc3 = vfmaq_f32(acc3, vld1q_f32(&q_rot[d + 12]), vld1q_f32(&rotated[d + 12]));
-            }
-            acc0 = vaddq_f32(vaddq_f32(acc0, acc1), vaddq_f32(acc2, acc3));
-            for (; d + 3 < dim; d += 4) {
-                acc0 = vfmaq_f32(acc0, vld1q_f32(&q_rot[d]), vld1q_f32(&rotated[d]));
-            }
-            mse_dot = vaddvq_f32(acc0);
-            for (; d < dim; d++) {
-                mse_dot += q_rot[d] * rotated[d];
-            }
+        float32x4_t acc0 = vdupq_n_f32(0.0f);
+        float32x4_t acc1 = vdupq_n_f32(0.0f);
+        float32x4_t acc2 = vdupq_n_f32(0.0f);
+        float32x4_t acc3 = vdupq_n_f32(0.0f);
+        float32x4_t scale_v = vdupq_n_f32(per_block_scale);
+
+        int d = 0;
+        /* Process 16 elements per iteration: 6 bytes of mse_indices (48 bits = 16 × 3) */
+        for (; d + 15 < dim; d += 16) {
+            /* uint64 read of 8 bytes (we use 6) */
+            const uint8_t* p = mi + (d * 3) / 8;
+            uint64_t w;
+            memcpy(&w, p, 8);
+
+            uint8_t idx_buf[16];
+            idx_buf[0]  = (uint8_t)((w >>  0) & 0x07);
+            idx_buf[1]  = (uint8_t)((w >>  3) & 0x07);
+            idx_buf[2]  = (uint8_t)((w >>  6) & 0x07);
+            idx_buf[3]  = (uint8_t)((w >>  9) & 0x07);
+            idx_buf[4]  = (uint8_t)((w >> 12) & 0x07);
+            idx_buf[5]  = (uint8_t)((w >> 15) & 0x07);
+            idx_buf[6]  = (uint8_t)((w >> 18) & 0x07);
+            idx_buf[7]  = (uint8_t)((w >> 21) & 0x07);
+            idx_buf[8]  = (uint8_t)((w >> 24) & 0x07);
+            idx_buf[9]  = (uint8_t)((w >> 27) & 0x07);
+            idx_buf[10] = (uint8_t)((w >> 30) & 0x07);
+            idx_buf[11] = (uint8_t)((w >> 33) & 0x07);
+            idx_buf[12] = (uint8_t)((w >> 36) & 0x07);
+            idx_buf[13] = (uint8_t)((w >> 39) & 0x07);
+            idx_buf[14] = (uint8_t)((w >> 42) & 0x07);
+            idx_buf[15] = (uint8_t)((w >> 45) & 0x07);
+            uint8x16_t indices = vld1q_u8(idx_buf);
+
+            int8x16_t vals = vqtbl1q_s8(cb_vec, indices);
+
+            int16x8_t i16_lo = vmovl_s8(vget_low_s8(vals));
+            int16x8_t i16_hi = vmovl_s8(vget_high_s8(vals));
+            float32x4_t f0 = vcvtq_f32_s32(vmovl_s16(vget_low_s16(i16_lo)));
+            float32x4_t f1 = vcvtq_f32_s32(vmovl_s16(vget_high_s16(i16_lo)));
+            float32x4_t f2 = vcvtq_f32_s32(vmovl_s16(vget_low_s16(i16_hi)));
+            float32x4_t f3 = vcvtq_f32_s32(vmovl_s16(vget_high_s16(i16_hi)));
+
+            f0 = vmulq_f32(f0, scale_v);
+            f1 = vmulq_f32(f1, scale_v);
+            f2 = vmulq_f32(f2, scale_v);
+            f3 = vmulq_f32(f3, scale_v);
+
+            acc0 = vfmaq_f32(acc0, vld1q_f32(&q_rot[d +  0]), f0);
+            acc1 = vfmaq_f32(acc1, vld1q_f32(&q_rot[d +  4]), f1);
+            acc2 = vfmaq_f32(acc2, vld1q_f32(&q_rot[d +  8]), f2);
+            acc3 = vfmaq_f32(acc3, vld1q_f32(&q_rot[d + 12]), f3);
+        }
+        mse_dot = vaddvq_f32(vaddq_f32(vaddq_f32(acc0, acc1), vaddq_f32(acc2, acc3)));
+
+        /* Tail */
+        for (; d < dim; d++) {
+            int bit_off = d * 3;
+            int byte_idx = bit_off / 8;
+            int bit_pos = bit_off % 8;
+            uint16_t v = mi[byte_idx];
+            if (bit_pos > 5) v |= (uint16_t)mi[byte_idx + 1] << 8;
+            int idx = (v >> bit_pos) & 0x07;
+            mse_dot += q_rot[d] * (s_cb3_i8[idx] * per_block_scale);
         }
 #else
+        float lut[8];
+        for (int j = 0; j < 8; j++) lut[j] = cb[j] / inv_std;
         for (int d = 0; d < dim; d++) {
-            mse_dot += q_rot[d] * rotated[d];
+            int bit_off = d * 3;
+            int byte_idx = bit_off / 8;
+            int bit_pos = bit_off % 8;
+            uint16_t v = mi[byte_idx];
+            if (bit_pos > 5) v |= (uint16_t)mi[byte_idx + 1] << 8;
+            mse_dot += q_rot[d] * lut[(v >> bit_pos) & 0x07];
         }
 #endif
 
@@ -1212,36 +1286,149 @@ void tq_turbo_kv_5b_attention_ref(const float* query, const void* kv_cache,
     for (int i = dim; i < TQ_BK; i++) q_rot[i] = 0.0f;
     tq_rht_transform(q_rot, dim, TKV_DEFAULT_SEED);
 
+    /* Round 11: NEON 32-entry table lookup via vqtbl2q_s8.
+     *
+     * 5-bit codebook has 32 entries which fit in 32 bytes (2 NEON registers).
+     * vqtbl2q_s8 takes a 2-register table and gathers 16 lanes in 1 instruction.
+     *
+     * The 5-bit packing is the harder part: 8 indices fit in 5 bytes (40 bits).
+     * For 16 indices we need 10 bytes. We scalar-unpack the 16 indices into a
+     * uint8x16_t and then SIMD-process the LUT lookup + dot product.
+     *
+     * Same int8 quantization of the codebook as Round 10 (~1% precision loss,
+     * within regression test thresholds).
+     */
+    const float* cb = tq_codebook_centroids(5);
+#ifdef __ARM_NEON
+    static int8_t s_cb5_i8[32] = {0};
+    static int s_cb5_i8_init = 0;
+    static const float CB5_I8_RECIP = 1.9956f / 127.0f; /* 5-bit max centroid */
+    if (!s_cb5_i8_init) {
+        for (int j = 0; j < 32; j++) {
+            float v = cb[j] * (127.0f / 1.9956f);
+            int q = (int)(v >= 0 ? v + 0.5f : v - 0.5f);
+            if (q < -127) q = -127;
+            if (q >  127) q =  127;
+            s_cb5_i8[j] = (int8_t)q;
+        }
+        s_cb5_i8_init = 1;
+    }
+    int8x16x2_t cb_vec = { vld1q_s8(s_cb5_i8), vld1q_s8(s_cb5_i8 + 16) };
+#endif
+
     for (int seq = 0; seq < seq_len; seq++) {
         const block_tq_turbo_kv_5b* block = &blocks_5b[seq];
         float norm = tkv_fp16_to_fp32(block->norm);
+        float inv_std = tkv_fp16_to_fp32(block->inv_std_fp16);
+        if (inv_std < 1e-10f) inv_std = sqrtf((float)dim);
+        float per_block_scale = CB5_I8_RECIP / inv_std;
 
-        float rotated[TQ_BK];
-        dequant_mse_rotated_5bit(block, rotated, dim);
-
+        const uint8_t* mi = block->mse_indices;
         float mse_dot = 0.0f;
+
 #ifdef __ARM_NEON
-        {
-            float32x4_t acc0 = vdupq_n_f32(0.0f);
-            float32x4_t acc1 = vdupq_n_f32(0.0f);
-            float32x4_t acc2 = vdupq_n_f32(0.0f);
-            float32x4_t acc3 = vdupq_n_f32(0.0f);
-            int d = 0;
-            for (; d + 15 < dim; d += 16) {
-                acc0 = vfmaq_f32(acc0, vld1q_f32(&q_rot[d]),      vld1q_f32(&rotated[d]));
-                acc1 = vfmaq_f32(acc1, vld1q_f32(&q_rot[d + 4]),  vld1q_f32(&rotated[d + 4]));
-                acc2 = vfmaq_f32(acc2, vld1q_f32(&q_rot[d + 8]),  vld1q_f32(&rotated[d + 8]));
-                acc3 = vfmaq_f32(acc3, vld1q_f32(&q_rot[d + 12]), vld1q_f32(&rotated[d + 12]));
-            }
-            acc0 = vaddq_f32(vaddq_f32(acc0, acc1), vaddq_f32(acc2, acc3));
-            for (; d + 3 < dim; d += 4) {
-                acc0 = vfmaq_f32(acc0, vld1q_f32(&q_rot[d]), vld1q_f32(&rotated[d]));
-            }
-            mse_dot = vaddvq_f32(acc0);
-            for (; d < dim; d++) mse_dot += q_rot[d] * rotated[d];
+        float32x4_t acc0 = vdupq_n_f32(0.0f);
+        float32x4_t acc1 = vdupq_n_f32(0.0f);
+        float32x4_t acc2 = vdupq_n_f32(0.0f);
+        float32x4_t acc3 = vdupq_n_f32(0.0f);
+        float32x4_t scale_v = vdupq_n_f32(per_block_scale);
+
+        int d = 0;
+        /* Process 16 elements per iteration: 10 bytes of mse_indices.
+         * Use uint64 reads + shift to extract indices fast (2 reads × 8 shifts
+         * vs 16 scalar bit-position computations). On ARM64, unaligned uint64
+         * reads are fast. */
+        for (; d + 15 < dim; d += 16) {
+            /* First 8 indices from bytes [d*5/8 .. d*5/8 + 5] (40 bits) */
+            const uint8_t* p0 = mi + (d * 5) / 8;
+            uint64_t w0;
+            memcpy(&w0, p0, 8);  /* unaligned 8-byte load (we use 5 bytes) */
+            /* Second 8 indices: 40 bits later = 5 bytes after p0 */
+            const uint8_t* p1 = p0 + 5;
+            uint64_t w1;
+            memcpy(&w1, p1, 8);
+
+            uint8_t idx_buf[16];
+            idx_buf[0]  = (uint8_t)((w0 >>  0) & 0x1F);
+            idx_buf[1]  = (uint8_t)((w0 >>  5) & 0x1F);
+            idx_buf[2]  = (uint8_t)((w0 >> 10) & 0x1F);
+            idx_buf[3]  = (uint8_t)((w0 >> 15) & 0x1F);
+            idx_buf[4]  = (uint8_t)((w0 >> 20) & 0x1F);
+            idx_buf[5]  = (uint8_t)((w0 >> 25) & 0x1F);
+            idx_buf[6]  = (uint8_t)((w0 >> 30) & 0x1F);
+            idx_buf[7]  = (uint8_t)((w0 >> 35) & 0x1F);
+            idx_buf[8]  = (uint8_t)((w1 >>  0) & 0x1F);
+            idx_buf[9]  = (uint8_t)((w1 >>  5) & 0x1F);
+            idx_buf[10] = (uint8_t)((w1 >> 10) & 0x1F);
+            idx_buf[11] = (uint8_t)((w1 >> 15) & 0x1F);
+            idx_buf[12] = (uint8_t)((w1 >> 20) & 0x1F);
+            idx_buf[13] = (uint8_t)((w1 >> 25) & 0x1F);
+            idx_buf[14] = (uint8_t)((w1 >> 30) & 0x1F);
+            idx_buf[15] = (uint8_t)((w1 >> 35) & 0x1F);
+            uint8x16_t indices = vld1q_u8(idx_buf);
+
+            /* SIMD lookup: 32-entry table via 2-register vqtbl2q_s8 */
+            int8x16_t vals = vqtbl2q_s8(cb_vec, indices);
+
+            /* int8 → int16 → fp32 (16 lanes split into 4×4) */
+            int16x8_t i16_lo = vmovl_s8(vget_low_s8(vals));
+            int16x8_t i16_hi = vmovl_s8(vget_high_s8(vals));
+            float32x4_t f0 = vcvtq_f32_s32(vmovl_s16(vget_low_s16(i16_lo)));
+            float32x4_t f1 = vcvtq_f32_s32(vmovl_s16(vget_high_s16(i16_lo)));
+            float32x4_t f2 = vcvtq_f32_s32(vmovl_s16(vget_low_s16(i16_hi)));
+            float32x4_t f3 = vcvtq_f32_s32(vmovl_s16(vget_high_s16(i16_hi)));
+
+            /* Apply per-block scale */
+            f0 = vmulq_f32(f0, scale_v);
+            f1 = vmulq_f32(f1, scale_v);
+            f2 = vmulq_f32(f2, scale_v);
+            f3 = vmulq_f32(f3, scale_v);
+
+            /* FMA against query */
+            acc0 = vfmaq_f32(acc0, vld1q_f32(&q_rot[d +  0]), f0);
+            acc1 = vfmaq_f32(acc1, vld1q_f32(&q_rot[d +  4]), f1);
+            acc2 = vfmaq_f32(acc2, vld1q_f32(&q_rot[d +  8]), f2);
+            acc3 = vfmaq_f32(acc3, vld1q_f32(&q_rot[d + 12]), f3);
+        }
+        mse_dot = vaddvq_f32(vaddq_f32(vaddq_f32(acc0, acc1), vaddq_f32(acc2, acc3)));
+
+        /* Tail: scalar fallback for remaining elements */
+        for (; d < dim; d++) {
+            int bit_off = d * 5;
+            int byte_idx = bit_off / 8;
+            int bit_pos = bit_off % 8;
+            uint16_t v = mi[byte_idx];
+            if (bit_pos > 3) v |= (uint16_t)mi[byte_idx + 1] << 8;
+            int idx = (v >> bit_pos) & 0x1F;
+            mse_dot += q_rot[d] * (s_cb5_i8[idx] * per_block_scale);
         }
 #else
-        for (int d = 0; d < dim; d++) mse_dot += q_rot[d] * rotated[d];
+        /* Scalar fallback */
+        float lut[32];
+        for (int j = 0; j < 32; j++) lut[j] = cb[j] / inv_std;
+        const uint8_t* p = mi;
+        int d = 0;
+        for (; d + 7 < dim; d += 8) {
+            uint64_t w = (uint64_t)p[0] | ((uint64_t)p[1] << 8) | ((uint64_t)p[2] << 16)
+                       | ((uint64_t)p[3] << 24) | ((uint64_t)p[4] << 32);
+            mse_dot += q_rot[d + 0] * lut[(w >>  0) & 31];
+            mse_dot += q_rot[d + 1] * lut[(w >>  5) & 31];
+            mse_dot += q_rot[d + 2] * lut[(w >> 10) & 31];
+            mse_dot += q_rot[d + 3] * lut[(w >> 15) & 31];
+            mse_dot += q_rot[d + 4] * lut[(w >> 20) & 31];
+            mse_dot += q_rot[d + 5] * lut[(w >> 25) & 31];
+            mse_dot += q_rot[d + 6] * lut[(w >> 30) & 31];
+            mse_dot += q_rot[d + 7] * lut[(w >> 35) & 31];
+            p += 5;
+        }
+        for (; d < dim; d++) {
+            int bit_off = d * 5;
+            int byte_idx = bit_off / 8;
+            int bit_pos = bit_off % 8;
+            uint16_t v = mi[byte_idx];
+            if (bit_pos > 3) v |= (uint16_t)mi[byte_idx + 1] << 8;
+            mse_dot += q_rot[d] * lut[(v >> bit_pos) & 0x1F];
+        }
 #endif
         scores[seq] = norm * mse_dot;
     }
