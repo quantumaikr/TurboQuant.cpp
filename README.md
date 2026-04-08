@@ -49,10 +49,10 @@ LLM memory is dominated by the **KV cache**, not model weights. At 32K context, 
 
 | KV Config | Bytes/block | Compression | PPL | Δ vs FP32 | tok/s | vs FP32 speed |
 |:----------|------------:|------------:|----:|----------:|------:|--------------:|
-| FP32 reference | — | 1× | 13.56 | — | 17.9 | baseline |
-| **`turbo_kv_4b`** ⭐ default | **72** | **7.1×** | **14.08** | **+3.8%** | **18.7** | **+4.5%** ⬆ |
-| `turbo_kv_5b` 🏆 quality | 88 | 5.8× | **13.65** | **+0.7%** | 15.3 | −14.5% |
-| `turbo_kv_3b` | 56 | 9.1× | 15.36 | +13.3% | 15.7 | −12.3% |
+| FP32 reference | — | 1× | 13.56 | — | 18.43 | baseline |
+| **`turbo_kv_4b`** ⭐ default | **72** | **7.1×** | **14.08** | **+3.8%** | **18.17** | **−1.4%** ✅ parity |
+| `turbo_kv_5b` 🏆 quality | 88 | 5.8× | **13.65** | **+0.7%** | 16.80 | −8.8% |
+| `turbo_kv_3b` | 56 | 9.1× | 15.36 | +13.3% | 16.57 | −10.1% |
 | `uniform_4b` | 68 | 7.5× | 14.60 | +7.7% | 13.27 | −26.8% |
 | llama.cpp `q4_0` KV (lit.) | ~70 | ~7.3× | ~14.99 | +10.6% | — | — |
 

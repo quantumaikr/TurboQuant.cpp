@@ -1,5 +1,54 @@
 # Changelog
 
+## [0.7.1] — 2026-04-08
+
+### Round 11 — NEON tbl pattern applied to 3b/5b (partial parity)
+
+After Round 10 (turbo_kv_4b at fp32 parity via `vqtbl1q_s8`), Round 11 applied the same SIMD codebook lookup pattern to the remaining production variants. The lookup side scales beautifully (1 instruction per 16 lanes for any small codebook), but the **bit-unpack side** is the new bottleneck for non-byte-aligned packing.
+
+Llama 3.2 3B PPL eval, 3 runs each (CPU-only, no Metal):
+
+| Type | Round 10 → Round 11 | Δ | vs FP32 (R11) | PPL Δ |
+|---|---|---:|---:|---:|
+| FP32 | 17.87 → 18.43 t/s | +3% | baseline | — |
+| `turbo_kv_3b` | 16.10 → 16.57 t/s | +3% | **−10.1%** | +13.3% |
+| **`turbo_kv_4b`** ⭐ | 18.17 → 18.17 t/s | parity (R10 stable) | **−1.4%** ✅ | +3.8% |
+| `turbo_kv_5b` 🏆 | 15.43 → 16.80 t/s | **+9%** | **−8.8%** | +0.7% |
+
+### Why 4b reached parity but 3b/5b didn't
+
+| Type | Bit packing | Unpack | Result |
+|---|---|---|---|
+| 4b | byte-aligned (2 nibbles/byte) | pure SIMD `vandq_u8` + `vshrq_n_u8` | **parity** ✅ |
+| 3b | bit-aligned (irregular 3-bit fields) | uint64 read + scalar shifts | −10.1% |
+| 5b | bit-aligned (irregular 5-bit fields) | uint64 read + scalar shifts | −8.8% |
+
+For 3-bit and 5-bit, 16 indices straddle byte boundaries irregularly. We use the fastest scalar unpack we found (uint64 read + 16 scalar shifts + `vld1q_u8`) but it costs ~16 instructions per 16-element iteration. The lookup itself is 1 instruction. So the unpack now dominates for 3b/5b.
+
+### Insight: matmul was already using the same pattern
+
+While investigating other optimization axes, we discovered that the GGUF Q4 matmul code (`tq_gguf_quants.c:1561`) **already uses `vqtbl1q_s8`** for the codebook lookup. That's why fp32 and turbo_kv have identical matmul time (38.6 vs 38.9 ms in profile) — they both share the same NEON tbl matmul kernel.
+
+This is why Round 10 worked: we'd been using NEON tbl in matmul since v0.5, but had built the attention path with scalar gather. Once we applied the same primitive to attention, the gap closed. Round 11 extended it to 3b/5b but hit the bit-packing constraint.
+
+### What's NOT in v0.7.1
+
+- 5b/3b at full parity. The remaining gap is in the unpack, not the lookup. Closing it needs either (a) a layout change (1-byte-per-index, sacrificing compression), (b) a SIMD bit-extraction trick, or (c) acceptance. We chose (c) for v0.7.1 with honest disclosure.
+- `turbo_kv_4bo` / `turbo_kv_3bo` — research types, still on Round 9 path
+- AVX2 / WASM SIMD ports of the NEON tbl pattern — separate session
+
+### What changed in v0.7.1
+
+| File | Change |
+|------|--------|
+| `src/core/tq_turbo_kv.c::tq_turbo_kv_3b_attention_ref` | NEON tbl + uint64 unpack |
+| `src/core/tq_turbo_kv.c::tq_turbo_kv_5b_attention_ref` | NEON tbl + uint64 unpack |
+| `README.md`, `README.ko.md` | Round 11 numbers |
+| `CHANGELOG.md` | This entry |
+| Memory `feedback_simd_unpack_constraint.md` | Documents the byte-alignment constraint for future work |
+
+35/35 tests pass. PPL unchanged.
+
 ## [0.7.0] — 2026-04-08
 
 ### 🏆 Round 10 — `turbo_kv_4b` matches fp32 KV speed at 7.1× compression
