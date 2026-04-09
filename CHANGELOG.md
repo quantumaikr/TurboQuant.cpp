@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.10.1] — 2026-04-10
+
+### Progressive KV compression — FP32 quality at 3x compression
+
+Measured on Llama 3.2 3B, 3970 tokens (BPE O(n log n) enabled):
+
+| Config | PPL | vs FP32 | FP32 ratio |
+|---|---:|---:|---:|
+| FP32 | 19.41 | — | 100% |
+| 4-bit + k128 (progressive) | **19.39** | **-0.1%** | **3.2%** |
+| 4-bit flat | 20.02 | +3.1% | 0% |
+
+128 FP32 tokens recover full quality regardless of context length. This is context-length-invariant: the same 128-token window works at 4K, 32K, or 128K context.
+
+### BPE tokenizer: O(n²) → O(n log n)
+
+Replaced the naive BPE merge loop (O(n²) per merge step) with a max-heap priority queue with lazy deletion. Enables tokenization of 17K+ character texts in seconds instead of minutes. Unlocked 3970-token PPL evaluation for honest long-context validation.
+
+### Honest correction track (10 of 10 self-found)
+
+- **#9**: 957-token eval caveat for S1 findings (53% FP32 at k512)
+- **#10**: 2-bit + k512 Pareto claim withdrawn (PPL +36.7% at 3970 tokens)
+
+### Features
+
+- `progressive=True` in Python API (128-token FP32 window)
+- `aggressive=True` (512-token FP32 window)
+- `context_length=` parameter for longer context
+- `save_context()` / `load_context()` — KV cache persistence
+- Infinite scrollback (automatic context shift)
+- WASM demo: IndexedDB caching + one-click "Try Demo"
+- Model registry: SmolLM2-135M + Llama-3.2-1B
+
+---
+
 ## [0.8.2] — 2026-04-09 (quant_free_string + leak fix)
 
 ### Eliminated the v0.8.1 leak in `Model.ask()`

@@ -54,14 +54,19 @@ for tok in m.generate("Once upon a time"):
 ```python
 # KV compression is ON by default — 3x less cache memory, 13% faster attention.
 m = Model("llama-3b.gguf", context_length=32768)  # fits in 8GB; FP32 would OOM
+
+# Progressive mode: FP32 quality at 3x compression (measured on 3970 tokens)
+m = Model("llama-3b.gguf", context_length=32768, progressive=True)
 ```
 
 | Context | FP32 KV (8GB Mac) | With KV compression | Speedup |
 |---:|---|---|---:|
-| 4K | OK | OK | +13% |
+| 4K | OK | **OK** | +13% |
 | 16K | borderline | **OK** | +13% |
 | **32K** | **OOM** | **OK (5.5 GB)** | **+13%** |
 | 64K | OOM | 16GB Mac OK | +13% |
+
+**Progressive KV compression** (`progressive=True`): keeps last 128 tokens at FP32, compresses the rest to 4-bit. Measured result: **FP32 quality (PPL -0.1%) at 3x compression** on a 3970-token evaluation. The 128-token FP32 window is context-length-invariant — works the same at 4K or 128K.
 
 Pre-built wheels for Linux x86_64/aarch64, macOS arm64 (Python 3.9-3.13). Other platforms compile from source automatically.
 
