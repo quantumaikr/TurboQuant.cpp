@@ -35,8 +35,9 @@ pip install quantcpp
 ```python
 from quantcpp import Model
 
-# Downloads a small model automatically (~135 MB, one-time)
-m = Model.from_pretrained("SmolLM2-135M")
+# Downloads a model automatically (one-time, cached)
+m = Model.from_pretrained("Llama-3.2-1B")   # ~750 MB, good quality
+# m = Model.from_pretrained("SmolLM2-135M") # ~135 MB, fastest download
 print(m.ask("What is gravity?"))
 ```
 

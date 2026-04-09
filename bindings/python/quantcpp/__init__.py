@@ -19,7 +19,7 @@ try:
     from importlib.metadata import version as _pkg_version
     __version__ = _pkg_version("quantcpp")
 except Exception:
-    __version__ = "0.9.1"  # fallback for editable / source-tree imports
+    __version__ = "0.9.2"  # fallback for editable / source-tree imports
 
 import os
 import sys
@@ -53,7 +53,16 @@ _MODEL_REGISTRY = {
         "smollm2-135m-instruct-q8_0.gguf",
         135,
     ),
+    "Llama-3.2-1B": (
+        "hugging-quants/Llama-3.2-1B-Instruct-Q4_K_M-GGUF",
+        "llama-3.2-1b-instruct-q4_k_m.gguf",
+        750,
+    ),
 }
+
+def available_models():
+    """List available model names for ``from_pretrained``."""
+    return sorted(_MODEL_REGISTRY.keys())
 
 
 def _download_with_progress(url: str, dest: Path, desc: str) -> None:
