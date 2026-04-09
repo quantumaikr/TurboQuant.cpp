@@ -2,13 +2,14 @@
   <img src="docs/assets/hero.png" alt="quant.cpp" width="600">
 </p>
 
-<h3 align="center">The single-header C engine for KV-compressed LLM inference</h3>
+<h3 align="center">The SQLite of LLMs</h3>
+<p align="center"><b>Add AI to any C project with a single 16K-line file. Zero dependencies.</b></p>
 
 <p align="center">
-  Production: <code>uniform_4b</code> KV cache (4–7x compression at +6% PPL on Llama 3.2 3B).<br>
-  Research: building blocks for <a href="https://arxiv.org/abs/2504.19874">TurboQuant</a>, <a href="https://arxiv.org/abs/2502.02617">PolarQuant</a>, <a href="https://arxiv.org/abs/2406.03482">QJL</a> — 7 KV quantization types in one engine.<br>
-  72K LOC pure C, zero dependencies. Ships as <a href="#-single-header-mode"><b>quant.h</b></a> — drop one file into any project.<br>
-  Runs everywhere a C compiler does: <b>iOS · Android · WASM · MSVC · microcontrollers</b>.
+  Drop <a href="#-single-header-mode"><code>quant.h</code></a> (one file, 646 KB) into your project and get LLM inference.<br>
+  No CMake, no submodules, no package managers. Just <code>cc app.c -lm</code>.<br>
+  Runs everywhere a C compiler does: <b>iOS, Android, WASM, microcontrollers, MSVC</b>.<br>
+  Built-in <a href="#kv-cache-compression">KV cache compression</a>: 7x memory reduction at fp32-parity speed.
 </p>
 
 <p align="center">
@@ -25,7 +26,7 @@
 
 ---
 
-## Install
+## Quick Start (30 seconds)
 
 ```bash
 pip install quantcpp
@@ -34,17 +35,21 @@ pip install quantcpp
 ```python
 from quantcpp import Model
 
-m = Model("path/to/your.gguf")  # any GGUF file you have on disk
-print(m.ask("What is 2+2?"))
+# Downloads a small model automatically (~135 MB, one-time)
+m = Model.from_pretrained("SmolLM2-135M")
+print(m.ask("What is gravity?"))
+```
 
-# Streaming
+That's it. No API key, no GPU, no configuration. The model downloads once and is cached at `~/.cache/quantcpp/`.
+
+**Bring your own model:**
+```python
+m = Model("path/to/any-model.gguf")  # any GGUF file works
 for tok in m.generate("Once upon a time"):
     print(tok, end="", flush=True)
 ```
 
-Pre-built wheels for Linux x86_64, Linux aarch64, macOS arm64 (Python 3.9–3.13). Other platforms fall back to source distribution which compiles `quant.h` automatically — no external dependencies, just a C compiler.
-
-> **Note (v0.8.x):** the Python bindings currently default to `kv_compress=0` (no KV compression). KV compression is fully working in the CLI `quant` binary; bringing it to the bindings is tracked for v0.8.2 (regenerated single-header). See [CHANGELOG](CHANGELOG.md#081--2026-04-09-python-bindings-hotfix) for details.
+Pre-built wheels for Linux x86_64/aarch64, macOS arm64 (Python 3.9-3.13). Other platforms compile from source automatically.
 
 ---
 
