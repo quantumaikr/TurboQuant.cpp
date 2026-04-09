@@ -65,6 +65,8 @@ m = Model("llama-3b.gguf", context_length=32768)  # fits in 8GB; FP32 would OOM
 
 Pre-built wheels for Linux x86_64/aarch64, macOS arm64 (Python 3.9-3.13). Other platforms compile from source automatically.
 
+**Try in your browser (no install):** [WASM Demo](https://quantumaikr.github.io/quant.cpp/) — 189 KB engine, click "Try Demo" to auto-load a model.
+
 ---
 
 ## The Problem
