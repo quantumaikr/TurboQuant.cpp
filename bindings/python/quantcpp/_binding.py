@@ -143,6 +143,16 @@ def _setup_signatures(lib: ctypes.CDLL) -> None:
         lib.quant_free_string.argtypes = [ctypes.c_void_p]
         lib.quant_free_string.restype = None
 
+    # int quant_save_context(quant_ctx* ctx, const char* path)
+    if hasattr(lib, "quant_save_context"):
+        lib.quant_save_context.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+        lib.quant_save_context.restype = ctypes.c_int
+
+    # int quant_load_context(quant_ctx* ctx, const char* path)
+    if hasattr(lib, "quant_load_context"):
+        lib.quant_load_context.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+        lib.quant_load_context.restype = ctypes.c_int
+
     # void quant_free_ctx(quant_ctx* ctx)
     lib.quant_free_ctx.argtypes = [ctypes.c_void_p]
     lib.quant_free_ctx.restype = None

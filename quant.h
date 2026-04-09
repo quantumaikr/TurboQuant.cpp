@@ -65,11 +65,15 @@ int quant_generate(quant_ctx* ctx, const char* prompt,
 // Generate and return full response as string. Caller must free().
 char* quant_ask(quant_ctx* ctx, const char* prompt);
 
-// Free a string returned by quant_ask. Always use this — never call libc
-// free() on the returned pointer directly. The string lives in the dylib's
-// malloc heap, which on macOS arm64 / Windows can be a different malloc
-// zone than the caller's libc.
+// Free a string returned by quant_ask.
 void quant_free_string(char* str);
+
+// Save/load KV cache context to/from disk. Enables "read once, query forever":
+// process a long document once (slow prefill), save the context, then reload
+// instantly for follow-up questions without re-processing.
+// Returns 0 on success, -1 on failure.
+int quant_save_context(quant_ctx* ctx, const char* path);
+int quant_load_context(quant_ctx* ctx, const char* path);
 
 // Free resources.
 void quant_free_ctx(quant_ctx* ctx);
@@ -1763,6 +1767,7 @@ struct quant_ctx {
     tq_state_t* state;
     tq_tokenizer_t* tokenizer;
     tq_gen_config_t config;
+    int n_ctx_tokens;  /* number of tokens currently in KV cache */
 };
 
 // ============================================================================
@@ -15813,6 +15818,7 @@ int quant_generate(quant_ctx* ctx, const char* prompt,
     char output[65536];
     int n = tq_generate(ctx->model, ctx->tokenizer, prompt,
                         &ctx->config, output, sizeof(output));
+    if (n > 0) ctx->n_ctx_tokens += n;
     return n;
 }
 
@@ -15845,6 +15851,7 @@ char* quant_ask(quant_ctx* ctx, const char* prompt) {
         free(output);
         return NULL;
     }
+    if (n > 0) ctx->n_ctx_tokens += n;
     return output;
 }
 
@@ -15853,6 +15860,149 @@ void quant_free_string(char* str) {
      * so it must be free()'d here too — same malloc zone, no cross-heap
      * crash on macOS arm64 / Windows. */
     if (str) free(str);
+}
+
+/* ================================================================
+ * Context persistence — save/load KV cache to disk
+ *
+ * File format (binary, little-endian):
+ *   magic:     4 bytes "QKVC"
+ *   version:   uint32 (1)
+ *   n_layers:  uint32
+ *   kv_dim:    uint32 (n_kv_heads * head_dim)
+ *   max_seq:   uint32
+ *   n_tokens:  uint32 (number of filled positions)
+ *   kv_type:   uint32 (TQ_TYPE_* enum or TQ_TYPE_COUNT for fp32)
+ *   has_fp16v: uint32 (1 if value_cache_fp16 is used)
+ *   reserved:  32 bytes (future use)
+ *   data:      raw KV cache bytes
+ * ================================================================ */
+
+int quant_save_context(quant_ctx* ctx, const char* path) {
+    if (!ctx || !ctx->state || !path) return -1;
+    FILE* fp = fopen(path, "wb");
+    if (!fp) return -1;
+
+    tq_state_t* s = ctx->state;
+    tq_model_config_t* c = &ctx->model->config;
+    int kv_dim = c->n_kv_heads * c->head_dim;
+
+    /* Header */
+    fwrite("QKVC", 1, 4, fp);
+    uint32_t version = 1;
+    uint32_t nl = (uint32_t)c->n_layers;
+    uint32_t kd = (uint32_t)kv_dim;
+    uint32_t ms = (uint32_t)c->max_seq_len;
+    uint32_t nt = (uint32_t)ctx->n_ctx_tokens;
+    uint32_t kt = (uint32_t)s->kv_quant_type;
+    uint32_t hfp16 = s->value_cache_fp16 ? 1 : 0;
+    fwrite(&version, 4, 1, fp);
+    fwrite(&nl, 4, 1, fp);
+    fwrite(&kd, 4, 1, fp);
+    fwrite(&ms, 4, 1, fp);
+    fwrite(&nt, 4, 1, fp);
+    fwrite(&kt, 4, 1, fp);
+    fwrite(&hfp16, 4, 1, fp);
+    char reserved[32] = {0};
+    fwrite(reserved, 1, 32, fp);
+
+    /* KV data: write only the filled portion (nt tokens) */
+    for (uint32_t l = 0; l < nl; l++) {
+        size_t layer_stride = (size_t)ms * kv_dim;
+        /* Key cache: FP32 or quantized */
+        if (s->key_cache) {
+            fwrite(s->key_cache + l * layer_stride, sizeof(float),
+                   (size_t)nt * kv_dim, fp);
+        }
+        if (s->quant_key_cache && kt < TQ_TYPE_COUNT) {
+            size_t blk_sz = tq_type_type_size(kt);
+            uint8_t* qbase = (uint8_t*)s->quant_key_cache + l * (size_t)ms * blk_sz;
+            fwrite(qbase, blk_sz, nt, fp);
+        }
+        /* Value cache: FP32 or FP16 */
+        if (s->value_cache) {
+            fwrite(s->value_cache + l * layer_stride, sizeof(float),
+                   (size_t)nt * kv_dim, fp);
+        }
+        if (s->value_cache_fp16) {
+            size_t layer_stride16 = (size_t)ms * kv_dim;
+            fwrite(s->value_cache_fp16 + l * layer_stride16, sizeof(uint16_t),
+                   (size_t)nt * kv_dim, fp);
+        }
+    }
+
+    fclose(fp);
+    fprintf(stderr, "quant_save_context: saved %u tokens (%u layers) to %s\n",
+            nt, nl, path);
+    return 0;
+}
+
+int quant_load_context(quant_ctx* ctx, const char* path) {
+    if (!ctx || !ctx->state || !path) return -1;
+    FILE* fp = fopen(path, "rb");
+    if (!fp) return -1;
+
+    /* Read and validate header */
+    char magic[4];
+    if (fread(magic, 1, 4, fp) != 4 || memcmp(magic, "QKVC", 4) != 0) {
+        fclose(fp); return -1;
+    }
+    uint32_t version, nl, kd, ms, nt, kt, hfp16;
+    fread(&version, 4, 1, fp);
+    fread(&nl, 4, 1, fp);
+    fread(&kd, 4, 1, fp);
+    fread(&ms, 4, 1, fp);
+    fread(&nt, 4, 1, fp);
+    fread(&kt, 4, 1, fp);
+    fread(&hfp16, 4, 1, fp);
+    char reserved[32];
+    fread(reserved, 1, 32, fp);
+
+    tq_state_t* s = ctx->state;
+    tq_model_config_t* c = &ctx->model->config;
+    int kv_dim = c->n_kv_heads * c->head_dim;
+
+    /* Validate compatibility */
+    if (nl != (uint32_t)c->n_layers || kd != (uint32_t)kv_dim) {
+        fprintf(stderr, "quant_load_context: model mismatch (layers %u vs %d, kv_dim %u vs %d)\n",
+                nl, c->n_layers, kd, kv_dim);
+        fclose(fp); return -1;
+    }
+    if (nt > (uint32_t)c->max_seq_len) {
+        fprintf(stderr, "quant_load_context: saved %u tokens > max_seq_len %d\n",
+                nt, c->max_seq_len);
+        fclose(fp); return -1;
+    }
+
+    /* Read KV data */
+    for (uint32_t l = 0; l < nl; l++) {
+        size_t layer_stride = (size_t)c->max_seq_len * kv_dim;
+        if (s->key_cache) {
+            fread(s->key_cache + l * layer_stride, sizeof(float),
+                  (size_t)nt * kv_dim, fp);
+        }
+        if (s->quant_key_cache && kt < TQ_TYPE_COUNT) {
+            size_t blk_sz = tq_type_type_size(kt);
+            uint8_t* qbase = (uint8_t*)s->quant_key_cache + l * (size_t)c->max_seq_len * blk_sz;
+            fread(qbase, blk_sz, nt, fp);
+        }
+        if (s->value_cache) {
+            fread(s->value_cache + l * layer_stride, sizeof(float),
+                  (size_t)nt * kv_dim, fp);
+        }
+        if (s->value_cache_fp16) {
+            size_t layer_stride16 = (size_t)c->max_seq_len * kv_dim;
+            fread(s->value_cache_fp16 + l * layer_stride16, sizeof(uint16_t),
+                  (size_t)nt * kv_dim, fp);
+        }
+    }
+
+    /* Restore position */
+    ctx->n_ctx_tokens = (int)nt;
+    fclose(fp);
+    fprintf(stderr, "quant_load_context: restored %u tokens (%u layers) from %s\n",
+            nt, nl, path);
+    return 0;
 }
 
 void quant_free_ctx(quant_ctx* ctx) {

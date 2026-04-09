@@ -368,6 +368,42 @@ class Model:
         if error_box[0] is not None:
             raise error_box[0]
 
+    def save_context(self, path: str) -> None:
+        """Save the current KV cache to disk.
+
+        Enables "read once, query forever": process a long document
+        once (slow prefill), save the context, then reload instantly
+        for follow-up questions without re-processing.
+
+        Parameters
+        ----------
+        path : str
+            File path to write the context to (.kv extension recommended).
+        """
+        self._ensure_open()
+        lib = get_lib()
+        rc = lib.quant_save_context(self._ctx, path.encode("utf-8"))
+        if rc != 0:
+            raise RuntimeError(f"Failed to save context to {path}")
+
+    def load_context(self, path: str) -> None:
+        """Load a previously saved KV cache from disk.
+
+        Restores the exact conversation state — the model can immediately
+        answer follow-up questions about a previously processed document
+        without re-reading it.
+
+        Parameters
+        ----------
+        path : str
+            Path to a context file saved by ``save_context``.
+        """
+        self._ensure_open()
+        lib = get_lib()
+        rc = lib.quant_load_context(self._ctx, path.encode("utf-8"))
+        if rc != 0:
+            raise RuntimeError(f"Failed to load context from {path}")
+
     def close(self) -> None:
         """Release model and context resources.
 
