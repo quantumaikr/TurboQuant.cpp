@@ -49,6 +49,13 @@ for tok in m.generate("Once upon a time"):
     print(tok, end="", flush=True)
 ```
 
+**Longer context with KV compression:**
+```python
+# KV compression is ON by default (kv_compress=1), using ~4x less cache memory.
+# This means you can safely extend context on the same hardware:
+m = Model("llama-3b.gguf", context_length=16384)  # 16K context where FP32 only fits 4K
+```
+
 Pre-built wheels for Linux x86_64/aarch64, macOS arm64 (Python 3.9-3.13). Other platforms compile from source automatically.
 
 ---
