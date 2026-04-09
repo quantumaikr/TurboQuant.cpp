@@ -56,9 +56,9 @@ quantcpp = ["_quant.h", "*.so", "*.dylib", "*.dll"]
 build = "cp39-* cp310-* cp311-* cp312-* cp313-*"
 skip  = "*-musllinux_i686 *-manylinux_i686 pp*"
 
-# Verify the bundled header is present (CI step copies quant.h here before
-# this hook runs; setup.py also refreshes from ../../quant.h in dev tree).
-before-build = "python -c \"import os, sys; sys.exit(0 if os.path.exists('quantcpp/_quant.h') else (sys.stderr.write('quantcpp/_quant.h missing — bundle step did not run\\n') or 1))\""
+# setup.py copies ./quant.h → quantcpp/_quant.h on import; the CI workflow
+# stages quant.h into the package-dir before invoking cibuildwheel.
+# (No before-build hook needed; setup.py runs as part of the wheel build.)
 
 # Smoke-test the built wheel before publishing
 test-command = "python -c \"import quantcpp; print('quantcpp', quantcpp.__version__)\""
