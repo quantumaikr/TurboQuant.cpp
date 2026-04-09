@@ -27,12 +27,24 @@ information-theoretically near-optimal.
 
 | Method | PPL penalty | Memory (32K) | Pareto-optimal? |
 |---|---:|---:|---|
-| Flat 4-bit | +3.8% | 2.30 GB | ~~yes~~ **no** — dominated by 2b+k512 |
-| **2-bit + k512** | **+4.3%** | **1.19 GB** | **YES** — same quality, half memory |
+| Flat 4-bit | +3.8% | 2.30 GB | likely dominated by 2b+k512 |
+| **2-bit + k512** | **+4.3%** | **1.19 GB** | **YES** — similar quality, half memory |
 | 4-bit + k128 | +0.6% | 2.33 GB | YES — best quality |
 
-Flat 4-bit is **Pareto-dominated**: 2-bit + k512 achieves the same PPL
-at half the memory. There is no reason to use flat 4-bit anymore.
+## IMPORTANT CAVEAT (Honest Correction #9)
+
+All PPL measurements were performed at **957 tokens** (tokenizer cap).
+At this eval length, k_highres=512 means **53.5% of tokens are FP32** —
+very different from real long-context use (e.g., 32K where it's 1.6%).
+
+The "Pareto-dominates" claim is **theoretically motivated** (attention
+concentrates ~70% on recent ~500 tokens) but **NOT empirically validated
+at long context**. The true 2-bit quality at 32K context with only 1.6%
+FP32 tokens is likely worse than measured here.
+
+**What IS validated**: progressive (4-bit + k128) at 957 tokens, where
+k128 = 13.4% FP32 — similar to the real ratio at 1K context. This
+finding (+3.8% → +0.6%) is reliable.
 
 ## Memory impact at scale
 

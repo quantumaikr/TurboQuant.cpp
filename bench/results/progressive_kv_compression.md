@@ -34,6 +34,10 @@ The sweet spot is **k_highres=128**:
 - 64→128 shows meaningful improvement (13.71 → 13.64)
 - Below 64 the benefit drops off
 
+**Validation note**: measured at 957 tokens. k128 = 13.4% FP32, which is
+representative of real ~1K context. Longer-context validation (4K+) pending
+due to tokenizer cap at ~958 tokens. The finding is reliable at this scale.
+
 ## Memory Impact at Scale
 
 At 32K context with Llama 3.2 3B:
