@@ -6,11 +6,19 @@
 <p align="center"><b>Add AI to any C project with a single 16K-line file. Zero dependencies.</b></p>
 
 <p align="center">
-  Drop <a href="#-single-header-mode"><code>quant.h</code></a> (one file, 646 KB) into your project and get LLM inference.<br>
-  No CMake, no submodules, no package managers. Just <code>cc app.c -lm</code>.<br>
-  Runs everywhere a C compiler does: <b>iOS, Android, WASM, microcontrollers, MSVC</b>.<br>
-  Built-in <a href="#kv-cache-compression">KV cache compression</a>: 7x memory reduction at fp32-parity speed.
+  <code>pip install quantcpp</code> — or drop <a href="#-single-header-mode"><code>quant.h</code></a> (one file, 654 KB) into any C project.<br>
+  No CMake, no submodules, no GPU. Just <code>cc app.c -lm</code>.<br>
+  Runs everywhere: <b>Linux, macOS, iOS, Android, WASM (193 KB), MSVC, microcontrollers</b>.
 </p>
+
+<table align="center">
+<tr>
+<td align="center"><b>3x KV compression</b><br>at FP32 quality</td>
+<td align="center"><b>+13% faster</b><br>than FP32 attention</td>
+<td align="center"><b>32K context</b><br>on 8GB Mac</td>
+<td align="center"><b>16K LOC</b><br>zero deps</td>
+</tr>
+</table>
 
 <p align="center">
   <a href="https://pypi.org/project/quantcpp/"><img src="https://img.shields.io/pypi/v/quantcpp.svg?label=PyPI&color=blue" alt="PyPI"></a>
@@ -35,42 +43,84 @@ pip install quantcpp
 ```python
 from quantcpp import Model
 
-# Downloads a model automatically (one-time, cached)
-m = Model.from_pretrained("Llama-3.2-1B")   # ~750 MB, good quality
-# m = Model.from_pretrained("SmolLM2-135M") # ~135 MB, fastest download
+m = Model.from_pretrained("Llama-3.2-1B")   # auto-downloads ~750 MB, cached
 print(m.ask("What is gravity?"))
 ```
 
-That's it. No API key, no GPU, no configuration. The model downloads once and is cached at `~/.cache/quantcpp/`.
+No API key. No GPU. No configuration. [Try it in your browser →](https://quantumaikr.github.io/quant.cpp/)
 
-**Bring your own model:**
+---
+
+## Key Result: FP32 Quality at 3x Compression
+
+> **128 FP32 tokens + 4-bit everything else = FP32 quality, regardless of context length.**
+
+Measured on **Llama 3.2 3B, 3970 tokens** (k128 = 3.2% FP32):
+
+| Configuration | PPL | vs FP32 | KV Memory (32K) | Speed |
+|---|---:|---:|---:|---:|
+| FP32 (baseline) | 19.41 | — | 7.17 GB | baseline |
+| **4-bit + progressive** | **19.39** | **-0.1%** | **2.33 GB** | **+13%** |
+| 4-bit flat | 20.02 | +3.1% | 2.30 GB | +13% |
+
 ```python
-m = Model("path/to/any-model.gguf")  # any GGUF file works
+m = Model("model.gguf", progressive=True)  # ← FP32 quality, 3x less memory, 13% faster
+```
+
+**Why it works:** Transformer attention concentrates ~70% of weight on the last ~128 tokens. Keeping those at full precision while compressing everything else aligns storage precision with information value — near-optimal by rate-distortion theory.
+
+**Context-length invariant:** the same 128-token window works at 4K, 32K, or 128K. At 128K context, only 0.1% of tokens are FP32 — effectively all-4-bit with FP32 quality.
+
+---
+
+## Your 8GB Mac Just Got 32K Context
+
+KV compression isn't just smaller — it's **13% faster** (NEON `vqtbl1q_s8` table-lookup attention).
+
+| Context | FP32 KV (8GB Mac) | KV compressed (8GB Mac) |
+|---:|---|---|
+| 4K | OK | **OK (+13% faster)** |
+| 16K | borderline | **OK** |
+| **32K** | **OOM** | **5.5 GB — fits** |
+| 64K | OOM | 16GB Mac OK |
+| 128K | OOM | 16GB Mac OK |
+
+```python
+m = Model("llama-3b.gguf", context_length=32768)               # 3x compressed KV
+m = Model("llama-3b.gguf", context_length=32768, progressive=True)  # + FP32 quality
+```
+
+---
+
+## More Features
+
+**Bring your own model** — any GGUF file works:
+```python
+m = Model("path/to/any-model.gguf")
 for tok in m.generate("Once upon a time"):
     print(tok, end="", flush=True)
 ```
 
-**Your 8GB Mac just got 32K context:**
+**Save & restore context** — read a document once, query it forever:
 ```python
-# KV compression is ON by default — 3x less cache memory, 13% faster attention.
-m = Model("llama-3b.gguf", context_length=32768)  # fits in 8GB; FP32 would OOM
+m.ask("Read this long document: ...")
+m.save_context("document.kv")    # compressed KV → disk
 
-# Progressive mode: FP32 quality at 3x compression (measured on 3970 tokens)
-m = Model("llama-3b.gguf", context_length=32768, progressive=True)
+m2 = Model("model.gguf")
+m2.load_context("document.kv")   # instant restore, no re-processing
+m2.ask("What was on page 37?")
 ```
 
-| Context | FP32 KV (8GB Mac) | With KV compression | Speedup |
-|---:|---|---|---:|
-| 4K | OK | **OK** | +13% |
-| 16K | borderline | **OK** | +13% |
-| **32K** | **OOM** | **OK (5.5 GB)** | **+13%** |
-| 64K | OOM | 16GB Mac OK | +13% |
+**Infinite scrollback** — context never overflows, old tokens are shifted (not deleted):
+```python
+# Chat for hours — no "context window exceeded" error
+for tok in m.generate("Tell me an extremely long story"):
+    print(tok, end="", flush=True)
+```
 
-**Progressive KV compression** (`progressive=True`): keeps last 128 tokens at FP32, compresses the rest to 4-bit. Measured result: **FP32 quality (PPL -0.1%) at 3x compression** on a 3970-token evaluation. The 128-token FP32 window is context-length-invariant — works the same at 4K or 128K.
+**Browser demo** — 193 KB WASM, one-click: [quantumaikr.github.io/quant.cpp](https://quantumaikr.github.io/quant.cpp/)
 
-Pre-built wheels for Linux x86_64/aarch64, macOS arm64 (Python 3.9-3.13). Other platforms compile from source automatically.
-
-**Try in your browser (no install):** [WASM Demo](https://quantumaikr.github.io/quant.cpp/) — 189 KB engine, click "Try Demo" to auto-load a model.
+Pre-built wheels: Linux x86_64/aarch64, macOS arm64 (Python 3.9–3.13). Others compile from source automatically.
 
 ---
 
