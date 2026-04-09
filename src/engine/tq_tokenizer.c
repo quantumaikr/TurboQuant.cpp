@@ -1229,44 +1229,156 @@ int tq_encode(const tq_tokenizer_t* tok, const char* text,
         }
     }
 
-    /* BPE merge pass: repeatedly merge the highest-priority pair.
-     * A merge has higher priority if its score is larger.
-     * We check all consecutive token pairs against the merge table. */
-    while (n_tokens >= 2) {
-        float best_score = -1e30f;
-        int best_idx = -1;
-        int best_id = -1;
+    /* BPE merge pass using a max-heap for O(n log n) instead of O(n²).
+     *
+     * The naive algorithm scans all pairs on each merge step → O(n²).
+     * For 17K initial tokens (GPT2 byte-level), that's ~289M ops = minutes.
+     *
+     * Heap approach:
+     * 1. Build a heap of all mergeable consecutive pairs (score, position)
+     * 2. Pop max-score pair, apply merge, invalidate stale entries
+     * 3. Insert new pairs formed at the merge point
+     * 4. O(n log n) total: n initial inserts + n pops + O(1) updates each
+     *
+     * We use a simple binary max-heap with lazy deletion (stale entries
+     * are skipped when popped, identified by a generation counter). */
+    {
+        /* Linked list for O(1) neighbor access after merges */
+        int* prev = (int*)malloc((size_t)n_tokens * sizeof(int));
+        int* next = (int*)malloc((size_t)n_tokens * sizeof(int));
+        if (!prev || !next) { free(prev); free(next); return n_tokens; }
+        for (int i = 0; i < n_tokens; i++) { prev[i] = i - 1; next[i] = i + 1; }
 
+        /* Heap entry: (score, left_pos, merge_id, generation) */
+        typedef struct { float score; int pos; int merge_id; int gen; } heap_entry_t;
+        int heap_cap = n_tokens + 16;
+        heap_entry_t* heap = (heap_entry_t*)malloc((size_t)heap_cap * sizeof(heap_entry_t));
+        int* gen = (int*)calloc((size_t)n_tokens, sizeof(int)); /* per-position generation */
+        if (!heap || !gen) { free(prev); free(next); free(heap); free(gen); return n_tokens; }
+        int heap_size = 0;
+
+        /* Heap helpers (max-heap by score) */
+        #define HEAP_PARENT(i) (((i)-1)/2)
+        #define HEAP_LEFT(i)   (2*(i)+1)
+        #define HEAP_RIGHT(i)  (2*(i)+2)
+        #define HEAP_SWAP(a,b) { heap_entry_t _t = heap[a]; heap[a] = heap[b]; heap[b] = _t; }
+
+        void* _dummy_ptr = NULL; (void)_dummy_ptr; /* suppress unused warning */
+
+        /* Sift up */
+        int sift_up_idx = 0;
+        #define SIFT_UP(idx) do { \
+            sift_up_idx = (idx); \
+            while (sift_up_idx > 0 && heap[sift_up_idx].score > heap[HEAP_PARENT(sift_up_idx)].score) { \
+                HEAP_SWAP(sift_up_idx, HEAP_PARENT(sift_up_idx)); \
+                sift_up_idx = HEAP_PARENT(sift_up_idx); \
+            } \
+        } while(0)
+
+        /* Sift down */
+        #define SIFT_DOWN(idx) do { \
+            int _si = (idx); \
+            for (;;) { \
+                int _best = _si; \
+                int _l = HEAP_LEFT(_si), _r = HEAP_RIGHT(_si); \
+                if (_l < heap_size && heap[_l].score > heap[_best].score) _best = _l; \
+                if (_r < heap_size && heap[_r].score > heap[_best].score) _best = _r; \
+                if (_best == _si) break; \
+                HEAP_SWAP(_si, _best); _si = _best; \
+            } \
+        } while(0)
+
+        /* Try to create a merge entry for position i and its next neighbor */
+        #define TRY_INSERT_PAIR(i) do { \
+            int _ni = next[i]; \
+            if (_ni < n_tokens && tokens[_ni] >= 0) { \
+                const char* _s1 = tok->vocab[tokens[i]]; \
+                const char* _s2 = tok->vocab[tokens[_ni]]; \
+                int _l1 = (int)strlen(_s1), _l2 = (int)strlen(_s2); \
+                if (_l1 + _l2 < 512) { \
+                    char _m[512]; memcpy(_m, _s1, _l1); memcpy(_m+_l1, _s2, _l2); _m[_l1+_l2]=0; \
+                    int _mid = str_lookup(tok, _m); \
+                    if (_mid >= 0) { \
+                        if (heap_size >= heap_cap) { heap_cap *= 2; heap = realloc(heap, (size_t)heap_cap * sizeof(heap_entry_t)); } \
+                        heap[heap_size] = (heap_entry_t){tok->scores[_mid], (i), _mid, gen[i]}; \
+                        SIFT_UP(heap_size); heap_size++; \
+                    } \
+                } \
+            } \
+        } while(0)
+
+        /* Build initial heap */
         for (int i = 0; i < n_tokens - 1; i++) {
-            /* Construct merged string */
-            const char* s1 = tok->vocab[tokens[i]];
-            const char* s2 = tok->vocab[tokens[i + 1]];
-            int len1 = (int)strlen(s1);
-            int len2 = (int)strlen(s2);
-
-            if (len1 + len2 >= 512) continue;
-
-            char merged[512];
-            memcpy(merged, s1, (size_t)len1);
-            memcpy(merged + len1, s2, (size_t)len2);
-            merged[len1 + len2] = '\0';
-
-            int id = str_lookup(tok, merged);
-            if (id >= 0 && tok->scores[id] > best_score) {
-                best_score = tok->scores[id];
-                best_idx = i;
-                best_id = id;
+            int ni = next[i];
+            if (ni < n_tokens) {
+                const char* s1 = tok->vocab[tokens[i]];
+                const char* s2 = tok->vocab[tokens[ni]];
+                int l1 = (int)strlen(s1), l2 = (int)strlen(s2);
+                if (l1 + l2 < 512) {
+                    char merged[512];
+                    memcpy(merged, s1, (size_t)l1);
+                    memcpy(merged + l1, s2, (size_t)l2);
+                    merged[l1 + l2] = '\0';
+                    int mid = str_lookup(tok, merged);
+                    if (mid >= 0) {
+                        if (heap_size >= heap_cap) { heap_cap *= 2; heap = realloc(heap, (size_t)heap_cap * sizeof(heap_entry_t)); }
+                        heap[heap_size] = (heap_entry_t){tok->scores[mid], i, mid, 0};
+                        SIFT_UP(heap_size);
+                        heap_size++;
+                    }
+                }
             }
         }
 
-        if (best_idx < 0) break;
+        /* Merge loop */
+        int active_count = n_tokens;
+        while (heap_size > 0 && active_count >= 2) {
+            /* Pop max */
+            heap_entry_t top = heap[0];
+            heap[0] = heap[--heap_size];
+            if (heap_size > 0) { SIFT_DOWN(0); }
 
-        /* Apply the merge */
-        tokens[best_idx] = best_id;
-        for (int i = best_idx + 1; i < n_tokens - 1; i++) {
-            tokens[i] = tokens[i + 1];
+            /* Check if stale (position was already merged) */
+            if (top.gen != gen[top.pos]) continue;
+            int ri = next[top.pos];
+            if (ri >= n_tokens || tokens[ri] < 0) continue;
+
+            /* Apply merge: left absorbs right */
+            tokens[top.pos] = top.merge_id;
+            tokens[ri] = -1; /* mark dead */
+            gen[top.pos]++;  /* invalidate old entries for this position */
+
+            /* Update linked list: skip the dead right node */
+            int rr = next[ri];
+            next[top.pos] = rr;
+            if (rr < n_tokens) prev[rr] = top.pos;
+            active_count--;
+
+            /* Insert new pairs: (prev_of_left, left) and (left, next_of_right) */
+            if (prev[top.pos] >= 0 && tokens[prev[top.pos]] >= 0) {
+                gen[prev[top.pos]]++;
+                TRY_INSERT_PAIR(prev[top.pos]);
+            }
+            if (next[top.pos] < n_tokens && tokens[next[top.pos]] >= 0) {
+                TRY_INSERT_PAIR(top.pos);
+            }
         }
-        n_tokens--;
+
+        /* Compact: remove dead tokens */
+        int out = 0;
+        for (int i = 0; i < n_tokens; i++) {
+            if (tokens[i] >= 0) tokens[out++] = tokens[i];
+        }
+        n_tokens = out;
+
+        free(prev); free(next); free(heap); free(gen);
+        #undef HEAP_PARENT
+        #undef HEAP_LEFT
+        #undef HEAP_RIGHT
+        #undef HEAP_SWAP
+        #undef SIFT_UP
+        #undef SIFT_DOWN
+        #undef TRY_INSERT_PAIR
     }
 
     return n_tokens;
