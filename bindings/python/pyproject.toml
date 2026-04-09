@@ -1,5 +1,8 @@
 [build-system]
-requires = ["setuptools>=64", "wheel"]
+# setuptools 77+ enforces PEP 639 license validation which requires
+# packaging>=24.2 in the build env — older Python builds in cibuildwheel
+# don't have it. Pin <77 until we migrate fully to PEP 639.
+requires = ["setuptools>=64,<77", "wheel", "packaging>=24.2"]
 build-backend = "setuptools.build_meta"
 
 [project]
