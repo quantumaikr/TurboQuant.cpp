@@ -52,5 +52,15 @@ degradation from +3.8% to +0.6% at 28 KB cost.
 - Added progressive=True to Model()
 - Published v0.10.0 to PyPI
 
-### Round 3: Infinite Scrollback (IN PROGRESS)
-- Goal: replace "context exceeded → stop" with "context full → compress oldest → continue"
+### Round 3: Infinite Scrollback (DONE)
+- Implemented context shift in tq_generate.c + quant.h
+- Verified: SmolLM2-135M at ctx=64, 500 tokens with 9 auto-shifts
+- Context never overflows — generation continues seamlessly
+
+### Round 4: Compressed Persistence (DONE)
+- quant_save_context / quant_load_context API
+- QKVC file format: 64-byte header + raw compressed KV data
+- Python: m.save_context("doc.kv") / m.load_context("doc.kv")
+- "Read once, query forever" — verified round-trip
+
+### Round 5: Next — S5 WASM Demo or PyPI publish v0.10.0
