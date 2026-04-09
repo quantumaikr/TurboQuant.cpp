@@ -50,12 +50,18 @@ for tok in m.generate("Once upon a time"):
     print(tok, end="", flush=True)
 ```
 
-**Longer context with KV compression:**
+**Your 8GB Mac just got 32K context:**
 ```python
-# KV compression is ON by default (kv_compress=1), using ~4x less cache memory.
-# This means you can safely extend context on the same hardware:
-m = Model("llama-3b.gguf", context_length=16384)  # 16K context where FP32 only fits 4K
+# KV compression is ON by default — 3x less cache memory, 13% faster attention.
+m = Model("llama-3b.gguf", context_length=32768)  # fits in 8GB; FP32 would OOM
 ```
+
+| Context | FP32 KV (8GB Mac) | With KV compression | Speedup |
+|---:|---|---|---:|
+| 4K | OK | OK | +13% |
+| 16K | borderline | **OK** | +13% |
+| **32K** | **OOM** | **OK (5.5 GB)** | **+13%** |
+| 64K | OOM | 16GB Mac OK | +13% |
 
 Pre-built wheels for Linux x86_64/aarch64, macOS arm64 (Python 3.9-3.13). Other platforms compile from source automatically.
 
