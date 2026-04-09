@@ -1,6 +1,6 @@
-# Reddit r/LocalLLaMA — quantcpp v0.8.1 + `pip install` (EN)
+# Reddit r/LocalLLaMA — quantcpp v0.9.2 + `pip install` (EN)
 
-**Suggested title:** `[Project] quantcpp 0.8.1 — single-header KV-compressed LLM engine, now on PyPI`
+**Suggested title:** `[Project] quantcpp — "The SQLite of LLMs". Add AI to any C project with one 16K-line file. Now on PyPI.`
 
 **Suggested flair:** `Resources` or `Other`
 
@@ -8,7 +8,7 @@
 
 ## Body
 
-We just shipped **quantcpp 0.8.1** — a single-header C inference engine focused on **KV cache compression research**, now installable from PyPI:
+We just shipped **quantcpp 0.9.2** — a single-header C inference engine that you can `pip install` and use in 3 lines:
 
 ```bash
 pip install quantcpp
@@ -16,11 +16,12 @@ pip install quantcpp
 
 ```python
 from quantcpp import Model
-m = Model("model.gguf")
-print(m.ask("What is 2+2?"))
+
+m = Model.from_pretrained("Llama-3.2-1B")  # auto-downloads ~750MB GGUF
+print(m.ask("What is gravity?"))
 ```
 
-Pre-built wheels for Linux x86_64, Linux aarch64, macOS arm64 (CPython 3.9–3.13). Other platforms fall back to source distribution and compile `quant.h` automatically — zero runtime dependencies.
+No API key, no GPU, no configuration. Model downloads once, cached locally. KV cache compression is on by default (4-bit, ~4x memory reduction). Pre-built wheels for Linux x86_64/aarch64, macOS arm64 (Python 3.9–3.13).
 
 ### What it is
 
