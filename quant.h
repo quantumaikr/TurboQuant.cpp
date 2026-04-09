@@ -15497,7 +15497,38 @@ int tq_generate(tq_model_t* model, tq_tokenizer_t* tokenizer,
             if (next_token == eos_tokens[e]) { is_eos = 1; break; }
         }
         if (is_eos) break;
-        if (pos >= model->config.max_seq_len) break;
+        /* Infinite scrollback: shift KV cache when context is full */
+        if (pos >= model->config.max_seq_len) {
+            int max_seq = model->config.max_seq_len;
+            int keep = max_seq / 2;
+            int discard = pos - keep;
+            if (discard <= 0) break;
+            int kv_dim = model->config.n_kv_heads * model->config.head_dim;
+            for (int l = 0; l < model->config.n_layers; l++) {
+                size_t off = (size_t)l * max_seq * kv_dim;
+                if (state->key_cache)
+                    memmove(state->key_cache + off,
+                            state->key_cache + off + (size_t)discard * kv_dim,
+                            (size_t)keep * kv_dim * sizeof(float));
+                if (state->value_cache)
+                    memmove(state->value_cache + off,
+                            state->value_cache + off + (size_t)discard * kv_dim,
+                            (size_t)keep * kv_dim * sizeof(float));
+                if (state->value_cache_fp16) {
+                    size_t off16 = (size_t)l * max_seq * kv_dim;
+                    memmove(state->value_cache_fp16 + off16,
+                            state->value_cache_fp16 + off16 + (size_t)discard * kv_dim,
+                            (size_t)keep * kv_dim * sizeof(uint16_t));
+                }
+                if (state->quant_key_cache && state->kv_quant_type < TQ_TYPE_COUNT) {
+                    size_t bsz = tq_type_type_size(state->kv_quant_type);
+                    size_t qs = (size_t)max_seq * bsz;
+                    uint8_t* qb = (uint8_t*)state->quant_key_cache + (size_t)l * qs;
+                    memmove(qb, qb + (size_t)discard * bsz, (size_t)keep * bsz);
+                }
+            }
+            pos = keep;
+        }
 
         /* Decode token to text */
         if (tokenizer) {

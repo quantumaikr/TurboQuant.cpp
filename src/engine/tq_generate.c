@@ -7,6 +7,7 @@
  *   - Full generation loop with streaming callback
  */
 
+#include "turboquant/turboquant.h"
 #include "turboquant/tq_engine.h"
 #include "turboquant/tq_gguf.h"
 #include <stdlib.h>
@@ -321,7 +322,59 @@ int tq_generate(tq_model_t* model, tq_tokenizer_t* tokenizer,
             if (next_token == eos_tokens[e]) { is_eos = 1; break; }
         }
         if (is_eos) break;
-        if (pos >= model->config.max_seq_len) break;
+        /* Infinite scrollback: when context is full, shift the KV cache
+         * instead of stopping. Keep the last half of the context (including
+         * the FP32 hot window) and discard the oldest half. This mirrors
+         * human memory: ancient context fades, recent stays sharp.
+         *
+         * After shift, pos is reset to keep_count and generation continues.
+         * The KV cache data for discarded positions is simply overwritten
+         * by future tokens — no explicit deletion needed for the quantized
+         * cache (block-indexed by position modulo max_seq_len). */
+        if (pos >= model->config.max_seq_len) {
+            int max_seq = model->config.max_seq_len;
+            int keep_count = max_seq / 2;  /* keep most recent half */
+            int discard = pos - keep_count;
+            if (discard <= 0) break;  /* safety: can't shift if nothing to discard */
+
+            fprintf(stderr, "[infinite scrollback] context full at %d, "
+                    "shifting: discard oldest %d, keep %d\n",
+                    pos, discard, keep_count);
+
+            /* Shift FP32 key/value caches (if present) */
+            int kv_dim = model->config.n_kv_heads * model->config.head_dim;
+            for (int l = 0; l < model->config.n_layers; l++) {
+                size_t layer_off = (size_t)l * max_seq * kv_dim;
+                if (state->key_cache) {
+                    memmove(state->key_cache + layer_off,
+                            state->key_cache + layer_off + (size_t)discard * kv_dim,
+                            (size_t)keep_count * kv_dim * sizeof(float));
+                }
+                if (state->value_cache) {
+                    memmove(state->value_cache + layer_off,
+                            state->value_cache + layer_off + (size_t)discard * kv_dim,
+                            (size_t)keep_count * kv_dim * sizeof(float));
+                }
+                if (state->value_cache_fp16) {
+                    size_t layer_off16 = (size_t)l * max_seq * kv_dim;
+                    memmove(state->value_cache_fp16 + layer_off16,
+                            state->value_cache_fp16 + layer_off16 + (size_t)discard * kv_dim,
+                            (size_t)keep_count * kv_dim * sizeof(uint16_t));
+                }
+                /* Quantized K cache: shift block-level data */
+                if (state->quant_key_cache && state->kv_quant_type < TQ_TYPE_COUNT) {
+                    size_t blk_sz = tq_type_type_size(state->kv_quant_type);
+                    size_t q_stride = (size_t)max_seq * blk_sz;
+                    uint8_t* qbase = (uint8_t*)state->quant_key_cache + (size_t)l * q_stride;
+                    memmove(qbase,
+                            qbase + (size_t)discard * blk_sz,
+                            (size_t)keep_count * blk_sz);
+                }
+            }
+
+            /* Reset position */
+            pos = keep_count;
+        }
 
         /* Decode token to text */
         if (tokenizer) {
