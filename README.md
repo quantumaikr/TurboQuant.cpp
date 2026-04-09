@@ -34,7 +34,7 @@ pip install quantcpp
 ```python
 from quantcpp import Model
 
-m = Model("model.gguf")
+m = Model("path/to/your.gguf")  # any GGUF file you have on disk
 print(m.ask("What is 2+2?"))
 
 # Streaming
@@ -310,18 +310,23 @@ Models with QK-norm normalize keys to the unit sphere, creating extremely sparse
 
 ## Advanced Usage
 
+> **Note:** `MODEL` below is a placeholder for **your** GGUF file path. The Quick Start above downloads `models/SmolLM2-135M-Instruct-Q8_0.gguf` — you can paste that path directly, or substitute any other GGUF you have. There is no file literally named `model.gguf`.
+
 ```bash
+# Pick any GGUF you have on disk (this is the one from Quick Start):
+MODEL=models/SmolLM2-135M-Instruct-Q8_0.gguf
+
 # Delta compression (maximum context, 8.5x)
-./build/quant model.gguf --chat -p "hello" -k uniform_3b -v q4 --delta
+./build/quant $MODEL --chat -p "hello" -k uniform_3b -v q4 --delta
 
 # Perplexity benchmark
-./build/quant model.gguf --ppl input.txt -k uniform_4b -v q4
+./build/quant $MODEL --ppl input.txt -k uniform_4b -v q4
 
 # Model info
-./build/quant model.gguf --info
+./build/quant $MODEL --info
 
 # Performance profiling
-./build/quant model.gguf --chat -p "hello" -n 50 --profile
+./build/quant $MODEL --chat -p "hello" -n 50 --profile
 ```
 
 ---
@@ -335,7 +340,7 @@ Models with QK-norm normalize keys to the unit sphere, creating extremely sparse
 #include "quant.h"
 
 int main() {
-    quant_model* m = quant_load("model.gguf");
+    quant_model* m = quant_load("path/to/your.gguf");  // any GGUF file
     quant_ctx*   c = quant_new(m, NULL);
     
     // Streaming
@@ -387,13 +392,15 @@ Everything runs client-side. Nothing is uploaded. KV compression active by defau
 **Docker** (zero-dependency, ~10MB image):
 ```bash
 docker build -t quant.cpp .
-docker run -v ./models:/models quant.cpp /models/model.gguf -p "hello" -k uniform_4b -v q4
+docker run -v ./models:/models quant.cpp /models/SmolLM2-135M-Instruct-Q8_0.gguf -p "hello" -k uniform_4b -v q4
+# Replace SmolLM2-135M-Instruct-Q8_0.gguf with whatever GGUF you placed in ./models
 ```
 
 **OpenAI-compatible server** (`/v1/chat/completions`):
 ```bash
 cmake -B build -DTQ_BUILD_SERVER=ON && cmake --build build
-./build/quant-server model.gguf -p 8080 -k uniform_4b
+./build/quant-server models/SmolLM2-135M-Instruct-Q8_0.gguf -p 8080 -k uniform_4b
+# Substitute your own GGUF path as needed
 
 # Works with the OpenAI Python SDK
 curl http://localhost:8080/v1/chat/completions \
@@ -413,7 +420,7 @@ cd bindings/python && pip install .
 ```python
 from quantcpp import Model
 
-with Model("model.gguf", kv_compress=1) as m:
+with Model("models/SmolLM2-135M-Instruct-Q8_0.gguf", kv_compress=1) as m:  # use your own GGUF path
     print(m.ask("What is the capital of France?"))
 
     # Streaming
