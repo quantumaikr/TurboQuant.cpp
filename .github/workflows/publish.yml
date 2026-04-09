@@ -29,9 +29,9 @@ jobs:
         include:
           - os: ubuntu-latest
             arch: x86_64
-          - os: ubuntu-latest
+          - os: ubuntu-24.04-arm   # Native ARM runner (free, no QEMU)
             arch: aarch64
-          - os: macos-14      # Apple Silicon (M-series). Intel macs deferred.
+          - os: macos-14           # Apple Silicon (M-series). Intel macs deferred.
             arch: arm64
           # Windows mingw64 wheel is deferred — quant.h's clock_gettime shim
           # conflicts with mingw's native one. Windows users install via sdist
@@ -42,12 +42,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Set up QEMU (linux aarch64 emulation)
-        if: matrix.os == 'ubuntu-latest' && matrix.arch == 'aarch64'
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
 
       # cibuildwheel mounts only the package-dir into Linux build containers,
       # so quant.h must already live inside bindings/python/ before invoke.
