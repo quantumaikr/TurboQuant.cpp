@@ -9982,24 +9982,11 @@ static tq_model_t* tq_load_safetensors(const char* path) {
 
     free(tensors);
 
-    /* Qwen RMSNorm adjustment: Qwen's RMSNorm computes
-     * output = norm(x) * (1.0 + weight), NOT norm(x) * weight.
-     * We bake the "+1" into the weight so tq_rmsnorm can stay as
-     * out = x * rsqrt * weight.
-     *
-     * This applies to: input_layernorm, post_attention_layernorm,
-     * model.norm, q_norm, k_norm.
-     * It does NOT apply to: linear_attn.norm (Qwen3_5RMSNormGated
-     * uses plain weight without +1).
-     *
-     * Applies to all Qwen-family models (qwen2, qwen3, qwen3_5, etc.)
-     * Detected by arch string or DeltaNet presence. */
-    int is_qwen_family = (model->config.delta_n_heads > 0);
-    if (model->gguf_ctx) {
-        const tq_gguf_ctx_t* gctx = (const tq_gguf_ctx_t*)model->gguf_ctx;
-        if (strstr(gctx->arch, "qwen") != NULL) is_qwen_family = 1;
-    }
-    if (is_qwen_family) {
+    /* Qwen3.5 (DeltaNet hybrid) RMSNorm adjustment.
+     * Only for non-GGUF models (raw checkpoints). GGUF files from
+     * llama.cpp already have +1 baked in by the converter.
+     * Qwen2/Qwen3 use standard RMSNorm and never need +1. */
+    if (model->config.delta_n_heads > 0 && !model->gguf_ctx) {
         int dim_h = model->config.hidden_dim;
         int head_dim_h = model->config.head_dim;
 

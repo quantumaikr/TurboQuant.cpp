@@ -4065,6 +4065,13 @@ skip_q4_conversion: ;
 
     #undef GGUF_KEY
 
+    /* NOTE: No runtime RMSNorm +1 adjustment for GGUF models.
+     * - Qwen2/Qwen3: standard RMSNorm (weight * norm(x)), no +1 needed.
+     * - Qwen3.5/Gemma: use (1+weight) convention, but llama.cpp's GGUF
+     *   converter already bakes +1 into the weights during conversion.
+     *   Adding +1 at runtime would double-apply and cause activation explosion.
+     * The Gemma heuristic above (mean > 2.0 check) handles the Gemma case. */
+
     /* Initialize persistent Metal GPU buffers for layer-level compute */
 #ifdef TQ_HAS_METAL
     {
