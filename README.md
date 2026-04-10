@@ -14,7 +14,7 @@
 <tr>
 <td align="center"><b>3x less memory</b><br>same quality</td>
 <td align="center"><b>13% faster</b><br>than uncompressed</td>
-<td align="center"><b>32K context</b><br>on 8GB Mac</td>
+<td align="center"><b>128K context</b><br>on 16GB Mac</td>
 <td align="center"><b>16K LOC</b><br>zero deps</td>
 </tr>
 </table>
@@ -82,21 +82,21 @@ m = Model("model.gguf", progressive=True)  # ← FP32 quality, 3x less memory, 1
 
 ---
 
-## Your 8GB Mac Just Got 32K Context
+## 128K Context on 16GB Mac — Measured
 
-KV compression isn't just smaller — it's **13% faster** (NEON `vqtbl1q_s8` table-lookup attention).
+Llama 3.2 3B with 6.4x KV compression. **Real RSS measured on M1 Pro 16GB:**
 
-| Context | FP32 KV (8GB Mac) | KV compressed (8GB Mac) |
-|---:|---|---|
-| 4K | OK | **OK (+13% faster)** |
-| 16K | borderline | **OK** |
-| **32K** | **OOM** | **5.5 GB — fits** |
-| 64K | OOM | 16GB Mac OK |
-| 128K | OOM | 16GB Mac OK |
+| Context | FP32 KV | **quant.cpp 6.4x** | Savings | Speed |
+|---:|---:|---:|---:|---:|
+| 16K | 8.5 GB | **6.5 GB** | **-2.0 GB** | 6.6 tok/s |
+| 32K | 9.6 GB | **8.2 GB** | **-1.4 GB** | 4.9 tok/s |
+| 65K | — | **8.5 GB** | — | 1.6 tok/s |
+| **128K** | **OOM** | **9.5 GB** | — | 0.8 tok/s |
+
+128K context with a 3B model in 9.5 GB. Generation speed is the same as FP32 (6.6 vs 6.5 tok/s at 16K).
 
 ```python
-m = Model("llama-3b.gguf", context_length=32768)               # 3x compressed KV
-m = Model("llama-3b.gguf", context_length=32768, progressive=True)  # + FP32 quality
+m = Model("llama-3b.gguf", aggressive=True, context_length=131072)  # 128K in 9.5 GB
 ```
 
 ---
