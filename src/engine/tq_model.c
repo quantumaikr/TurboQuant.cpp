@@ -1517,7 +1517,7 @@ static tq_model_t* tq_load_safetensors(const char* path) {
 
     free(tensors);
 
-    /* Qwen3.5 RMSNorm adjustment: Qwen3_5RMSNorm computes
+    /* Qwen RMSNorm adjustment: Qwen's RMSNorm computes
      * output = norm(x) * (1.0 + weight), NOT norm(x) * weight.
      * We bake the "+1" into the weight so tq_rmsnorm can stay as
      * out = x * rsqrt * weight.
@@ -1527,8 +1527,14 @@ static tq_model_t* tq_load_safetensors(const char* path) {
      * It does NOT apply to: linear_attn.norm (Qwen3_5RMSNormGated
      * uses plain weight without +1).
      *
-     * We detect Qwen3.5 by the presence of DeltaNet layers. */
-    if (model->config.delta_n_heads > 0) {
+     * Applies to all Qwen-family models (qwen2, qwen3, qwen3_5, etc.)
+     * Detected by arch string or DeltaNet presence. */
+    int is_qwen_family = (model->config.delta_n_heads > 0);
+    if (model->gguf_ctx) {
+        const tq_gguf_ctx_t* gctx = (const tq_gguf_ctx_t*)model->gguf_ctx;
+        if (strstr(gctx->arch, "qwen") != NULL) is_qwen_family = 1;
+    }
+    if (is_qwen_family) {
         int dim_h = model->config.hidden_dim;
         int head_dim_h = model->config.head_dim;
 
@@ -1557,7 +1563,7 @@ static tq_model_t* tq_load_safetensors(const char* path) {
             for (int i = 0; i < dim_h; i++)
                 model->output_norm[i] += 1.0f;
         }
-        fprintf(stderr, "tq_load_model: applied Qwen3.5 RMSNorm +1 weight adjustment\n");
+        fprintf(stderr, "tq_load_model: applied Qwen RMSNorm +1 weight adjustment\n");
     }
 
     /* Gemma3 RMSNorm adjustment: same (1+w) scaling as Qwen3.5 */
