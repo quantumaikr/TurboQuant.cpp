@@ -405,11 +405,11 @@ async function generate() {
 
     addMessage('user', text);
     const aDiv = addMessage('assistant', '');
-    aDiv.innerHTML = '<span class="thinking"><span class="spinner"></span> Thinking...</span>';
+    aDiv.innerHTML = '<span class="thinking"><span class="spinner"></span> Processing prompt (may take a few seconds)...</span>';
     let output = '', count = 0;
     const t0 = performance.now();
     document.getElementById('statTokens').textContent = '';
-    document.getElementById('statSpeed').textContent = 'prefill...';
+    document.getElementById('statSpeed').textContent = 'processing prompt...';
 
     Module.onToken = (tok) => {
         output += tok; count++;
