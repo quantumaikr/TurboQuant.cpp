@@ -28,6 +28,7 @@
   <br>
   <a href="#"><img src="https://img.shields.io/badge/models-7%20verified-blue" alt="Models"></a>
   <a href="https://quantumaikr.github.io/quant.cpp/"><img src="https://img.shields.io/badge/WASM_demo-192KB-purple" alt="WASM"></a>
+  <a href="https://quantumaikr.github.io/quant.cpp/guide/"><img src="https://img.shields.io/badge/guide-How_it_Works-blueviolet" alt="Guide"></a>
   <a href="#"><img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20WASM-orange" alt="Platforms"></a>
 </p>
 
@@ -55,7 +56,7 @@ quantcpp
 # AI: Gravity is a fundamental force...
 ```
 
-Downloads Llama-3.2-1B (~750 MB) on first use, cached locally. No API key, no GPU. [Try in browser →](https://quantumaikr.github.io/quant.cpp/)
+Downloads Llama-3.2-1B (~750 MB) on first use, cached locally. No API key, no GPU. [Try in browser →](https://quantumaikr.github.io/quant.cpp/) · [**How it works — Interactive Guide →**](https://quantumaikr.github.io/quant.cpp/guide/)
 
 ---
 

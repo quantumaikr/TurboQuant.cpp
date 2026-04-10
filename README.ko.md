@@ -17,6 +17,7 @@
   <a href="https://github.com/quantumaikr/quant.cpp/releases/latest"><img src="https://img.shields.io/github/v/release/quantumaikr/quant.cpp?label=release" alt="Release"></a>
   <a href="#"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License"></a>
   <a href="#"><img src="https://img.shields.io/badge/tests-35%20pass-brightgreen" alt="Tests"></a>
+  <a href="https://quantumaikr.github.io/quant.cpp/guide/"><img src="https://img.shields.io/badge/guide-작동_원리-blueviolet" alt="Guide"></a>
 </p>
 
 ---
@@ -34,7 +35,7 @@ m = Model.from_pretrained("Llama-3.2-1B")  # 모델 자동 다운로드 (~750 MB
 print(m.ask("중력이란 무엇인가요?"))
 ```
 
-API 키 없음. GPU 없음. 설정 없음. [브라우저에서 바로 체험 →](https://quantumaikr.github.io/quant.cpp/)
+API 키 없음. GPU 없음. 설정 없음. [브라우저에서 바로 체험 →](https://quantumaikr.github.io/quant.cpp/) · [**작동 원리 가이드 →**](https://quantumaikr.github.io/quant.cpp/guide/)
 
 ---
 
