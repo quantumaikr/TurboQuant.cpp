@@ -53,6 +53,11 @@ _MODEL_REGISTRY = {
         "smollm2-135m-instruct-q8_0.gguf",
         135,
     ),
+    "Qwen3-0.6B": (
+        "unsloth/Qwen3-0.6B-GGUF",
+        "Qwen3-0.6B-Q4_K_M.gguf",
+        378,
+    ),
     "Llama-3.2-1B": (
         "hugging-quants/Llama-3.2-1B-Instruct-Q4_K_M-GGUF",
         "llama-3.2-1b-instruct-q4_k_m.gguf",

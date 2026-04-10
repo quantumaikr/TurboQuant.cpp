@@ -3,6 +3,10 @@
  *
  * Compiled with Emscripten: emcc quant_wasm.c -o quant.js
  * Uses the single-header quant.h for zero-dependency builds.
+ *
+ * Build with -sASYNCIFY to enable wasm_generate_async(), which
+ * yields to the browser event loop between tokens for real-time
+ * streaming output.
  */
 
 #define QUANT_IMPLEMENTATION
@@ -33,8 +37,23 @@ EM_JS(void, js_on_status, (const char* msg), {
     if (Module.onStatus) Module.onStatus(UTF8ToString(msg));
 });
 
-/* Token callback for streaming */
-static void on_token(const char* text, void* ud) {
+/* Token callback for streaming — calls JS then yields to browser */
+static void on_token_streaming(const char* text, void* ud) {
+    (void)ud;
+    js_on_token(text);
+    int len = (int)strlen(text);
+    if (g_output_pos + len < (int)sizeof(g_output) - 1) {
+        memcpy(g_output + g_output_pos, text, len);
+        g_output_pos += len;
+        g_output[g_output_pos] = '\0';
+    }
+    /* Yield to browser event loop so DOM can repaint with the new token.
+     * emscripten_sleep(0) requires -sASYNCIFY but costs ~0 ms real time. */
+    emscripten_sleep(0);
+}
+
+/* Non-yielding callback (fallback for non-ASYNCIFY builds) */
+static void on_token_sync(const char* text, void* ud) {
     (void)ud;
     js_on_token(text);
     int len = (int)strlen(text);
@@ -82,7 +101,54 @@ int wasm_load_model(const char* path) {
     return 0;
 }
 
-/* Generate response */
+/* Async generate — yields to browser between tokens (requires -sASYNCIFY) */
+EMSCRIPTEN_KEEPALIVE
+int wasm_generate_async(const char* prompt, float temperature, int max_tokens) {
+    if (!g_model || !g_ctx) {
+        js_on_status("Error: no model loaded");
+        return -1;
+    }
+    if (g_generating) {
+        js_on_status("Error: generation in progress");
+        return -1;
+    }
+
+    g_generating = 1;
+    g_output_pos = 0;
+    g_output[0] = '\0';
+
+    quant_config cfg = {
+        .temperature = temperature,
+        .top_p = 0.9f,
+        .max_tokens = max_tokens > 0 ? max_tokens : 256,
+        .n_threads = 1,
+        .kv_compress = 1,
+    };
+
+    if (g_ctx) quant_free_ctx(g_ctx);
+    g_ctx = quant_new(g_model, &cfg);
+
+    double t0 = emscripten_get_now();
+
+    /* Streaming generation — on_token_streaming calls emscripten_sleep(0)
+     * which yields back to the browser event loop after each token. */
+    int n_tokens = quant_generate(g_ctx, prompt, on_token_streaming, NULL);
+
+    double elapsed = emscripten_get_now() - t0;
+
+    if (n_tokens > 0) {
+        js_on_done(n_tokens, elapsed);
+    } else {
+        js_on_done(0, elapsed);
+        if (g_output_pos == 0)
+            js_on_status("No output \xe2\x80\x94 try a different prompt");
+    }
+
+    g_generating = 0;
+    return 0;
+}
+
+/* Sync generate — does NOT yield to browser (fallback) */
 EMSCRIPTEN_KEEPALIVE
 int wasm_generate(const char* prompt, float temperature, int max_tokens) {
     if (!g_model || !g_ctx) {
@@ -98,7 +164,6 @@ int wasm_generate(const char* prompt, float temperature, int max_tokens) {
     g_output_pos = 0;
     g_output[0] = '\0';
 
-    /* Reconfigure if needed */
     quant_config cfg = {
         .temperature = temperature,
         .top_p = 0.9f,
@@ -107,15 +172,11 @@ int wasm_generate(const char* prompt, float temperature, int max_tokens) {
         .kv_compress = 1,
     };
 
-    /* Free old context and create new one for fresh generation */
     if (g_ctx) quant_free_ctx(g_ctx);
     g_ctx = quant_new(g_model, &cfg);
 
     double t0 = emscripten_get_now();
-
-    /* Streaming generation via per-token callback */
-    int n_tokens = quant_generate(g_ctx, prompt, on_token, NULL);
-
+    int n_tokens = quant_generate(g_ctx, prompt, on_token_sync, NULL);
     double elapsed = emscripten_get_now() - t0;
 
     if (n_tokens > 0) {
@@ -123,7 +184,7 @@ int wasm_generate(const char* prompt, float temperature, int max_tokens) {
     } else {
         js_on_done(0, elapsed);
         if (g_output_pos == 0)
-            js_on_status("No output — try a different prompt");
+            js_on_status("No output \xe2\x80\x94 try a different prompt");
     }
 
     g_generating = 0;
@@ -149,6 +210,6 @@ int wasm_is_ready(void) {
 }
 
 int main() {
-    js_on_status("quant.cpp WASM runtime ready. Drop a GGUF model to start.");
+    js_on_status("quant.cpp WASM runtime ready. Choose a model to start.");
     return 0;
 }

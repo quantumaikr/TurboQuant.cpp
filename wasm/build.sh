@@ -32,7 +32,7 @@ emcc "$SCRIPT_DIR/quant_wasm.c" \
     -s ALLOW_MEMORY_GROWTH=1 \
     -s MAXIMUM_MEMORY=4GB \
     -s INITIAL_MEMORY=256MB \
-    -s EXPORTED_FUNCTIONS='["_main","_wasm_load_model","_wasm_generate","_wasm_model_info","_wasm_is_ready","_malloc","_free"]' \
+    -s EXPORTED_FUNCTIONS='["_main","_wasm_load_model","_wasm_generate","_wasm_generate_async","_wasm_model_info","_wasm_is_ready","_malloc","_free"]' \
     -s EXPORTED_RUNTIME_METHODS='["UTF8ToString","allocateUTF8","FS"]' \
     -s FORCE_FILESYSTEM=1 \
     -s MODULARIZE=0 \
@@ -40,6 +40,9 @@ emcc "$SCRIPT_DIR/quant_wasm.c" \
     -s NO_EXIT_RUNTIME=1 \
     -s ASSERTIONS=0 \
     -s STACK_SIZE=1MB \
+    -s ASYNCIFY \
+    -s 'ASYNCIFY_IMPORTS=["emscripten_sleep"]' \
+    -s ASYNCIFY_STACK_SIZE=65536 \
     -lm \
     -DNDEBUG \
     -D__EMSCRIPTEN__ \

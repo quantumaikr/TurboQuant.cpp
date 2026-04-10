@@ -43,14 +43,33 @@ body {
 .dropzone.loaded { border-color: #2a5a3a; background: #0d1a14; padding: 16px; }
 .dropzone.loaded h2 { font-size: 14px; color: #6ee7b7; }
 
+/* Model selector */
+.model-cards {
+    display: flex; gap: 12px; margin-bottom: 16px; justify-content: center; flex-wrap: wrap;
+}
+.model-card {
+    padding: 14px 20px; border: 1px solid #333; border-radius: 10px;
+    cursor: pointer; transition: all 0.2s; text-align: left; min-width: 220px;
+    background: #111;
+}
+.model-card:hover { border-color: #6ee7b7; background: #0d1f17; }
+.model-card.recommended { border-color: #059669; }
+.model-card .name { font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+.model-card .meta { font-size: 12px; color: #888; }
+.model-card .tag {
+    display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 6px;
+    background: #1a3a2a; color: #6ee7b7; margin-top: 6px;
+}
+.model-card .tag.blue { background: #1a2a3a; color: #7bb8f0; }
+
 /* Chat */
 .chat { flex: 1; overflow-y: auto; margin-bottom: 16px; }
-.message { padding: 12px 16px; margin-bottom: 8px; border-radius: 8px; font-size: 14px; line-height: 1.6; }
+.message { padding: 12px 16px; margin-bottom: 8px; border-radius: 8px; font-size: 14px; line-height: 1.6; white-space: pre-wrap; word-wrap: break-word; }
 .message.user { background: #1a1a2e; border: 1px solid #2a2a4e; }
 .message.assistant { background: #111; border: 1px solid #222; }
 .message.assistant .cursor { animation: blink 1s step-end infinite; }
 @keyframes blink { 50% { opacity: 0; } }
-.message.system { color: #666; font-size: 12px; text-align: center; }
+.message.system { color: #666; font-size: 12px; text-align: center; white-space: normal; }
 .message code { background: #1a1a1a; padding: 1px 4px; border-radius: 3px; font-size: 13px; }
 .message pre { background: #1a1a1a; padding: 12px; border-radius: 6px; overflow-x: auto; margin: 8px 0; }
 .message pre code { background: none; padding: 0; }
@@ -92,21 +111,32 @@ body {
 <div class="header">
     <h1>quant<span>.cpp</span></h1>
     <span class="badge">WASM</span>
-    <span class="badge" id="kvBadge" style="display:none">7x Context</span>
+    <span class="badge" id="kvBadge" style="display:none">3x Context</span>
     <a class="github" href="https://github.com/quantumaikr/quant.cpp" target="_blank">GitHub ↗</a>
 </div>
 
 <div class="main">
     <div class="dropzone" id="dropzone">
-        <h2>LLM in Your Browser — 189 KB</h2>
+        <h2>LLM in Your Browser</h2>
         <p style="margin-bottom:16px; color:#6ee7b7; font-size:15px">No install. No API key. No server. Just click.</p>
-        <button id="demoBtn" onclick="loadDemoModel()" style="
-            padding: 12px 32px; font-size: 16px; font-weight: 600;
-            background: #059669; color: white; border: none; border-radius: 8px;
-            cursor: pointer; margin-bottom: 12px;
-        ">▶ Try with SmolLM2-135M (~135 MB download)</button>
+
+        <div class="model-cards" id="modelCards">
+            <div class="model-card recommended" onclick="loadDemoModel('qwen3-0.6b')">
+                <div class="name">Qwen3 0.6B</div>
+                <div class="meta">~378 MB download &middot; Q4_K_M</div>
+                <span class="tag">Recommended</span>
+                <div class="meta" style="margin-top:4px">Fast, multilingual, good for demo</div>
+            </div>
+            <div class="model-card" onclick="loadDemoModel('llama-3.2-1b')">
+                <div class="name">Llama 3.2 1B</div>
+                <div class="meta">~770 MB download &middot; Q4_K_M</div>
+                <span class="tag blue">Higher quality</span>
+                <div class="meta" style="margin-top:4px">Better reasoning, longer wait</div>
+            </div>
+        </div>
+
         <p style="color:#555; font-size:13px">Or <a href="#" onclick="document.getElementById('fileInput').click(); return false" style="color:#6ee7b7">drop your own GGUF</a> file.</p>
-        <p style="margin-top:8px; color:#333; font-size:12px">Runs entirely in your browser. Nothing uploaded to any server.</p>
+        <p style="margin-top:8px; color:#333; font-size:12px">Runs entirely in your browser. Nothing uploaded.</p>
         <input type="file" id="fileInput" accept=".gguf" style="display:none">
     </div>
 
@@ -135,15 +165,36 @@ body {
 let modelLoaded = false;
 let generating = false;
 
+// ---- Model registry ----
+const MODELS = {
+    'qwen3-0.6b': {
+        url: 'https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_K_M.gguf',
+        name: 'Qwen3-0.6B Q4_K_M',
+        size: '~378 MB',
+        cacheKey: 'qwen3-0.6b-q4km',
+        chatTemplate: (text) => `<|im_start|>user\n${text}<|im_end|>\n<|im_start|>assistant\n`,
+    },
+    'llama-3.2-1b': {
+        url: 'https://huggingface.co/hugging-quants/Llama-3.2-1B-Instruct-Q4_K_M-GGUF/resolve/main/llama-3.2-1b-instruct-q4_k_m.gguf',
+        name: 'Llama-3.2-1B-Instruct Q4_K_M',
+        size: '~770 MB',
+        cacheKey: 'llama-3.2-1b-q4km',
+        chatTemplate: (text) => `<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n${text}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n`,
+    },
+};
+let activeModelId = null;
+
 // ---- IndexedDB model cache ----
 const DB_NAME = 'quantcpp_cache';
 const DB_STORE = 'models';
-const DEMO_KEY = 'smollm2-135m';
 
 function openDB() {
     return new Promise((resolve, reject) => {
-        const req = indexedDB.open(DB_NAME, 1);
-        req.onupgradeneeded = () => req.result.createObjectStore(DB_STORE);
+        const req = indexedDB.open(DB_NAME, 2);
+        req.onupgradeneeded = () => {
+            if (!req.result.objectStoreNames.contains(DB_STORE))
+                req.result.createObjectStore(DB_STORE);
+        };
         req.onsuccess = () => resolve(req.result);
         req.onerror = () => reject(req.error);
     });
@@ -199,27 +250,28 @@ function hideLoading() {
 }
 
 // Demo model — cache-first, download only if not in IndexedDB
-async function loadDemoModel() {
-    const url = 'https://huggingface.co/Felladrin/gguf-Q8_0-SmolLM2-135M-Instruct/resolve/main/smollm2-135m-instruct-q8_0.gguf';
-    const btn = document.getElementById('demoBtn');
-    btn.disabled = true;
+async function loadDemoModel(modelId) {
+    const model = MODELS[modelId];
+    if (!model) return;
+
+    activeModelId = modelId;
+    const cards = document.querySelectorAll('.model-card');
+    cards.forEach(c => c.style.pointerEvents = 'none');
 
     try {
         // 1. Try cache first
         showLoading('Checking local cache...');
-        const cached = await getCachedModel(DEMO_KEY);
+        const cached = await getCachedModel(model.cacheKey);
         if (cached) {
-            btn.textContent = 'Loading from cache...';
-            showLoading('Loading cached model...');
-            loadModelFromBytes(new Uint8Array(cached), 'smollm2-135m (cached)');
+            showLoading(`Loading cached ${model.name}...`);
+            loadModelFromBytes(new Uint8Array(cached), `${model.name} (cached)`);
             return;
         }
 
         // 2. Download from HuggingFace
-        btn.textContent = 'Downloading...';
-        showLoading('Downloading SmolLM2-135M (~135 MB)...');
+        showLoading(`Downloading ${model.name} (${model.size})...`);
 
-        const response = await fetch(url);
+        const response = await fetch(model.url);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
         const total = parseInt(response.headers.get('content-length') || '0');
@@ -237,7 +289,7 @@ async function loadDemoModel() {
                 const mb = (received / 1048576).toFixed(0);
                 const totalMb = (total / 1048576).toFixed(0);
                 document.getElementById('loadingText').textContent =
-                    `Downloading... ${pct}% (${mb}/${totalMb} MB)`;
+                    `Downloading ${model.name}... ${pct}% (${mb}/${totalMb} MB)`;
             }
         }
 
@@ -247,26 +299,33 @@ async function loadDemoModel() {
 
         // 3. Cache for next time
         showLoading('Caching model for instant reload...');
-        await cacheModel(DEMO_KEY, arrayBuffer).catch(() => {});
+        await cacheModel(model.cacheKey, arrayBuffer).catch(() => {});
 
         showLoading('Loading model into WASM...');
-        loadModelFromBytes(data, 'smollm2-135m-instruct-q8_0.gguf');
+        loadModelFromBytes(data, model.name);
     } catch (err) {
         hideLoading();
-        btn.disabled = false;
-        btn.textContent = '▶ Try with SmolLM2-135M (~135 MB download)';
+        cards.forEach(c => c.style.pointerEvents = '');
+        activeModelId = null;
         alert('Download failed: ' + err.message + '\n\nTry dropping a local GGUF file instead.');
     }
 }
 
-// Auto-load cached model on page load
+// Auto-detect cached models on page load and show badges
 window.addEventListener('load', async () => {
     try {
-        const cached = await getCachedModel(DEMO_KEY);
-        if (cached) {
-            const btn = document.getElementById('demoBtn');
-            btn.textContent = '▶ Load cached SmolLM2-135M (instant)';
-            btn.style.background = '#047857';
+        for (const [id, model] of Object.entries(MODELS)) {
+            const cached = await getCachedModel(model.cacheKey);
+            if (cached) {
+                const cards = document.querySelectorAll('.model-card');
+                cards.forEach(card => {
+                    if (card.querySelector('.name').textContent.toLowerCase().includes(id.split('-')[0])) {
+                        const meta = card.querySelector('.meta');
+                        meta.textContent = 'Cached — instant load';
+                        meta.style.color = '#6ee7b7';
+                    }
+                });
+            }
         }
     } catch(e) {}
 });
@@ -275,7 +334,11 @@ function addMessage(role, text) {
     const chat = document.getElementById('chat');
     const div = document.createElement('div');
     div.className = `message ${role}`;
-    div.innerHTML = formatText(text);
+    if (role === 'assistant') {
+        div.textContent = '';
+    } else {
+        div.innerHTML = formatText(text);
+    }
     chat.appendChild(div);
     chat.scrollTop = chat.scrollHeight;
     return div;
@@ -290,7 +353,6 @@ function formatText(text) {
 }
 
 function loadModelFromBytes(bytes, name) {
-    // Shared model loading from Uint8Array (used by both file drop and demo download)
     try {
         Module.FS.writeFile('/model.gguf', bytes);
         showLoading('Initializing model...');
@@ -318,6 +380,7 @@ function loadModelFromBytes(bytes, name) {
 async function loadModel(file) {
     showLoading(`Loading ${file.name} (${(file.size/1024/1024).toFixed(0)} MB)...`);
     addMessage('system', `Loading ${file.name}...`);
+    activeModelId = null; // custom model — use generic template
     try {
         const buffer = await file.arrayBuffer();
         const bytes = new Uint8Array(buffer);
@@ -326,6 +389,14 @@ async function loadModel(file) {
         addMessage('system', `Error: ${e.message}`);
     }
     hideLoading();
+}
+
+function getChatPrompt(text) {
+    if (activeModelId && MODELS[activeModelId]) {
+        return MODELS[activeModelId].chatTemplate(text);
+    }
+    // Generic ChatML fallback for custom GGUF
+    return `<|im_start|>user\n${text}<|im_end|>\n<|im_start|>assistant\n`;
 }
 
 async function generate() {
@@ -337,45 +408,65 @@ async function generate() {
     input.value = '';
     generating = true;
     document.getElementById('sendBtn').disabled = true;
+    input.disabled = true;
 
     addMessage('user', text);
-    const assistantDiv = addMessage('assistant', '<span class="cursor">▌</span>');
+    const assistantDiv = addMessage('assistant', '');
     let output = '';
+    let tokenCount = 0;
+    const startTime = performance.now();
 
-    // Set callbacks
+    // Set streaming token callback
     Module.onToken = (token) => {
         output += token;
-        assistantDiv.innerHTML = formatText(output) + '<span class="cursor">▌</span>';
-        document.getElementById('chat').scrollTop = document.getElementById('chat').scrollHeight;
+        tokenCount++;
+        // Update the assistant message with raw text + blinking cursor
+        assistantDiv.textContent = output;
+        const cursor = document.createElement('span');
+        cursor.className = 'cursor';
+        cursor.textContent = '▌';
+        assistantDiv.appendChild(cursor);
+        // Auto-scroll
+        const chat = document.getElementById('chat');
+        chat.scrollTop = chat.scrollHeight;
+        // Live stats
+        const elapsed = (performance.now() - startTime) / 1000;
+        if (elapsed > 0.1) {
+            document.getElementById('statTokens').textContent = `${tokenCount} tokens`;
+            document.getElementById('statSpeed').textContent = `${(tokenCount / elapsed).toFixed(1)} tok/s`;
+        }
     };
+
     Module.onDone = (nTokens, elapsedMs) => {
+        // Final render with markdown formatting
         assistantDiv.innerHTML = formatText(output);
-        const tps = (nTokens / (elapsedMs / 1000)).toFixed(1);
+        const tps = nTokens > 0 ? (nTokens / (elapsedMs / 1000)).toFixed(1) : '0';
         document.getElementById('statTokens').textContent = `${nTokens} tokens`;
         document.getElementById('statSpeed').textContent = `${tps} tok/s`;
         generating = false;
         document.getElementById('sendBtn').disabled = false;
-        document.getElementById('prompt').focus();
-    };
-    Module.onStatus = (msg) => {
-        addMessage('system', msg);
+        input.disabled = false;
+        input.focus();
     };
 
-    // Wrap with ChatML template (instruct models need this to generate)
-    const chatPrompt = `<|im_start|>user\n${text}<|im_end|>\n<|im_start|>assistant\n`;
+    const chatPrompt = getChatPrompt(text);
 
-    // Run generation asynchronously so the UI doesn't freeze
-    setTimeout(() => {
-        const promptPtr = Module.allocateUTF8(chatPrompt);
+    // Use ASYNCIFY: _wasm_generate_async yields to browser between tokens
+    const promptPtr = Module.allocateUTF8(chatPrompt);
+    try {
+        await Module._wasm_generate_async(promptPtr, 0.7, 256);
+    } catch(e) {
+        // Fallback for non-ASYNCIFY builds
         Module._wasm_generate(promptPtr, 0.7, 256);
-        Module._free(promptPtr);
+    }
+    Module._free(promptPtr);
 
-        if (!output) {
-            assistantDiv.innerHTML = '<em style="color:#666">No output generated. Try a longer prompt.</em>';
-        }
-        generating = false;
-        document.getElementById('sendBtn').disabled = false;
-    }, 50);  // yield to browser for one frame to show the spinner
+    if (!output) {
+        assistantDiv.innerHTML = '<em style="color:#666">No output generated. Try a longer prompt.</em>';
+    }
+    generating = false;
+    document.getElementById('sendBtn').disabled = false;
+    input.disabled = false;
 }
 </script>
 
@@ -389,7 +480,7 @@ var Module = {
     printErr: function(text) { console.warn(text); },
     onRuntimeInitialized: function() {
         console.log('quant.cpp WASM ready');
-        addMessage('system', 'Runtime ready. Drop a GGUF model file to begin.');
+        addMessage('system', 'Runtime ready. Choose a model or drop your own GGUF file.');
     }
 };
 </script>
