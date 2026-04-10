@@ -480,7 +480,7 @@ footer a{color:var(--text2)}
       </table>
     </div>
 
-    <h3 class="reveal">vs llama.cpp</h3>
+    <h3 class="reveal">vs llama.cpp KV compression</h3>
     <p class="reveal">Same 4-bit budget, 3.5x less quality degradation:</p>
     <div class="viz reveal">
       <div class="viz-title">PPL Degradation at 4-bit (lower is better)</div>
@@ -493,6 +493,23 @@ footer a{color:var(--text2)}
         <div class="mem-bar"><div class="mem-bar-fill bar-aggr" style="--w:28%"></div></div>
       </div>
     </div>
+
+    <h3 class="reveal" style="margin-top:3rem">When to use which?</h3>
+    <p class="reveal" style="color:var(--text2);margin-bottom:1rem">llama.cpp is excellent. The difference is integration scope, not capability:</p>
+    <div class="reveal" style="overflow-x:auto">
+      <table>
+        <thead><tr><th>Scenario</th><th>quant.cpp</th><th>llama.cpp</th></tr></thead>
+        <tbody>
+          <tr><td>WASM browser demo</td><td style="color:var(--green)">192 KB binary</td><td style="color:var(--text2)">Tensor graph too large</td></tr>
+          <tr><td>Microcontroller / RTOS</td><td style="color:var(--green)">#include only</td><td style="color:var(--text2)">Needs build system</td></tr>
+          <tr><td>Game engine plugin</td><td style="color:var(--green)">Drop one .h file</td><td style="color:var(--text2)">250K LOC build</td></tr>
+          <tr><td>Learn in an afternoon</td><td style="color:var(--green)">16K LOC</td><td style="color:var(--text2)">250K+ LOC</td></tr>
+          <tr><td>GPU throughput</td><td style="color:var(--text2)">Basic</td><td style="color:var(--green)">Full Metal/CUDA</td></tr>
+          <tr><td>Model coverage</td><td style="color:var(--text2)">7 architectures</td><td style="color:var(--green)">100+</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="reveal" style="color:var(--text2);font-size:0.85rem;margin-top:0.5rem">Use llama.cpp for speed on a workstation. Use quant.cpp when you need to ship LLM inference <em>inside</em> something.</p>
 
     <h3 class="reveal">Context Length on 8GB Mac</h3>
     <div class="reveal">
@@ -572,12 +589,28 @@ footer a{color:var(--text2)}
 <section class="cta" style="background:var(--bg2)">
   <div class="container reveal">
     <h2 style="margin-bottom:1rem" data-i18n="cta.title">Try It Yourself</h2>
-    <p style="color:var(--text2);margin-bottom:2rem;max-width:500px;margin-left:auto;margin-right:auto" data-i18n="cta.desc">Three lines of Python. No GPU, no API key, no setup.</p>
-    <pre style="text-align:left;display:inline-block;margin-bottom:2rem"><code>pip install quantcpp
+    <p style="color:var(--text2);margin-bottom:2rem;max-width:560px;margin-left:auto;margin-right:auto" data-i18n="cta.desc">Python one-liner or C single-header. No GPU, no API key, no setup.</p>
+    <div style="display:flex;gap:1.5rem;flex-wrap:wrap;justify-content:center;margin-bottom:2rem;text-align:left">
+      <div>
+        <div style="font-size:0.75rem;color:var(--text2);margin-bottom:0.3rem;font-weight:600">Python</div>
+        <pre style="margin:0"><code>pip install quantcpp
 
 from quantcpp import Model
 m = Model.from_pretrained("Llama-3.2-1B")
 print(m.ask("What is gravity?"))</code></pre>
+      </div>
+      <div>
+        <div style="font-size:0.75rem;color:var(--text2);margin-bottom:0.3rem;font-weight:600">C (single header)</div>
+        <pre style="margin:0"><code>#include "quant.h"
+
+int main() {
+    quant_model* m = quant_load("model.gguf");
+    quant_generate(quant_new(m, NULL),
+        "Hello!", print_token, NULL);
+}
+// cc app.c -lm -lpthread</code></pre>
+      </div>
+    </div>
     <br>
     <a href="https://github.com/quantumaikr/quant.cpp" class="cta-btn cta-primary">GitHub</a>
     <a href="https://pypi.org/project/quantcpp/" class="cta-btn cta-secondary">PyPI</a>
@@ -715,7 +748,7 @@ const T = {
     'ch5.label':'Chapter 5','ch5.title':'Benchmarks','ch5.desc':'All measurements on Llama 3.2 1B Instruct (Q8_0 GGUF), Apple M1 Pro, 8 threads.',
     'ch6.label':'Chapter 6','ch6.title':'Research Foundations','ch6.desc':'Each technique in quant.cpp is grounded in peer-reviewed research:',
     'gl.label':'Reference','gl.title':'Glossary',
-    'cta.title':'Try It Yourself','cta.desc':'Three lines of Python. No GPU, no API key, no setup.',
+    'cta.title':'Try It Yourself','cta.desc':'Python one-liner or C single-header. No GPU, no API key, no setup.',
   },
   ko: {
     'nav.problem':'문제점','nav.solution':'핵심 발견','nav.techniques':'4가지 기술',
@@ -748,7 +781,7 @@ const T = {
     'ch5.label':'챕터 5','ch5.title':'벤치마크','ch5.desc':'모든 측정: Llama 3.2 1B Instruct (Q8_0 GGUF), Apple M1 Pro, 8 스레드.',
     'ch6.label':'챕터 6','ch6.title':'연구 기반','ch6.desc':'quant.cpp의 각 기술은 동료 심사를 거친 연구에 기반합니다:',
     'gl.label':'참조','gl.title':'용어집',
-    'cta.title':'직접 해보기','cta.desc':'Python 3줄. GPU도, API 키도, 설정도 필요 없습니다.',
+    'cta.title':'직접 해보기','cta.desc':'Python 한 줄 또는 C 헤더 하나. GPU도, API 키도, 설정도 필요 없습니다.',
   }
 };
 
