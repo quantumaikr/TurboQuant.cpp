@@ -174,10 +174,15 @@ input[type=file] { display: none; }
         <p class="subtitle">No install. No API key. No server.</p>
 
         <div class="model-cards" id="modelCards">
-            <div class="model-card recommended" id="card-llama" onclick="loadDemoModel('llama-3.2-1b')">
+            <div class="model-card recommended" id="card-smol" onclick="loadDemoModel('smollm2-135m')">
+                <div class="name">SmolLM2 135M</div>
+                <div class="meta" id="meta-smol">~135 MB &middot; Fast response</div>
+                <span class="tag">Fast</span>
+            </div>
+            <div class="model-card" id="card-llama" onclick="loadDemoModel('llama-3.2-1b')">
                 <div class="name">Llama 3.2 1B Instruct</div>
-                <div class="meta" id="meta-llama">~770 MB &middot; Verified quality</div>
-                <span class="tag">Recommended</span>
+                <div class="meta" id="meta-llama">~770 MB &middot; Better quality</div>
+                <span class="tag blue">Quality</span>
             </div>
         </div>
 
@@ -218,6 +223,14 @@ let modelLoaded = false, generating = false, stopRequested = false;
 let activeModelId = null;
 
 const MODELS = {
+    'smollm2-135m': {
+        url: 'https://huggingface.co/Felladrin/gguf-Q8_0-SmolLM2-135M-Instruct/resolve/main/smollm2-135m-instruct-q8_0.gguf',
+        name: 'SmolLM2 135M',
+        size: 135,
+        cacheKey: 'smollm2-135m-q8',
+        chatTemplate: (t) => t,  // SmolLM2 works best with plain text prompts
+        cardId: 'card-smol', metaId: 'meta-smol',
+    },
     'llama-3.2-1b': {
         url: 'https://huggingface.co/hugging-quants/Llama-3.2-1B-Instruct-Q4_K_M-GGUF/resolve/main/llama-3.2-1b-instruct-q4_k_m.gguf',
         name: 'Llama 3.2 1B Instruct',
