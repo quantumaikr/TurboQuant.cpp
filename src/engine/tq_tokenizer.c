@@ -881,6 +881,16 @@ tq_tokenizer_t* tq_load_tokenizer_from_gguf(const void* gguf_ctx_ptr) {
         }
     }
 
+    /* Build sorted indices BEFORE merge parsing so str_lookup() can use
+     * binary search instead of O(n) linear scan.  For 248K vocab with
+     * ~50K merges (3 lookups each), this turns a ~10 s init into ~100 ms. */
+    tok->sorted_indices = (int*)malloc(vocab_size * sizeof(int));
+    if (tok->sorted_indices) {
+        for (int i = 0; i < (int)vocab_size; i++) tok->sorted_indices[i] = i;
+        g_vocab_for_sort = tok->vocab;
+        qsort(tok->sorted_indices, vocab_size, sizeof(int), cmp_vocab_idx);
+    }
+
     /* Load and parse merges if available.
      * GGUF stores merges as a string array of "tok_a tok_b" pairs.
      * We need to look up token IDs and build (id_a, id_b, id_merged) triples
@@ -920,7 +930,7 @@ tq_tokenizer_t* tq_load_tokenizer_from_gguf(const void* gguf_ctx_ptr) {
                     memcpy(merged + la, str_b, (size_t)lb);
                     merged[la + lb] = '\0';
 
-                    /* Look up token IDs via linear scan (sorted_indices not built yet) */
+                    /* Look up token IDs via binary search (sorted_indices built above) */
                     int id_a = str_lookup(tok, str_a);
                     int id_b = str_lookup(tok, str_b);
                     int id_merged = str_lookup(tok, merged);
@@ -938,16 +948,6 @@ tq_tokenizer_t* tq_load_tokenizer_from_gguf(const void* gguf_ctx_ptr) {
                         tok->n_merges, (int)n_merges_total);
             }
         }
-    }
-
-    /* Build sorted indices for encoding (binary search by string).
-     * Use qsort for O(n log n) instead of insertion sort O(n²) — critical
-     * for 248K vocab where insertion sort would take minutes. */
-    tok->sorted_indices = (int*)malloc(vocab_size * sizeof(int));
-    if (tok->sorted_indices) {
-        for (int i = 0; i < (int)vocab_size; i++) tok->sorted_indices[i] = i;
-        g_vocab_for_sort = tok->vocab;
-        qsort(tok->sorted_indices, vocab_size, sizeof(int), cmp_vocab_idx);
     }
 
     fprintf(stderr, "tq_load_tokenizer_from_gguf: loaded %d tokens (max_len=%d)\n",
