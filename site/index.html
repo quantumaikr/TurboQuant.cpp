@@ -82,6 +82,12 @@ nav .logo span{color:var(--accent2)}
 nav ul{list-style:none;display:flex;gap:1.5rem}
 nav li a{font-size:.8rem;color:var(--text3);font-weight:500;transition:color .2s;letter-spacing:.02em}
 nav li a:hover,nav li a.active{color:var(--accent2)}
+.lang-toggle{display:flex;align-items:center;background:var(--bg3);border-radius:20px;overflow:hidden;border:1px solid rgba(255,255,255,.08);margin-left:1rem}
+.lang-btn{padding:5px 14px;font-size:.75rem;font-weight:600;cursor:pointer;transition:all .3s;color:var(--text3);border:none;background:none;font-family:inherit}
+.lang-btn.active{background:var(--accent);color:#fff;border-radius:20px}
+.lang-btn:hover:not(.active){color:var(--text)}
+.lang-fade{transition:opacity .25s ease}
+.lang-fade.fading{opacity:0}
 @media(max-width:768px){nav ul{display:none}}
 
 /* ===== Hero ===== */
@@ -218,26 +224,30 @@ footer a{color:var(--text2)}
   <div class="inner">
     <div class="logo">quant<span>.cpp</span></div>
     <ul>
-      <li><a href="#problem">The Problem</a></li>
-      <li><a href="#solution">Solution</a></li>
-      <li><a href="#techniques">4 Techniques</a></li>
-      <li><a href="#benchmarks">Benchmarks</a></li>
-      <li><a href="#papers">Papers</a></li>
-      <li><a href="#glossary">Glossary</a></li>
+      <li><a href="#problem" data-i18n="nav.problem">The Problem</a></li>
+      <li><a href="#solution" data-i18n="nav.solution">Solution</a></li>
+      <li><a href="#techniques" data-i18n="nav.techniques">4 Techniques</a></li>
+      <li><a href="#benchmarks" data-i18n="nav.benchmarks">Benchmarks</a></li>
+      <li><a href="#papers" data-i18n="nav.papers">Papers</a></li>
+      <li><a href="#glossary" data-i18n="nav.glossary">Glossary</a></li>
     </ul>
+    <div class="lang-toggle">
+      <button class="lang-btn active" onclick="setLang('en')">EN</button>
+      <button class="lang-btn" onclick="setLang('ko')">한국어</button>
+    </div>
   </div>
 </nav>
 
 <!-- ===== Hero ===== -->
 <section id="hero">
   <div class="container">
-    <h1>AI's Memory,<br><span class="highlight">Compressed 6.4x</span></h1>
-    <p class="subtitle">An educational guide to KV cache compression — the key to running long-context AI on your laptop.</p>
+    <h1 data-i18n-html="hero.title">AI's Memory,<br><span class="highlight">Compressed 6.4x</span></h1>
+    <p class="subtitle" data-i18n="hero.subtitle">An educational guide to KV cache compression — the key to running long-context AI on your laptop.</p>
     <div class="hero-stats">
-      <div class="stat-card"><div class="num">6.4x</div><div class="label">KV Compression</div></div>
-      <div class="stat-card"><div class="num">3%</div><div class="label">Quality Cost</div></div>
-      <div class="stat-card"><div class="num">59%</div><div class="label">Attention Speedup</div></div>
-      <div class="stat-card"><div class="num">16K</div><div class="label">Lines of C</div></div>
+      <div class="stat-card"><div class="num">6.4x</div><div class="label" data-i18n="hero.stat1">KV Compression</div></div>
+      <div class="stat-card"><div class="num">3%</div><div class="label" data-i18n="hero.stat2">Quality Cost</div></div>
+      <div class="stat-card"><div class="num">59%</div><div class="label" data-i18n="hero.stat3">Attention Speedup</div></div>
+      <div class="stat-card"><div class="num">16K</div><div class="label" data-i18n="hero.stat4">Lines of C</div></div>
     </div>
   </div>
   <div class="hero-scroll"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12l7 7 7-7"/></svg></div>
@@ -246,15 +256,15 @@ footer a{color:var(--text2)}
 <!-- ===== Table of Contents ===== -->
 <section id="toc">
   <div class="container">
-    <div class="section-label">Guide</div>
-    <h2>What You'll Learn</h2>
+    <div class="section-label" data-i18n="toc.label">Guide</div>
+    <h2 data-i18n="toc.title">What You'll Learn</h2>
     <div class="grid stagger" style="margin-top:1.5rem">
-      <a href="#problem" class="toc-item"><div class="toc-num">1</div><div class="toc-text"><h4>The Memory Problem</h4><p>Why KV cache is the real bottleneck in AI inference</p></div></a>
-      <a href="#kv-cache" class="toc-item"><div class="toc-num">2</div><div class="toc-text"><h4>What is KV Cache?</h4><p>How transformers remember context, and why it costs so much</p></div></a>
-      <a href="#solution" class="toc-item"><div class="toc-num">3</div><div class="toc-text"><h4>The Insight</h4><p>Not all memories are equally important</p></div></a>
-      <a href="#techniques" class="toc-item"><div class="toc-num">4</div><div class="toc-text"><h4>4 Compression Techniques</h4><p>Progressive, K/V Asymmetry, H2O Eviction, PyramidKV</p></div></a>
-      <a href="#benchmarks" class="toc-item"><div class="toc-num">5</div><div class="toc-text"><h4>Benchmarks</h4><p>Measured results on Llama 3.2 1B and Qwen3.5</p></div></a>
-      <a href="#papers" class="toc-item"><div class="toc-num">6</div><div class="toc-text"><h4>Research Papers</h4><p>Academic foundations behind each technique</p></div></a>
+      <a href="#problem" class="toc-item"><div class="toc-num">1</div><div class="toc-text"><h4 data-i18n="toc.1.t">The Memory Problem</h4><p data-i18n="toc.1.d">Why KV cache is the real bottleneck in AI inference</p></div></a>
+      <a href="#kv-cache" class="toc-item"><div class="toc-num">2</div><div class="toc-text"><h4 data-i18n="toc.2.t">What is KV Cache?</h4><p data-i18n="toc.2.d">How transformers remember context, and why it costs so much</p></div></a>
+      <a href="#solution" class="toc-item"><div class="toc-num">3</div><div class="toc-text"><h4 data-i18n="toc.3.t">The Insight</h4><p data-i18n="toc.3.d">Not all memories are equally important</p></div></a>
+      <a href="#techniques" class="toc-item"><div class="toc-num">4</div><div class="toc-text"><h4 data-i18n="toc.4.t">4 Compression Techniques</h4><p data-i18n="toc.4.d">Progressive, K/V Asymmetry, H2O Eviction, PyramidKV</p></div></a>
+      <a href="#benchmarks" class="toc-item"><div class="toc-num">5</div><div class="toc-text"><h4 data-i18n="toc.5.t">Benchmarks</h4><p data-i18n="toc.5.d">Measured results on Llama 3.2 1B and Qwen3.5</p></div></a>
+      <a href="#papers" class="toc-item"><div class="toc-num">6</div><div class="toc-text"><h4 data-i18n="toc.6.t">Research Papers</h4><p data-i18n="toc.6.d">Academic foundations behind each technique</p></div></a>
     </div>
   </div>
 </section>
@@ -262,9 +272,9 @@ footer a{color:var(--text2)}
 <!-- ===== Chapter 1: The Problem ===== -->
 <section id="problem">
   <div class="container">
-    <div class="section-label">Chapter 1</div>
-    <h2 class="reveal">The Real Bottleneck in AI</h2>
-    <p class="reveal">When you chat with an AI, it needs to remember everything you've said. This memory is called the <strong>KV cache</strong>. The shocking truth:</p>
+    <div class="section-label" data-i18n="ch1.label">Chapter 1</div>
+    <h2 class="reveal" data-i18n="ch1.title">The Real Bottleneck in AI</h2>
+    <p class="reveal" data-i18n-html="ch1.intro">When you chat with an AI, it needs to remember everything you've said. This memory is called the <strong>KV cache</strong>. The shocking truth:</p>
 
     <div class="viz reveal">
       <div class="viz-title">Memory Usage: Model vs KV Cache</div>
@@ -282,17 +292,17 @@ footer a{color:var(--text2)}
       </div>
     </div>
 
-    <p class="reveal">The KV cache grows with every token in the conversation. At 32K context, it's <strong>2x larger than the model itself</strong>. This is why your laptop runs out of memory during long conversations — not because the model is too big, but because its <em>memory</em> is.</p>
+    <p class="reveal" data-i18n-html="ch1.outro">The KV cache grows with every token in the conversation. At 32K context, it's <strong>2x larger than the model itself</strong>. This is why your laptop runs out of memory during long conversations — not because the model is too big, but because its <em>memory</em> is.</p>
   </div>
 </section>
 
 <!-- ===== Chapter 2: What is KV Cache ===== -->
 <section id="kv-cache" style="background:var(--bg2)">
   <div class="container">
-    <div class="section-label">Chapter 2</div>
-    <h2 class="reveal">What is KV Cache?</h2>
+    <div class="section-label" data-i18n="ch2.label">Chapter 2</div>
+    <h2 class="reveal" data-i18n="ch2.title">What is KV Cache?</h2>
 
-    <p class="reveal">In a Transformer, every token "attends" to all previous tokens. To do this, each token creates a <strong>Key</strong> (what am I?) and a <strong>Value</strong> (what do I contain?). These are stored so future tokens can look back at them.</p>
+    <p class="reveal" data-i18n-html="ch2.intro">In a Transformer, every token "attends" to all previous tokens. To do this, each token creates a <strong>Key</strong> (what am I?) and a <strong>Value</strong> (what do I contain?). These are stored so future tokens can look back at them.</p>
 
     <div class="viz reveal">
       <div class="viz-title">How Attention Works (Simplified)</div>
@@ -304,8 +314,8 @@ footer a{color:var(--text2)}
       </div>
     </div>
 
-    <h3 class="reveal">Why It's Expensive</h3>
-    <p class="reveal">For <strong>every layer</strong> and <strong>every token position</strong>, we store a Key vector and a Value vector. A typical model has 16-32 layers. At 32K context:</p>
+    <h3 class="reveal" data-i18n="ch2.expensive">Why It's Expensive</h3>
+    <p class="reveal" data-i18n-html="ch2.expensive.desc">For <strong>every layer</strong> and <strong>every token position</strong>, we store a Key vector and a Value vector. A typical model has 16-32 layers. At 32K context:</p>
 
     <div class="viz reveal">
       <div class="viz-title">KV Cache Growth</div>
@@ -317,37 +327,37 @@ footer a{color:var(--text2)}
       </div>
     </div>
 
-    <p class="reveal">Every doubling of context = doubling of KV cache. And the <strong>attention cost is O(n)</strong> per token — at 1000 tokens, attention is already 35% of total compute time.</p>
+    <p class="reveal" data-i18n-html="ch2.growth">Every doubling of context = doubling of KV cache. And the <strong>attention cost is O(n)</strong> per token — at 1000 tokens, attention is already 35% of total compute time.</p>
   </div>
 </section>
 
 <!-- ===== Chapter 3: The Insight ===== -->
 <section id="solution">
   <div class="container">
-    <div class="section-label">Chapter 3</div>
-    <h2 class="reveal">The Key Insight</h2>
-    <p class="reveal" style="font-size:1.2rem;color:var(--text);font-weight:500;margin:1.5rem 0">Not all memories are equally important. AI attention, like human attention, concentrates on what matters.</p>
+    <div class="section-label" data-i18n="ch3.label">Chapter 3</div>
+    <h2 class="reveal" data-i18n="ch3.title">The Key Insight</h2>
+    <p class="reveal" style="font-size:1.2rem;color:var(--text);font-weight:500;margin:1.5rem 0" data-i18n="ch3.quote">Not all memories are equally important. AI attention, like human attention, concentrates on what matters.</p>
 
     <div class="card-grid stagger">
       <div class="info-card">
         <div class="card-icon">&#x23F0;</div>
-        <h4>Recent tokens matter most</h4>
-        <p>~70% of attention weight falls on the last 128 tokens. Old tokens rarely get looked at.</p>
+        <h4 data-i18n="ch3.c1.t">Recent tokens matter most</h4>
+        <p data-i18n="ch3.c1.d">~70% of attention weight falls on the last 128 tokens. Old tokens rarely get looked at.</p>
       </div>
       <div class="info-card">
         <div class="card-icon">&#x1F511;</div>
-        <h4>Keys are more sensitive than Values</h4>
-        <p>Key errors get amplified by softmax (nonlinear). Value errors propagate linearly — much more forgiving.</p>
+        <h4 data-i18n="ch3.c2.t">Keys are more sensitive than Values</h4>
+        <p data-i18n="ch3.c2.d">Key errors get amplified by softmax (nonlinear). Value errors propagate linearly — much more forgiving.</p>
       </div>
       <div class="info-card">
         <div class="card-icon">&#x2B50;</div>
-        <h4>A few tokens carry most information</h4>
-        <p>Attention follows a power law: "heavy hitter" tokens get high attention across all queries.</p>
+        <h4 data-i18n="ch3.c3.t">A few tokens carry most information</h4>
+        <p data-i18n="ch3.c3.d">Attention follows a power law: "heavy hitter" tokens get high attention across all queries.</p>
       </div>
       <div class="info-card">
         <div class="card-icon">&#x1F4CA;</div>
-        <h4>Deep layers attend sharply</h4>
-        <p>Layer 11 entropy = 1.84 bits (~4 tokens). Layer 1 entropy = 6.29 bits (~78 tokens). Deep layers need less KV.</p>
+        <h4 data-i18n="ch3.c4.t">Deep layers attend sharply</h4>
+        <p data-i18n="ch3.c4.d">Layer 11 entropy = 1.84 bits (~4 tokens). Layer 1 entropy = 6.29 bits (~78 tokens). Deep layers need less KV.</p>
       </div>
     </div>
 
@@ -358,8 +368,8 @@ footer a{color:var(--text2)}
 <!-- ===== Chapter 4: Four Techniques ===== -->
 <section id="techniques" style="background:var(--bg2)">
   <div class="container">
-    <div class="section-label">Chapter 4</div>
-    <h2 class="reveal">Four Dimensions of Compression</h2>
+    <div class="section-label" data-i18n="ch4.label">Chapter 4</div>
+    <h2 class="reveal" data-i18n="ch4.title">Four Dimensions of Compression</h2>
 
     <!-- Pipeline visualization -->
     <div class="pipeline reveal" id="pipeline">
@@ -451,9 +461,9 @@ footer a{color:var(--text2)}
 <!-- ===== Chapter 5: Benchmarks ===== -->
 <section id="benchmarks">
   <div class="container">
-    <div class="section-label">Chapter 5</div>
-    <h2 class="reveal">Benchmarks</h2>
-    <p class="reveal">All measurements on Llama 3.2 1B Instruct (Q8_0 GGUF), Apple M1 Pro, 8 threads.</p>
+    <div class="section-label" data-i18n="ch5.label">Chapter 5</div>
+    <h2 class="reveal" data-i18n="ch5.title">Benchmarks</h2>
+    <p class="reveal" data-i18n="ch5.desc">All measurements on Llama 3.2 1B Instruct (Q8_0 GGUF), Apple M1 Pro, 8 threads.</p>
 
     <h3 class="reveal">Compression vs Quality</h3>
     <div class="reveal">
@@ -503,9 +513,9 @@ footer a{color:var(--text2)}
 <!-- ===== Chapter 6: Papers ===== -->
 <section id="papers" style="background:var(--bg2)">
   <div class="container">
-    <div class="section-label">Chapter 6</div>
-    <h2 class="reveal">Research Foundations</h2>
-    <p class="reveal">Each technique in quant.cpp is grounded in peer-reviewed research:</p>
+    <div class="section-label" data-i18n="ch6.label">Chapter 6</div>
+    <h2 class="reveal" data-i18n="ch6.title">Research Foundations</h2>
+    <p class="reveal" data-i18n="ch6.desc">Each technique in quant.cpp is grounded in peer-reviewed research:</p>
 
     <div class="stagger" style="margin-top:1.5rem">
       <div class="paper">
@@ -540,8 +550,8 @@ footer a{color:var(--text2)}
 <!-- ===== Glossary ===== -->
 <section id="glossary">
   <div class="container">
-    <div class="section-label">Reference</div>
-    <h2 class="reveal">Glossary</h2>
+    <div class="section-label" data-i18n="gl.label">Reference</div>
+    <h2 class="reveal" data-i18n="gl.title">Glossary</h2>
 
     <dl class="stagger">
       <div class="glossary-item"><dt>KV Cache</dt><dd>Key-Value cache. Stores the Key and Value vectors for all past tokens, so they don't need to be recomputed. Grows linearly with sequence length.</dd></div>
@@ -561,8 +571,8 @@ footer a{color:var(--text2)}
 <!-- ===== CTA ===== -->
 <section class="cta" style="background:var(--bg2)">
   <div class="container reveal">
-    <h2 style="margin-bottom:1rem">Try It Yourself</h2>
-    <p style="color:var(--text2);margin-bottom:2rem;max-width:500px;margin-left:auto;margin-right:auto">Three lines of Python. No GPU, no API key, no setup.</p>
+    <h2 style="margin-bottom:1rem" data-i18n="cta.title">Try It Yourself</h2>
+    <p style="color:var(--text2);margin-bottom:2rem;max-width:500px;margin-left:auto;margin-right:auto" data-i18n="cta.desc">Three lines of Python. No GPU, no API key, no setup.</p>
     <pre style="text-align:left;display:inline-block;margin-bottom:2rem"><code>pip install quantcpp
 
 from quantcpp import Model
@@ -671,6 +681,104 @@ if (entChart) {
     entChart.appendChild(row);
   });
 }
+
+// === i18n ===
+const T = {
+  en: {
+    'nav.problem':'The Problem','nav.solution':'Solution','nav.techniques':'4 Techniques',
+    'nav.benchmarks':'Benchmarks','nav.papers':'Papers','nav.glossary':'Glossary',
+    'hero.title':'AI\'s Memory,<br><span class="highlight">Compressed 6.4x</span>',
+    'hero.subtitle':'An educational guide to KV cache compression — the key to running long-context AI on your laptop.',
+    'hero.stat1':'KV Compression','hero.stat2':'Quality Cost','hero.stat3':'Attention Speedup','hero.stat4':'Lines of C',
+    'toc.label':'Guide','toc.title':'What You\'ll Learn',
+    'toc.1.t':'The Memory Problem','toc.1.d':'Why KV cache is the real bottleneck in AI inference',
+    'toc.2.t':'What is KV Cache?','toc.2.d':'How transformers remember context, and why it costs so much',
+    'toc.3.t':'The Insight','toc.3.d':'Not all memories are equally important',
+    'toc.4.t':'4 Compression Techniques','toc.4.d':'Progressive, K/V Asymmetry, H2O Eviction, PyramidKV',
+    'toc.5.t':'Benchmarks','toc.5.d':'Measured results on Llama 3.2 1B and Qwen3.5',
+    'toc.6.t':'Research Papers','toc.6.d':'Academic foundations behind each technique',
+    'ch1.label':'Chapter 1','ch1.title':'The Real Bottleneck in AI',
+    'ch1.intro':'When you chat with an AI, it needs to remember everything you\'ve said. This memory is called the <strong>KV cache</strong>. The shocking truth:',
+    'ch1.outro':'The KV cache grows with every token in the conversation. At 32K context, it\'s <strong>2x larger than the model itself</strong>. This is why your laptop runs out of memory during long conversations — not because the model is too big, but because its <em>memory</em> is.',
+    'ch2.label':'Chapter 2','ch2.title':'What is KV Cache?',
+    'ch2.intro':'In a Transformer, every token "attends" to all previous tokens. To do this, each token creates a <strong>Key</strong> (what am I?) and a <strong>Value</strong> (what do I contain?). These are stored so future tokens can look back at them.',
+    'ch2.expensive':'Why It\'s Expensive',
+    'ch2.expensive.desc':'For <strong>every layer</strong> and <strong>every token position</strong>, we store a Key vector and a Value vector. A typical model has 16-32 layers. At 32K context:',
+    'ch2.growth':'Every doubling of context = doubling of KV cache. And the <strong>attention cost is O(n)</strong> per token — at 1000 tokens, attention is already 35% of total compute time.',
+    'ch3.label':'Chapter 3','ch3.title':'The Key Insight',
+    'ch3.quote':'Not all memories are equally important. AI attention, like human attention, concentrates on what matters.',
+    'ch3.c1.t':'Recent tokens matter most','ch3.c1.d':'~70% of attention weight falls on the last 128 tokens. Old tokens rarely get looked at.',
+    'ch3.c2.t':'Keys are more sensitive than Values','ch3.c2.d':'Key errors get amplified by softmax (nonlinear). Value errors propagate linearly — much more forgiving.',
+    'ch3.c3.t':'A few tokens carry most information','ch3.c3.d':'Attention follows a power law: "heavy hitter" tokens get high attention across all queries.',
+    'ch3.c4.t':'Deep layers attend sharply','ch3.c4.d':'Layer 11 entropy = 1.84 bits (~4 tokens). Layer 1 entropy = 6.29 bits (~78 tokens). Deep layers need less KV.',
+    'ch4.label':'Chapter 4','ch4.title':'Four Dimensions of Compression',
+    'ch5.label':'Chapter 5','ch5.title':'Benchmarks','ch5.desc':'All measurements on Llama 3.2 1B Instruct (Q8_0 GGUF), Apple M1 Pro, 8 threads.',
+    'ch6.label':'Chapter 6','ch6.title':'Research Foundations','ch6.desc':'Each technique in quant.cpp is grounded in peer-reviewed research:',
+    'gl.label':'Reference','gl.title':'Glossary',
+    'cta.title':'Try It Yourself','cta.desc':'Three lines of Python. No GPU, no API key, no setup.',
+  },
+  ko: {
+    'nav.problem':'문제점','nav.solution':'핵심 발견','nav.techniques':'4가지 기술',
+    'nav.benchmarks':'벤치마크','nav.papers':'논문','nav.glossary':'용어집',
+    'hero.title':'AI의 기억력,<br><span class="highlight">6.4배 압축</span>',
+    'hero.subtitle':'KV 캐시 압축에 대한 교육 가이드 — 노트북에서 장문 AI를 실행하는 핵심 기술.',
+    'hero.stat1':'KV 압축','hero.stat2':'품질 비용','hero.stat3':'Attention 가속','hero.stat4':'C 코드 줄수',
+    'toc.label':'가이드','toc.title':'목차',
+    'toc.1.t':'메모리 문제','toc.1.d':'KV 캐시가 AI 추론의 진짜 병목인 이유',
+    'toc.2.t':'KV 캐시란?','toc.2.d':'Transformer가 문맥을 기억하는 방법과 그 비용',
+    'toc.3.t':'핵심 발견','toc.3.d':'모든 기억이 같은 중요도는 아니다',
+    'toc.4.t':'4가지 압축 기술','toc.4.d':'Progressive, K/V 비대칭, H2O Eviction, PyramidKV',
+    'toc.5.t':'벤치마크','toc.5.d':'Llama 3.2 1B, Qwen3.5 실측 결과',
+    'toc.6.t':'연구 논문','toc.6.d':'각 기술의 학술적 기반',
+    'ch1.label':'챕터 1','ch1.title':'AI의 진짜 병목',
+    'ch1.intro':'AI와 대화할 때, AI는 당신이 말한 모든 것을 기억해야 합니다. 이 기억을 <strong>KV 캐시</strong>라고 합니다. 놀라운 사실:',
+    'ch1.outro':'KV 캐시는 대화의 모든 토큰마다 커집니다. 32K 컨텍스트에서는 <strong>모델 자체보다 2배 더 큽니다</strong>. 노트북에서 긴 대화 중 메모리가 부족해지는 이유는 모델이 커서가 아니라, <em>기억력</em>이 커서입니다.',
+    'ch2.label':'챕터 2','ch2.title':'KV 캐시란?',
+    'ch2.intro':'Transformer에서 모든 토큰은 이전의 모든 토큰을 "참조"합니다. 이를 위해 각 토큰은 <strong>Key</strong> (나는 무엇인가?)와 <strong>Value</strong> (내 내용은 무엇인가?)를 생성합니다. 이것들은 미래 토큰이 과거를 돌아볼 수 있도록 저장됩니다.',
+    'ch2.expensive':'왜 비싼가?',
+    'ch2.expensive.desc':'<strong>모든 레이어</strong>와 <strong>모든 토큰 위치</strong>마다 Key 벡터와 Value 벡터를 저장합니다. 일반적인 모델은 16-32개 레이어를 가집니다. 32K 컨텍스트에서:',
+    'ch2.growth':'컨텍스트가 2배 = KV 캐시도 2배. 그리고 <strong>attention 비용은 O(n)</strong>입니다 — 1000 토큰에서 이미 전체 연산의 35%를 차지합니다.',
+    'ch3.label':'챕터 3','ch3.title':'핵심 발견',
+    'ch3.quote':'모든 기억이 동등하게 중요하지 않습니다. AI의 attention은 사람의 주의력처럼 중요한 것에 집중합니다.',
+    'ch3.c1.t':'최근 토큰이 가장 중요','ch3.c1.d':'attention 가중치의 ~70%가 최근 128 토큰에 집중됩니다. 오래된 토큰은 거의 참조되지 않습니다.',
+    'ch3.c2.t':'Key가 Value보다 민감','ch3.c2.d':'Key 오류는 softmax에 의해 비선형 증폭됩니다. Value 오류는 선형으로 전파 — 훨씬 관대합니다.',
+    'ch3.c3.t':'소수 토큰이 대부분의 정보를 운반','ch3.c3.d':'Attention은 멱법칙을 따릅니다: "heavy hitter" 토큰이 모든 쿼리에서 높은 attention을 받습니다.',
+    'ch3.c4.t':'깊은 레이어는 집중적으로 attend','ch3.c4.d':'Layer 11 엔트로피 = 1.84 bits (~4 토큰). Layer 1 엔트로피 = 6.29 bits (~78 토큰). 깊은 레이어는 적은 KV로 충분합니다.',
+    'ch4.label':'챕터 4','ch4.title':'4가지 압축 차원',
+    'ch5.label':'챕터 5','ch5.title':'벤치마크','ch5.desc':'모든 측정: Llama 3.2 1B Instruct (Q8_0 GGUF), Apple M1 Pro, 8 스레드.',
+    'ch6.label':'챕터 6','ch6.title':'연구 기반','ch6.desc':'quant.cpp의 각 기술은 동료 심사를 거친 연구에 기반합니다:',
+    'gl.label':'참조','gl.title':'용어집',
+    'cta.title':'직접 해보기','cta.desc':'Python 3줄. GPU도, API 키도, 설정도 필요 없습니다.',
+  }
+};
+
+let currentLang = localStorage.getItem('quant-lang') || 'en';
+
+function setLang(lang) {
+  const body = document.body;
+  body.classList.add('lang-fade','fading');
+  setTimeout(() => {
+    currentLang = lang;
+    localStorage.setItem('quant-lang', lang);
+    document.documentElement.lang = lang;
+    document.querySelectorAll('[data-i18n]').forEach(el => {
+      const key = el.getAttribute('data-i18n');
+      if (T[lang] && T[lang][key]) el.textContent = T[lang][key];
+    });
+    document.querySelectorAll('[data-i18n-html]').forEach(el => {
+      const key = el.getAttribute('data-i18n-html');
+      if (T[lang] && T[lang][key]) el.innerHTML = T[lang][key];
+    });
+    document.querySelectorAll('.lang-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.textContent.trim() === (lang === 'en' ? 'EN' : '한국어'));
+    });
+    body.classList.remove('fading');
+  }, 250);
+  setTimeout(() => body.classList.remove('lang-fade'), 500);
+}
+
+// Apply saved language on load
+if (currentLang !== 'en') setLang(currentLang);
 
 // === Active nav highlight ===
 const sections = document.querySelectorAll('section[id]');
