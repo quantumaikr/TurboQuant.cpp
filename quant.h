@@ -8033,18 +8033,61 @@ tq_tokenizer_t* tq_load_tokenizer_from_gguf(const void* gguf_ctx_ptr) {
         }
     }
 
-    /* Load merges if available */
+    /* Load and parse merges if available.
+     * GGUF stores merges as a string array of "tok_a tok_b" pairs.
+     * We need to look up token IDs and build (id_a, id_b, id_merged) triples
+     * so the BPE encoder can use them. */
     int64_t merges_idx = tq_gguf_find_key(gguf, "tokenizer.ggml.merges");
     if (merges_idx >= 0) {
         const tq_gguf_kv_t* mkv = &gguf->kv[merges_idx];
         if (mkv->type == TQ_GGUF_TYPE_ARRAY &&
             mkv->value.array.elem_type == TQ_GGUF_TYPE_STRING) {
-            /* Parse merge rules: "token_a token_b" -> find IDs, store as merge pairs */
-            uint64_t n_merges = mkv->value.array.count;
-            tok->n_merges = (int)n_merges;
-            tok->merge_pairs = (int*)malloc(n_merges * 3 * sizeof(int));
+            uint64_t n_merges_total = mkv->value.array.count;
+            tok->merge_pairs = (int*)malloc(n_merges_total * 3 * sizeof(int));
+            tok->n_merges = 0;
             if (tok->merge_pairs) {
-                memset(tok->merge_pairs, 0, n_merges * 3 * sizeof(int));
+                tq_gguf_string_t* merge_strings = (tq_gguf_string_t*)mkv->value.array.data;
+                for (uint64_t mi = 0; mi < n_merges_total; mi++) {
+                    if (!merge_strings[mi].str || merge_strings[mi].len == 0) continue;
+
+                    /* Copy merge string and split on space: "tok_a tok_b" */
+                    char buf[2048];
+                    int slen = (int)merge_strings[mi].len;
+                    if (slen >= (int)sizeof(buf)) continue;
+                    memcpy(buf, merge_strings[mi].str, (size_t)slen);
+                    buf[slen] = '\0';
+
+                    char* sep = strchr(buf, ' ');
+                    if (!sep) continue;
+                    *sep = '\0';
+                    const char* str_a = buf;
+                    const char* str_b = sep + 1;
+
+                    /* Build merged string: concatenation of tok_a + tok_b */
+                    char merged[2048];
+                    int la = (int)strlen(str_a);
+                    int lb = (int)strlen(str_b);
+                    if (la + lb >= (int)sizeof(merged)) continue;
+                    memcpy(merged, str_a, (size_t)la);
+                    memcpy(merged + la, str_b, (size_t)lb);
+                    merged[la + lb] = '\0';
+
+                    /* Look up token IDs via linear scan (sorted_indices not built yet) */
+                    int id_a = str_lookup(tok, str_a);
+                    int id_b = str_lookup(tok, str_b);
+                    int id_merged = str_lookup(tok, merged);
+
+                    if (id_a >= 0 && id_b >= 0 && id_merged >= 0) {
+                        tok->merge_pairs[tok->n_merges * 3 + 0] = id_a;
+                        tok->merge_pairs[tok->n_merges * 3 + 1] = id_b;
+                        tok->merge_pairs[tok->n_merges * 3 + 2] = id_merged;
+                        /* Priority: earlier merges in GGUF = higher priority */
+                        tok->scores[id_merged] = (float)(n_merges_total - mi);
+                        tok->n_merges++;
+                    }
+                }
+                fprintf(stderr, "tq_load_tokenizer_from_gguf: parsed %d/%d merges\n",
+                        tok->n_merges, (int)n_merges_total);
             }
         }
     }
