@@ -156,19 +156,36 @@ Transformer의 attention 메커니즘은 최근 토큰에 자연스럽게 집중
 </details>
 
 <details>
-<summary><b>다른 엔진과의 비교</b></summary>
+<summary><b>"llama.cpp로도 임베딩 되는데, 왜 quant.cpp?"</b></summary>
 
-| | quant.cpp | llama.cpp | vLLM | MLX |
-|---|:---:|:---:|:---:|:---:|
-| KV 압축 | **7가지 방식** | Q8_0/Q5_0 (2x) | — | — |
-| 코드 크기 | **72K LOC** | 250K+ | 100K+ | 50K+ |
-| 임베딩 가능 | **단일 헤더** | 라이브러리 | 라이브러리 | 프레임워크 |
-| GPU 속도 | 기본 | 최적화됨 | **최고** | Metal |
-| 하루만에 코드 읽기 | **✅** | ❌ | ❌ | ❌ |
+맞습니다. llama.cpp는 훌륭하고 임베딩도 가능합니다. 차이는 **통합 방식**입니다:
 
-**llama.cpp**를 쓰세요 — 워크스테이션에서 최고 속도가 필요할 때.
-**vLLM**을 쓰세요 — 배치 서빙이 필요할 때.
-**quant.cpp**를 쓰세요 — AI를 앱/게임/웹/디바이스에 **넣어야** 할 때.
+**llama.cpp = 컴파일된 라이브러리** (250K+ LOC). `libllama`를 링크하면 GGML 텐서 그래프, Metal/CUDA 백엔드, 샘플러, 토크나이저가 따라옵니다. 빌드 시스템이 이를 감당할 수 있다면 훌륭합니다 — 하지만 빌드 단계가 필요한 _라이브러리_입니다.
+
+**quant.cpp = 파일 하나** (16K LOC). `#include "quant.h"`, `cc app.c -lm`으로 컴파일. CMake 없음, 링커 플래그는 libc뿐. 하나의 번역 단위.
+
+```
+# quant.cpp — C 프로젝트에 AI 추가: 2줄
+cc -O2 my_app.c -lm -lpthread -o my_app    # 끝
+
+# llama.cpp — 먼저 라이브러리를 빌드해야 합니다
+cmake -B build && cmake --build build
+cc my_app.c -Ibuild/include -Lbuild -lllama -lm -lstdc++ -o my_app
+```
+
+| 시나리오 | quant.cpp | llama.cpp |
+|:---------|:---------:|:---------:|
+| **WASM 브라우저** | 192 KB 바이너리 | GGML 텐서 그래프가 너무 큼 |
+| **마이크로컨트롤러 / RTOS** | `#include`만 가능 (FS/링커 없음) | 빌드 시스템 필요 |
+| **게임 엔진** (Unity/Unreal/Godot) | `.h` 파일 하나 드롭 | 250K LOC 빌드 통합 |
+| **교육 / 연구** | 하루만에 전체 코드 읽기 가능 | 훌륭하지만 코드가 방대 |
+| **GPU 속도** | 기본 | **Metal/CUDA 최적화** |
+| **모델 지원** | 7개 아키텍처 | **100+** |
+
+> **llama.cpp** — 워크스테이션에서 최고 속도가 필요할 때.
+> **vLLM** — 배치 서빙이 필요할 때.
+> **quant.cpp** — AI를 앱/게임/브라우저/디바이스 _안에_ 넣어야 할 때, 통합 단순성이 GPU 처리량보다 중요할 때.
+
 </details>
 
 <details>

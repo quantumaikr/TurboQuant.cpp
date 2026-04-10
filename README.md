@@ -310,18 +310,47 @@ Both are per-block methods. The quality gap comes from block size (128 vs 32), m
 | GGUF model loading | **✅ 7 architectures** | ❌ | ❌ | research only |
 | End-to-end inference | **✅** | kernel only | kernel only | kernel only |
 
+### "Why not just use llama.cpp?"
+
+You absolutely can. llama.cpp is excellent. The difference is **integration scope**, not capability:
+
+**llama.cpp = compiled library** (250K+ LOC). You link `libllama`, which pulls in GGML tensor graphs, Metal/CUDA backends, sampling, tokenizer. Great if your build system handles it — but it's a _library_ with a build step.
+
+**quant.cpp = one file** (16K LOC). `#include "quant.h"`, compile with `cc app.c -lm`. No CMake, no linker flags beyond libc. One translation unit.
+
+Where this difference matters in practice:
+
+```
+# quant.cpp — add LLM to any C project in 2 lines
+cc -O2 my_app.c -lm -lpthread -o my_app    # that's it
+
+# llama.cpp — requires building the library first
+cmake -B build && cmake --build build       # build libllama
+cc my_app.c -Ibuild/include -Lbuild -lllama -lm -lstdc++ -o my_app
+```
+
+| Scenario | quant.cpp | llama.cpp |
+|:---------|:---------:|:---------:|
+| **WASM browser demo** | 192 KB binary | GGML tensor graph too large |
+| **Microcontroller / RTOS** | `#include` only option (no FS, no linker) | Needs build system |
+| **Game engine plugin** (Unity/Unreal/Godot) | Drop one `.h` | Integrate 250K LOC build |
+| **Teaching / research** | Read in an afternoon | Excellent but large codebase |
+| **Quick prototype** | `pip install quantcpp` or 2-line C | More setup needed |
+| **GPU speed** | Basic | **Full Metal/CUDA** |
+| **Model coverage** | 7 architectures | **100+** |
+| **Production hardening** | Early stage | **Battle-tested** |
+
+> **Use llama.cpp** for speed on a workstation. **Use vLLM** for batch serving.
+> **Use quant.cpp** when you need to ship LLM inference _inside_ something — an app, a game, a browser tab, an embedded device — and integration simplicity matters more than GPU throughput.
+
 ### vs production inference engines
 
 |  | quant.cpp | llama.cpp | vLLM | MLX |
 |:--|:---------:|:---------:|:----:|:---:|
-| KV quantization | **TurboQuant + 6 schemes** | Q8_0/Q5_0 (2x) | -- | -- |
+| KV quantization | **7 schemes (3-7x)** | Q8_0/Q5_0 (2x) | -- | -- |
 | Code size | **72K LOC** | 250K+ | 100K+ | 50K+ |
 | Embeddable | **single header** | library | library | framework |
-| Read in an afternoon | **✅** | ❌ | ❌ | ❌ |
 | GPU throughput | basic | full | **best** | Metal |
-
-> **Use llama.cpp** for speed on a workstation. **Use vLLM** for batch serving.
-> **Use quant.cpp** when you need to ship LLM inference inside something — an app, a game, a website, a device.
 
 ---
 
