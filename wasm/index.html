@@ -2,111 +2,157 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- COOP/COEP for SharedArrayBuffer (required for WASM threads) -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <meta http-equiv="Cross-Origin-Opener-Policy" content="same-origin">
 <meta http-equiv="Cross-Origin-Embedder-Policy" content="require-corp">
 <title>quant.cpp — LLM in Your Browser</title>
-<!-- Service Worker for COOP/COEP headers — enables SharedArrayBuffer + pthreads on GitHub Pages -->
 <script src="coi-serviceworker.js"></script>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
+:root { --accent: #6ee7b7; --bg: #0a0a0a; --surface: #111; --border: #222; --dim: #555; }
+
 body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-    background: #0a0a0a; color: #e0e0e0;
-    min-height: 100vh; display: flex; flex-direction: column;
+    background: var(--bg); color: #e0e0e0;
+    height: 100dvh; display: flex; flex-direction: column; overflow: hidden;
 }
+
+/* Header */
 .header {
-    padding: 20px 24px; border-bottom: 1px solid #222;
-    display: flex; align-items: center; gap: 16px;
+    padding: 12px 20px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 12px; flex-shrink: 0;
 }
-.header h1 { font-size: 20px; font-weight: 600; }
-.header h1 span { color: #6ee7b7; }
+.header h1 { font-size: 18px; font-weight: 600; }
+.header h1 span { color: var(--accent); }
 .header .badge {
-    font-size: 11px; padding: 2px 8px; border-radius: 12px;
-    background: #1a3a2a; color: #6ee7b7; font-weight: 500;
+    font-size: 10px; padding: 2px 7px; border-radius: 10px;
+    background: #1a3a2a; color: var(--accent); font-weight: 500;
 }
-.header .github {
-    margin-left: auto; color: #888; text-decoration: none; font-size: 13px;
-}
-.header .github:hover { color: #6ee7b7; }
+.header .right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.header .github { color: #666; text-decoration: none; font-size: 12px; }
+.header .github:hover { color: var(--accent); }
+.header .model-info { font-size: 11px; color: var(--dim); }
 
-.main { flex: 1; display: flex; flex-direction: column; max-width: 800px; width: 100%; margin: 0 auto; padding: 24px; }
-
-/* Drop zone */
-.dropzone {
-    border: 2px dashed #333; border-radius: 12px; padding: 48px;
-    text-align: center; cursor: pointer; transition: all 0.2s;
-    margin-bottom: 24px;
+/* Main layout */
+.main {
+    flex: 1; display: flex; flex-direction: column;
+    max-width: 800px; width: 100%; margin: 0 auto;
+    padding: 0 16px; min-height: 0;
 }
-.dropzone:hover, .dropzone.drag-over { border-color: #6ee7b7; background: #0d1f17; }
-.dropzone h2 { font-size: 18px; margin-bottom: 8px; }
-.dropzone p { color: #666; font-size: 13px; }
-.dropzone.loaded { border-color: #2a5a3a; background: #0d1a14; padding: 16px; }
-.dropzone.loaded h2 { font-size: 14px; color: #6ee7b7; }
 
-/* Model selector */
-.model-cards {
-    display: flex; gap: 12px; margin-bottom: 16px; justify-content: center; flex-wrap: wrap;
+/* Onboarding */
+.onboard {
+    flex: 1; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 20px; padding: 24px;
 }
+.onboard.hidden { display: none; }
+.onboard h2 { font-size: 22px; font-weight: 600; }
+.onboard h2 span { color: var(--accent); }
+.onboard .subtitle { color: var(--accent); font-size: 15px; }
+
+.model-cards { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
 .model-card {
-    padding: 14px 20px; border: 1px solid #333; border-radius: 10px;
-    cursor: pointer; transition: all 0.2s; text-align: left; min-width: 220px;
-    background: #111;
+    padding: 16px 20px; border: 1px solid #333; border-radius: 12px;
+    cursor: pointer; transition: all 0.2s; text-align: left; min-width: 230px;
+    background: var(--surface); position: relative;
 }
-.model-card:hover { border-color: #6ee7b7; background: #0d1f17; }
+.model-card:hover { border-color: var(--accent); background: #0d1f17; transform: translateY(-1px); }
 .model-card.recommended { border-color: #059669; }
-.model-card .name { font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+.model-card .name { font-weight: 600; font-size: 15px; margin-bottom: 4px; }
 .model-card .meta { font-size: 12px; color: #888; }
 .model-card .tag {
-    display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 6px;
-    background: #1a3a2a; color: #6ee7b7; margin-top: 6px;
+    display: inline-block; font-size: 10px; padding: 2px 8px; border-radius: 8px;
+    background: #1a3a2a; color: var(--accent); margin-top: 8px; font-weight: 500;
 }
 .model-card .tag.blue { background: #1a2a3a; color: #7bb8f0; }
+.model-card.downloading { pointer-events: none; opacity: 0.7; }
 
-/* Chat */
-.chat { flex: 1; overflow-y: auto; margin-bottom: 16px; }
-.message { padding: 12px 16px; margin-bottom: 8px; border-radius: 8px; font-size: 14px; line-height: 1.6; white-space: pre-wrap; word-wrap: break-word; }
-.message.user { background: #1a1a2e; border: 1px solid #2a2a4e; }
-.message.assistant { background: #111; border: 1px solid #222; }
-.message.assistant .cursor { animation: blink 1s step-end infinite; }
-.message.assistant .thinking { color: #6ee7b7; font-size: 13px; font-style: italic; }
+/* Progress bar */
+.progress-wrap { width: 100%; max-width: 460px; display: none; }
+.progress-wrap.active { display: block; }
+.progress-bar {
+    height: 6px; background: #1a1a1a; border-radius: 3px; overflow: hidden; margin-bottom: 6px;
+}
+.progress-bar .fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width 0.2s; width: 0%; }
+.progress-text { font-size: 12px; color: var(--dim); text-align: center; }
+
+.onboard .drop-hint { font-size: 12px; color: #444; }
+.onboard .drop-hint a { color: var(--accent); cursor: pointer; text-decoration: none; }
+
+/* Chat area */
+.chat-wrap { flex: 1; display: none; flex-direction: column; min-height: 0; padding-top: 12px; }
+.chat-wrap.active { display: flex; }
+.chat { flex: 1; overflow-y: auto; padding-bottom: 8px; scroll-behavior: smooth; }
+
+.message {
+    padding: 10px 14px; margin-bottom: 6px; border-radius: 10px;
+    font-size: 14px; line-height: 1.65; white-space: pre-wrap; word-wrap: break-word;
+    max-width: 85%;
+}
+.message.user {
+    background: #1a1a2e; border: 1px solid #2a2a4e;
+    margin-left: auto; border-bottom-right-radius: 4px;
+}
+.message.assistant {
+    background: var(--surface); border: 1px solid var(--border);
+    border-bottom-left-radius: 4px;
+}
+.message.assistant .cursor { animation: blink 1s step-end infinite; color: var(--accent); }
+.message.assistant .thinking { color: var(--accent); font-size: 13px; font-style: italic; }
 @keyframes blink { 50% { opacity: 0; } }
-.message.system { color: #666; font-size: 12px; text-align: center; white-space: normal; }
-.message code { background: #1a1a1a; padding: 1px 4px; border-radius: 3px; font-size: 13px; }
-.message pre { background: #1a1a1a; padding: 12px; border-radius: 6px; overflow-x: auto; margin: 8px 0; }
+.message code { background: #1a1a1a; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+.message pre { background: #0d0d0d; padding: 12px; border-radius: 8px; overflow-x: auto; margin: 8px 0; }
 .message pre code { background: none; padding: 0; }
-.message strong { color: #6ee7b7; }
+.message strong { color: var(--accent); }
 
-/* Input */
-.input-row {
-    display: flex; gap: 8px;
+/* Input area */
+.input-area { flex-shrink: 0; padding: 10px 0; }
+.input-row { display: flex; gap: 8px; align-items: flex-end; }
+.input-row textarea {
+    flex: 1; padding: 10px 14px; background: var(--surface); border: 1px solid #333;
+    border-radius: 10px; color: #e0e0e0; font-size: 14px; outline: none;
+    font-family: inherit; resize: none; min-height: 44px; max-height: 120px;
+    line-height: 1.4;
 }
-.input-row input {
-    flex: 1; padding: 12px 16px; background: #111; border: 1px solid #333;
-    border-radius: 8px; color: #e0e0e0; font-size: 14px; outline: none;
-}
-.input-row input:focus { border-color: #6ee7b7; }
-.input-row input:disabled { opacity: 0.4; }
+.input-row textarea:focus { border-color: var(--accent); }
+.input-row textarea:disabled { opacity: 0.3; }
 .input-row button {
-    padding: 12px 24px; background: #6ee7b7; color: #000; border: none;
-    border-radius: 8px; font-weight: 600; font-size: 14px; cursor: pointer;
+    padding: 10px 20px; border: none; border-radius: 10px;
+    font-weight: 600; font-size: 14px; cursor: pointer; height: 44px;
+    transition: all 0.15s;
 }
-.input-row button:hover { background: #5cd4a4; }
-.input-row button:disabled { opacity: 0.3; cursor: not-allowed; }
+.btn-send { background: var(--accent); color: #000; }
+.btn-send:hover { background: #5cd4a4; }
+.btn-send:disabled { opacity: 0.3; cursor: not-allowed; }
+.btn-stop { background: #ef4444; color: #fff; display: none; }
+.btn-stop:hover { background: #dc2626; }
 
-/* Stats */
+/* Stats bar */
 .stats {
-    display: flex; gap: 16px; padding: 12px 0; font-size: 12px; color: #555;
-    border-top: 1px solid #1a1a1a; margin-top: 8px;
+    display: flex; gap: 14px; padding: 6px 0; font-size: 11px; color: #444;
+    flex-shrink: 0;
 }
-.stats span { display: flex; align-items: center; gap: 4px; }
+.stats span { display: flex; align-items: center; gap: 3px; }
 
-/* Loading */
-.loading { display: none; align-items: center; gap: 8px; padding: 16px; color: #6ee7b7; }
-.loading.active { display: flex; }
-.spinner { width: 16px; height: 16px; border: 2px solid #333; border-top-color: #6ee7b7; border-radius: 50%; animation: spin 0.8s linear infinite; }
+/* Spinner */
+.spinner {
+    width: 14px; height: 14px; border: 2px solid #333;
+    border-top-color: var(--accent); border-radius: 50%;
+    animation: spin 0.7s linear infinite; display: inline-block;
+    vertical-align: middle;
+}
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* Mobile */
+@media (max-width: 600px) {
+    .model-cards { flex-direction: column; align-items: stretch; }
+    .model-card { min-width: auto; }
+    .message { max-width: 92%; }
+    .header { padding: 10px 14px; }
+    .main { padding: 0 10px; }
+}
+
+input[type=file] { display: none; }
 </style>
 </head>
 <body>
@@ -115,368 +161,304 @@ body {
     <h1>quant<span>.cpp</span></h1>
     <span class="badge">WASM</span>
     <span class="badge" id="kvBadge" style="display:none">3x Context</span>
-    <a class="github" href="https://github.com/quantumaikr/quant.cpp" target="_blank">GitHub ↗</a>
+    <div class="right">
+        <span class="model-info" id="modelInfo"></span>
+        <a class="github" href="https://github.com/quantumaikr/quant.cpp" target="_blank">GitHub</a>
+    </div>
 </div>
 
 <div class="main">
-    <div class="dropzone" id="dropzone">
-        <h2>LLM in Your Browser</h2>
-        <p style="margin-bottom:16px; color:#6ee7b7; font-size:15px">No install. No API key. No server. Just click.</p>
+    <!-- Onboarding screen -->
+    <div class="onboard" id="onboard">
+        <h2>Run an <span>LLM</span> in your browser</h2>
+        <p class="subtitle">No install. No API key. No server.</p>
 
         <div class="model-cards" id="modelCards">
-            <div class="model-card recommended" onclick="loadDemoModel('qwen3.5-0.8b')">
+            <div class="model-card recommended" id="card-qwen" onclick="loadDemoModel('qwen3.5-0.8b')">
                 <div class="name">Qwen3.5 0.8B</div>
-                <div class="meta">~508 MB download &middot; Q4_K_M</div>
+                <div class="meta" id="meta-qwen">~508 MB &middot; Q4_K_M</div>
                 <span class="tag">Recommended</span>
-                <div class="meta" style="margin-top:4px">Fast, multilingual, best quality/size</div>
             </div>
-            <div class="model-card" onclick="loadDemoModel('llama-3.2-1b')">
+            <div class="model-card" id="card-llama" onclick="loadDemoModel('llama-3.2-1b')">
                 <div class="name">Llama 3.2 1B</div>
-                <div class="meta">~770 MB download &middot; Q4_K_M</div>
+                <div class="meta" id="meta-llama">~770 MB &middot; Q4_K_M</div>
                 <span class="tag blue">Higher quality</span>
-                <div class="meta" style="margin-top:4px">Better reasoning, longer wait</div>
             </div>
         </div>
 
-        <p style="color:#555; font-size:13px">Or <a href="#" onclick="document.getElementById('fileInput').click(); return false" style="color:#6ee7b7">drop your own GGUF</a> file.</p>
-        <p style="margin-top:8px; color:#333; font-size:12px">Runs entirely in your browser. Nothing uploaded.</p>
-        <input type="file" id="fileInput" accept=".gguf" style="display:none">
+        <div class="progress-wrap" id="progressWrap">
+            <div class="progress-bar"><div class="fill" id="progressFill"></div></div>
+            <div class="progress-text" id="progressText"></div>
+        </div>
+
+        <p class="drop-hint">
+            or <a onclick="document.getElementById('fileInput').click()">load your own GGUF</a>
+            &middot; runs 100% client-side
+        </p>
+        <input type="file" id="fileInput" accept=".gguf">
     </div>
 
-    <div class="loading" id="loading">
-        <div class="spinner"></div>
-        <span id="loadingText">Loading...</span>
-    </div>
-
-    <div class="chat" id="chat"></div>
-
-    <div class="input-row">
-        <input type="text" id="prompt" placeholder="Ask anything..." disabled
-               onkeydown="if(event.key==='Enter') generate()">
-        <button id="sendBtn" onclick="generate()" disabled>Send</button>
-    </div>
-
-    <div class="stats">
-        <span id="statTokens"></span>
-        <span id="statSpeed"></span>
-        <span id="statMemory"></span>
+    <!-- Chat screen -->
+    <div class="chat-wrap" id="chatWrap">
+        <div class="chat" id="chat"></div>
+        <div class="input-area">
+            <div class="input-row">
+                <textarea id="prompt" placeholder="Send a message..." disabled rows="1"
+                    oninput="autoResize(this)"
+                    onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();generate()}"></textarea>
+                <button class="btn-send" id="sendBtn" onclick="generate()" disabled>Send</button>
+                <button class="btn-stop" id="stopBtn" onclick="stopGeneration()">Stop</button>
+            </div>
+        </div>
+        <div class="stats">
+            <span id="statModel"></span>
+            <span id="statTokens"></span>
+            <span id="statSpeed"></span>
+        </div>
     </div>
 </div>
 
 <script>
-// State
-let modelLoaded = false;
-let generating = false;
+let modelLoaded = false, generating = false, stopRequested = false;
+let activeModelId = null;
 
-// ---- Model registry ----
 const MODELS = {
     'qwen3.5-0.8b': {
         url: 'https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_K_M.gguf',
-        name: 'Qwen3.5-0.8B Q4_K_M',
-        size: '~508 MB',
+        name: 'Qwen3.5 0.8B',
+        size: 508,
         cacheKey: 'qwen3.5-0.8b-q4km',
-        chatTemplate: (text) => `<|im_start|>user\n${text}<|im_end|>\n<|im_start|>assistant\n`,
+        chatTemplate: (t) => `<|im_start|>user\n${t}<|im_end|>\n<|im_start|>assistant\n`,
+        cardId: 'card-qwen', metaId: 'meta-qwen',
     },
     'llama-3.2-1b': {
         url: 'https://huggingface.co/hugging-quants/Llama-3.2-1B-Instruct-Q4_K_M-GGUF/resolve/main/llama-3.2-1b-instruct-q4_k_m.gguf',
-        name: 'Llama-3.2-1B-Instruct Q4_K_M',
-        size: '~770 MB',
+        name: 'Llama 3.2 1B',
+        size: 770,
         cacheKey: 'llama-3.2-1b-q4km',
-        chatTemplate: (text) => `<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n${text}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n`,
+        chatTemplate: (t) => `<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n${t}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n`,
+        cardId: 'card-llama', metaId: 'meta-llama',
     },
 };
-let activeModelId = null;
 
-// ---- IndexedDB model cache ----
-const DB_NAME = 'quantcpp_cache';
-const DB_STORE = 'models';
-
+// ---- IndexedDB cache ----
+const DB_NAME = 'quantcpp_cache', DB_STORE = 'models';
 function openDB() {
-    return new Promise((resolve, reject) => {
-        const req = indexedDB.open(DB_NAME, 2);
-        req.onupgradeneeded = () => {
-            if (!req.result.objectStoreNames.contains(DB_STORE))
-                req.result.createObjectStore(DB_STORE);
-        };
-        req.onsuccess = () => resolve(req.result);
-        req.onerror = () => reject(req.error);
+    return new Promise((res, rej) => {
+        const r = indexedDB.open(DB_NAME, 2);
+        r.onupgradeneeded = () => { if (!r.result.objectStoreNames.contains(DB_STORE)) r.result.createObjectStore(DB_STORE); };
+        r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
     });
 }
+async function cacheModel(k, v) { const db = await openDB(); return new Promise((res, rej) => { const tx = db.transaction(DB_STORE,'readwrite'); tx.objectStore(DB_STORE).put(v, k); tx.oncomplete = res; tx.onerror = () => rej(tx.error); }); }
+async function getCachedModel(k) { const db = await openDB(); return new Promise((res, rej) => { const tx = db.transaction(DB_STORE,'readonly'); const r = tx.objectStore(DB_STORE).get(k); r.onsuccess = () => res(r.result||null); r.onerror = () => rej(r.error); }); }
 
-async function cacheModel(key, bytes) {
-    const db = await openDB();
-    return new Promise((resolve, reject) => {
-        const tx = db.transaction(DB_STORE, 'readwrite');
-        tx.objectStore(DB_STORE).put(bytes, key);
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-    });
+// ---- File drop ----
+const onboard = document.getElementById('onboard');
+document.body.addEventListener('dragover', e => { e.preventDefault(); onboard.style.borderColor = 'var(--accent)'; });
+document.body.addEventListener('dragleave', () => { onboard.style.borderColor = ''; });
+document.body.addEventListener('drop', e => { e.preventDefault(); onboard.style.borderColor = ''; const f = e.dataTransfer.files[0]; if (f && f.name.endsWith('.gguf')) loadLocalFile(f); });
+document.getElementById('fileInput').addEventListener('change', e => { if (e.target.files[0]) loadLocalFile(e.target.files[0]); });
+
+// ---- Progress ----
+function showProgress(text, pct) {
+    const w = document.getElementById('progressWrap'); w.classList.add('active');
+    document.getElementById('progressText').textContent = text;
+    if (pct >= 0) document.getElementById('progressFill').style.width = pct + '%';
 }
+function hideProgress() { document.getElementById('progressWrap').classList.remove('active'); }
 
-async function getCachedModel(key) {
-    const db = await openDB();
-    return new Promise((resolve, reject) => {
-        const tx = db.transaction(DB_STORE, 'readonly');
-        const req = tx.objectStore(DB_STORE).get(key);
-        req.onsuccess = () => resolve(req.result || null);
-        req.onerror = () => reject(req.error);
-    });
-}
-
-// File handling
-const dropzone = document.getElementById('dropzone');
-const fileInput = document.getElementById('fileInput');
-
-['dragenter','dragover'].forEach(e => {
-    dropzone.addEventListener(e, ev => { ev.preventDefault(); dropzone.classList.add('drag-over'); });
-});
-['dragleave','drop'].forEach(e => {
-    dropzone.addEventListener(e, ev => { ev.preventDefault(); dropzone.classList.remove('drag-over'); });
-});
-
-dropzone.addEventListener('drop', e => {
-    const file = e.dataTransfer.files[0];
-    if (file && file.name.endsWith('.gguf')) loadModel(file);
-});
-
-fileInput.addEventListener('change', e => {
-    const file = e.target.files[0];
-    if (file) loadModel(file);
-});
-
-function showLoading(msg) {
-    document.getElementById('loading').classList.add('active');
-    document.getElementById('loadingText').textContent = msg;
-}
-function hideLoading() {
-    document.getElementById('loading').classList.remove('active');
-}
-
-// Demo model — cache-first, download only if not in IndexedDB
-async function loadDemoModel(modelId) {
-    const model = MODELS[modelId];
-    if (!model) return;
-
-    activeModelId = modelId;
-    const cards = document.querySelectorAll('.model-card');
-    cards.forEach(c => c.style.pointerEvents = 'none');
+// ---- Model loading ----
+async function loadDemoModel(id) {
+    const m = MODELS[id]; if (!m) return;
+    activeModelId = id;
+    document.querySelectorAll('.model-card').forEach(c => c.classList.add('downloading'));
 
     try {
-        // 1. Try cache first
-        showLoading('Checking local cache...');
-        const cached = await getCachedModel(model.cacheKey);
+        const cached = await getCachedModel(m.cacheKey);
         if (cached) {
-            showLoading(`Loading cached ${model.name}...`);
-            loadModelFromBytes(new Uint8Array(cached), `${model.name} (cached)`);
+            showProgress(`Loading ${m.name} from cache...`, 100);
+            loadModelFromBytes(new Uint8Array(cached), m.name);
             return;
         }
 
-        // 2. Download from HuggingFace
-        showLoading(`Downloading ${model.name} (${model.size})...`);
-
-        const response = await fetch(model.url);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-        const total = parseInt(response.headers.get('content-length') || '0');
-        const reader = response.body.getReader();
-        const chunks = [];
-        let received = 0;
+        showProgress(`Downloading ${m.name}...`, 0);
+        const resp = await fetch(m.url);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const total = parseInt(resp.headers.get('content-length') || '0');
+        const reader = resp.body.getReader();
+        const chunks = []; let received = 0;
 
         while (true) {
             const { done, value } = await reader.read();
             if (done) break;
-            chunks.push(value);
-            received += value.length;
+            chunks.push(value); received += value.length;
             if (total > 0) {
                 const pct = Math.floor(received * 100 / total);
-                const mb = (received / 1048576).toFixed(0);
-                const totalMb = (total / 1048576).toFixed(0);
-                document.getElementById('loadingText').textContent =
-                    `Downloading ${model.name}... ${pct}% (${mb}/${totalMb} MB)`;
+                showProgress(`${m.name} — ${(received/1048576).toFixed(0)}/${(total/1048576).toFixed(0)} MB`, pct);
             }
         }
 
-        const blob = new Blob(chunks);
-        const arrayBuffer = await blob.arrayBuffer();
-        const data = new Uint8Array(arrayBuffer);
-
-        // 3. Cache for next time
-        showLoading('Caching model for instant reload...');
-        await cacheModel(model.cacheKey, arrayBuffer).catch(() => {});
-
-        showLoading('Loading model into WASM...');
-        loadModelFromBytes(data, model.name);
+        const buf = await new Blob(chunks).arrayBuffer();
+        showProgress('Caching for next time...', 100);
+        await cacheModel(m.cacheKey, buf).catch(() => {});
+        showProgress('Initializing model...', 100);
+        loadModelFromBytes(new Uint8Array(buf), m.name);
     } catch (err) {
-        hideLoading();
-        cards.forEach(c => c.style.pointerEvents = '');
+        hideProgress();
+        document.querySelectorAll('.model-card').forEach(c => c.classList.remove('downloading'));
         activeModelId = null;
-        alert('Download failed: ' + err.message + '\n\nTry dropping a local GGUF file instead.');
+        alert('Download failed: ' + err.message);
     }
 }
 
-// Auto-detect cached models on page load and show badges
-window.addEventListener('load', async () => {
+async function loadLocalFile(file) {
+    activeModelId = null;
+    showProgress(`Loading ${file.name}...`, -1);
     try {
-        for (const [id, model] of Object.entries(MODELS)) {
-            const cached = await getCachedModel(model.cacheKey);
-            if (cached) {
-                const cards = document.querySelectorAll('.model-card');
-                cards.forEach(card => {
-                    if (card.querySelector('.name').textContent.toLowerCase().includes(id.split('-')[0])) {
-                        const meta = card.querySelector('.meta');
-                        meta.textContent = 'Cached — instant load';
-                        meta.style.color = '#6ee7b7';
-                    }
-                });
-            }
-        }
-    } catch(e) {}
-});
-
-function addMessage(role, text) {
-    const chat = document.getElementById('chat');
-    const div = document.createElement('div');
-    div.className = `message ${role}`;
-    if (role === 'assistant') {
-        div.textContent = '';
-    } else {
-        div.innerHTML = formatText(text);
-    }
-    chat.appendChild(div);
-    chat.scrollTop = chat.scrollHeight;
-    return div;
-}
-
-function formatText(text) {
-    // Basic markdown: **bold**, `code`, ```blocks```
-    return text
-        .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
-        .replace(/`([^`]+)`/g, '<code>$1</code>')
-        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+        const buf = await file.arrayBuffer();
+        loadModelFromBytes(new Uint8Array(buf), file.name);
+    } catch(e) { alert('Error: ' + e.message); hideProgress(); }
 }
 
 function loadModelFromBytes(bytes, name) {
     try {
         Module.FS.writeFile('/model.gguf', bytes);
-        showLoading('Initializing model...');
+        showProgress('Initializing model...', 100);
         const rc = Module._wasm_load_model(Module.allocateUTF8('/model.gguf'));
         if (rc === 0) {
             modelLoaded = true;
-            const dropzone = document.getElementById('dropzone');
-            dropzone.classList.add('loaded');
-            dropzone.innerHTML = `<h2>✓ ${name} (${(bytes.length/1048576).toFixed(0)} MB)</h2>
-                <p style="color:#6ee7b7">KV compression active — 3x longer context</p>`;
+            // Switch to chat view
+            document.getElementById('onboard').classList.add('hidden');
+            document.getElementById('chatWrap').classList.add('active');
             document.getElementById('kvBadge').style.display = '';
+            document.getElementById('modelInfo').textContent = `${name} · ${(bytes.length/1048576).toFixed(0)} MB`;
+            document.getElementById('statModel').textContent = name;
             document.getElementById('prompt').disabled = false;
             document.getElementById('sendBtn').disabled = false;
             document.getElementById('prompt').focus();
-            addMessage('system', `Model loaded! ${name} (${(bytes.length/1048576).toFixed(0)} MB). Ask anything.`);
         } else {
-            addMessage('system', 'Failed to load model.');
+            alert('Failed to load model.');
+            document.querySelectorAll('.model-card').forEach(c => c.classList.remove('downloading'));
         }
     } catch(e) {
-        addMessage('system', `Error: ${e.message}`);
+        alert('Error: ' + e.message);
+        document.querySelectorAll('.model-card').forEach(c => c.classList.remove('downloading'));
     }
-    hideLoading();
+    hideProgress();
 }
 
-async function loadModel(file) {
-    showLoading(`Loading ${file.name} (${(file.size/1024/1024).toFixed(0)} MB)...`);
-    addMessage('system', `Loading ${file.name}...`);
-    activeModelId = null;
-    try {
-        const buffer = await file.arrayBuffer();
-        loadModelFromBytes(new Uint8Array(buffer), file.name);
-    } catch(e) {
-        addMessage('system', `Error: ${e.message}`);
+// ---- Cache badge on load ----
+window.addEventListener('load', async () => {
+    for (const [id, m] of Object.entries(MODELS)) {
+        try {
+            const cached = await getCachedModel(m.cacheKey);
+            if (cached) {
+                const el = document.getElementById(m.metaId);
+                if (el) { el.textContent = 'Cached — instant load'; el.style.color = 'var(--accent)'; }
+            }
+        } catch(e) {}
     }
-    hideLoading();
+});
+
+// ---- Chat ----
+function addMessage(role, text) {
+    const chat = document.getElementById('chat');
+    const div = document.createElement('div');
+    div.className = `message ${role}`;
+    if (role !== 'assistant') div.innerHTML = formatText(text);
+    chat.appendChild(div);
+    chat.scrollTop = chat.scrollHeight;
+    return div;
+}
+
+function formatText(t) {
+    return t
+        .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
+        .replace(/`([^`]+)`/g, '<code>$1</code>')
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+}
+
+function autoResize(el) {
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 120) + 'px';
 }
 
 function getChatPrompt(text) {
-    if (activeModelId && MODELS[activeModelId]) {
-        return MODELS[activeModelId].chatTemplate(text);
-    }
+    if (activeModelId && MODELS[activeModelId]) return MODELS[activeModelId].chatTemplate(text);
     return `<|im_start|>user\n${text}<|im_end|>\n<|im_start|>assistant\n`;
 }
 
+function stopGeneration() { stopRequested = true; }
+
 async function generate() {
     if (!modelLoaded || generating) return;
-    const input = document.getElementById('prompt');
-    const text = input.value.trim();
+    const el = document.getElementById('prompt');
+    const text = el.value.trim();
     if (!text) return;
 
-    input.value = '';
-    generating = true;
-    document.getElementById('sendBtn').disabled = true;
-    input.disabled = true;
+    el.value = ''; el.style.height = 'auto';
+    generating = true; stopRequested = false;
+    document.getElementById('sendBtn').style.display = 'none';
+    document.getElementById('stopBtn').style.display = '';
+    el.disabled = true;
 
     addMessage('user', text);
-    const assistantDiv = addMessage('assistant', '');
-    assistantDiv.innerHTML = '<span class="thinking"><span class="spinner" style="display:inline-block;width:12px;height:12px;vertical-align:middle;margin-right:6px"></span>Thinking...</span>';
-    let output = '';
-    let tokenCount = 0;
-    const startTime = performance.now();
-    document.getElementById('statTokens').textContent = 'Processing prompt...';
-    document.getElementById('statSpeed').textContent = '';
+    const aDiv = addMessage('assistant', '');
+    aDiv.innerHTML = '<span class="thinking"><span class="spinner"></span> Thinking...</span>';
+    let output = '', count = 0;
+    const t0 = performance.now();
+    document.getElementById('statTokens').textContent = '';
+    document.getElementById('statSpeed').textContent = 'prefill...';
 
-    Module.onToken = (token) => {
-        output += token;
-        tokenCount++;
-        assistantDiv.textContent = output;
-        const cursor = document.createElement('span');
-        cursor.className = 'cursor';
-        cursor.textContent = '▌';
-        assistantDiv.appendChild(cursor);
+    Module.onToken = (tok) => {
+        output += tok; count++;
+        aDiv.textContent = output;
+        const cur = document.createElement('span');
+        cur.className = 'cursor'; cur.textContent = '▌';
+        aDiv.appendChild(cur);
         document.getElementById('chat').scrollTop = document.getElementById('chat').scrollHeight;
-        const elapsed = (performance.now() - startTime) / 1000;
-        if (elapsed > 0.1) {
-            document.getElementById('statTokens').textContent = `${tokenCount} tokens`;
-            document.getElementById('statSpeed').textContent = `${(tokenCount / elapsed).toFixed(1)} tok/s`;
-        }
+        const s = (performance.now() - t0) / 1000;
+        document.getElementById('statTokens').textContent = `${count} tokens`;
+        document.getElementById('statSpeed').textContent = `${(count/s).toFixed(1)} tok/s`;
     };
 
-    Module.onDone = (nTokens, elapsedMs) => {
-        assistantDiv.innerHTML = formatText(output);
-        const tps = nTokens > 0 ? (nTokens / (elapsedMs / 1000)).toFixed(1) : '0';
-        document.getElementById('statTokens').textContent = `${nTokens} tokens`;
-        document.getElementById('statSpeed').textContent = `${tps} tok/s`;
-        generating = false;
-        document.getElementById('sendBtn').disabled = false;
-        input.disabled = false;
-        input.focus();
+    Module.onDone = () => {
+        aDiv.innerHTML = output ? formatText(output) : '<em style="color:#555">No output.</em>';
+        const s = (performance.now() - t0) / 1000;
+        document.getElementById('statTokens').textContent = `${count} tokens`;
+        document.getElementById('statSpeed').textContent = count > 0 ? `${(count/s).toFixed(1)} tok/s` : '';
+        finishGeneration();
     };
 
-    const chatPrompt = getChatPrompt(text);
-
-    // Ensure "Thinking..." paints before WASM blocks the thread.
-    // Double-rAF guarantees the browser completes one paint cycle.
     await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
 
-    const promptPtr = Module.allocateUTF8(chatPrompt);
-    try {
-        await Module._wasm_generate_async(promptPtr, 0.7, 256);
-    } catch(e) {
-        Module._wasm_generate(promptPtr, 0.7, 256);
-    }
-    Module._free(promptPtr);
+    const ptr = Module.allocateUTF8(getChatPrompt(text));
+    try { await Module._wasm_generate_async(ptr, 0.7, 256); }
+    catch(e) { Module._wasm_generate(ptr, 0.7, 256); }
+    Module._free(ptr);
 
-    if (!output) {
-        assistantDiv.innerHTML = '<em style="color:#666">No output generated. Try a longer prompt.</em>';
+    if (!output && !count) {
+        aDiv.innerHTML = '<em style="color:#555">No output. Try a different prompt.</em>';
     }
+    finishGeneration();
+}
+
+function finishGeneration() {
     generating = false;
-    document.getElementById('sendBtn').disabled = false;
-    input.disabled = false;
+    document.getElementById('sendBtn').style.display = '';
+    document.getElementById('stopBtn').style.display = 'none';
+    const el = document.getElementById('prompt');
+    el.disabled = false; el.focus();
 }
 </script>
 
 <script>
 var Module = {
     onToken: null, onDone: null, onStatus: null,
-    print: function(text) { console.log(text); },
-    printErr: function(text) { console.warn(text); },
+    print: function(){}, printErr: function(){},
     onRuntimeInitialized: function() {
-        addMessage('system', 'Runtime ready. Choose a model or drop your own GGUF file.');
+        console.log('quant.cpp WASM ready');
     }
 };
 </script>
