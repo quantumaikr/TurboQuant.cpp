@@ -202,8 +202,6 @@ static inline int clock_gettime(int id, struct timespec* ts) {
 // Section 1: Types and Specs (from tq_types.h, tq_spec.h)
 // ============================================================================
 
-
-
 /* Cross-language static assert: works in both C11 and C++11/17 */
 #ifdef __cplusplus
 #define TQ_STATIC_ASSERT(cond, msg) static_assert(cond, msg)
@@ -218,8 +216,6 @@ static inline int clock_gettime(int id, struct timespec* ts) {
 #ifndef TQ_PI_2
 #define TQ_PI_2 1.5707963267948966f
 #endif
-
-
 
 /* ============================================================
  * Constants
@@ -398,8 +394,6 @@ typedef struct {
     int      enable_recompression;/* Tier 1 → Tier 2 re-compression   */
 } tq_progressive_config_t;
 
-
-
 /* TurboQuant KV cache block: RHT + Lloyd-Max codebook + QJL residual
  * 3-bit variant: 2-bit codebook (4 levels) + 1-bit QJL sign hash
  * Block covers TQ_BK elements (128).
@@ -469,12 +463,6 @@ TQ_CHECK_SIZE(block_tq_turbo_kv_4b, 8 + TQ_BK * 3 / 8 + TQ_BK / 8);
 TQ_CHECK_SIZE(block_tq_turbo_kv_1b, 8 + TQ_BK / 8);
 TQ_CHECK_SIZE(block_tq_turbo_kv_2b, 8 + TQ_BK / 8 + TQ_BK / 8);
 
-
-
-
-
-
-
 /* Format specification — version-aware, ONNX-inspired */
 
 #define TQ_SPEC_VERSION 1
@@ -500,17 +488,9 @@ typedef struct {
     uint8_t  flags;            /* TQ_FLAG_* bitmask                 */
 } tq_format_spec_t;
 
-
-
-
-
 // ============================================================================
 // Section 2: Engine Types (from tq_engine.h)
 // ============================================================================
-
-
-
-
 
 /* ============================================================
  * Model configuration
@@ -1123,9 +1103,6 @@ void tq_tp_run(void* (*fn)(void*), void** args, int n_tasks);
 /* Max threads supported by thread pool */
 #define TQ_TP_MAX 16
 
-
-
-
 // ============================================================================
 // Section 3: GGUF Types (from tq_gguf.h)
 // ============================================================================
@@ -1142,10 +1119,6 @@ void tq_tp_run(void* (*fn)(void*), void** args, int n_tasks);
  * Enables loading community GGUF models (Unsloth, bartowski, etc.)
  * directly into TurboQuant inference engine.
  */
-
-
-
-
 
 /* ============================================================
  * GGUF format constants
@@ -1462,13 +1435,9 @@ int tq_metal_moe_forward(
     const int*      up_types,       /* per-expert up quant types, NULL = use weight_type */
     const int*      down_types);    /* per-expert down quant types, NULL = use weight_type */
 
-
-
-
 // ============================================================================
 // Section 4: Internal API (from turboquant.h)
 // ============================================================================
-
 
 /**
  * TurboQuant.cpp — Cross-platform KV cache compression library
@@ -1476,9 +1445,6 @@ int tq_metal_moe_forward(
  * Public C API — single header include for all functionality.
  * Zero external dependencies (libc/libm only).
  */
-
-
-
 
 /* ============================================================
  * Version
@@ -1753,14 +1719,9 @@ void      tq_progressive_free(tq_progressive_t* p);
 
 tq_progressive_config_t tq_progressive_default_config(void);
 
-
-
-
-
 // ============================================================================
 // Section 5: quant_ctx struct definition
 // ============================================================================
-
 
 struct quant_ctx {
     tq_model_t* model;
@@ -1787,7 +1748,6 @@ struct quant_ctx {
  * - O(n log n) butterfly computation, no matrix storage needed
  * - Random signs decorrelate channels across different blocks
  */
-
 
 #ifdef __ARM_NEON
 #include <arm_neon.h>
@@ -1901,7 +1861,6 @@ void tq_rht_inverse(float* data, int n, uint32_t seed) {
  * so that SIMD speedup measurement is meaningful.
  */
 /* Generic reference — no compiler-specific pragmas */
-
 
 /* ---------- FP16 helpers ---------- */
 
@@ -2285,7 +2244,6 @@ void tq_uniform_3b_attention_ref(const float* query, const void* kv,
 // Section 8: Type Traits (from tq_traits.c)
 // ============================================================================
 
-
 /* Stub implementations for excluded quantization types (polar, qjl, turbo, mixed) */
 static void tq_stub_quantize(const float* src, void* dst, int n) {
     (void)src; (void)dst; (void)n;
@@ -2583,7 +2541,6 @@ tq_type tq_type_from_name(const char* name) {
  * No external dependencies — libc/libm only.
  */
 
-
 #ifdef __ARM_NEON
 #include <arm_neon.h>
 #endif
@@ -2616,7 +2573,6 @@ static struct {
 } g_tp;
 
 static int g_n_threads = 1;
-
 
 static void* tp_worker(void* arg) {
     int id = (int)(intptr_t)arg;
@@ -4388,8 +4344,6 @@ void tq_matmul_1bit(float* out, const float* x,
  * SPDX-License-Identifier: MIT
  */
 
-
-
 #ifdef _WIN32
 #else
 #endif
@@ -5097,8 +5051,6 @@ const tq_gguf_tensor_t* tq_gguf_find_tensor(const tq_gguf_ctx_t* ctx, const char
  *
  * Pure C11, no external dependencies.
  */
-
-
 
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
 #include <arm_neon.h>
@@ -7174,7 +7126,6 @@ void tq_metal_batch_end_if_available(void) {
  * Also supports the legacy llama2.c binary tokenizer format as fallback.
  */
 
-
 /* Global for qsort comparator (vocab index sorting) */
 static char** g_vocab_for_sort;
 static int cmp_vocab_idx(const void* a, const void* b) {
@@ -8518,7 +8469,6 @@ const char* tq_decode(const tq_tokenizer_t* tok, int prev_token, int token) {
  *   - Qwen3.5:   model.language_model.layers.N.self_attn.q_proj.weight
  * Supports hybrid architectures (e.g., Qwen3.5 DeltaNet + self_attn).
  */
-
 
 #ifdef _WIN32
 #else
@@ -12934,7 +12884,6 @@ void tq_quantize_weights_1bit(tq_model_t* model) {
  *   -> residual add
  */
 
-
 /* Unified Q2/1-bit matmul dispatch.
  * When model->use_1bit_weights, Q2 fields contain sign bits + norms,
  * dispatched to tq_matmul_1bit (FP32 input required).
@@ -15194,7 +15143,6 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
         }
     }
 
-
     /* Increment profile token count if profiling is active */
     if (s->profile_kv) {
         s->profile_kv_count++;
@@ -15244,7 +15192,6 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
  *   - Top-p (nucleus) sampling with temperature
  *   - Full generation loop with streaming callback
  */
-
 
 /* ============================================================
  * Argmax sampling: return token with highest logit
@@ -15672,7 +15619,6 @@ int tq_generate(tq_model_t* model, tq_tokenizer_t* tokenizer,
     tq_free_state(state);
     return generated;
 }
-
 
 // ============================================================================
 
