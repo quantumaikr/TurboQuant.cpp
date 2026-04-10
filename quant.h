@@ -15461,9 +15461,15 @@ int tq_generate(tq_model_t* model, tq_tokenizer_t* tokenizer,
         fprintf(stderr, "\n");
     }
 
-    /* Prefill: process all prompt tokens */
+    /* Prefill: process all prompt tokens.
+     * On Emscripten with ASYNCIFY, yield every 2 tokens so the browser
+     * can repaint (shows "Thinking..." and avoids "page unresponsive"). */
     for (int i = 0; i < n_prompt; i++) {
         tq_forward(model, state, prompt_tokens[i], i);
+#ifdef __EMSCRIPTEN__
+        extern void emscripten_sleep(unsigned int ms);
+        if (i % 2 == 1) emscripten_sleep(0);
+#endif
     }
 
     /* Repetition penalty setup */

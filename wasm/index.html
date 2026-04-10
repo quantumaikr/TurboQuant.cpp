@@ -448,6 +448,11 @@ async function generate() {
     };
 
     const chatPrompt = getChatPrompt(text);
+
+    // Ensure "Thinking..." paints before WASM blocks the thread.
+    // Double-rAF guarantees the browser completes one paint cycle.
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
     const promptPtr = Module.allocateUTF8(chatPrompt);
     try {
         await Module._wasm_generate_async(promptPtr, 0.7, 256);
