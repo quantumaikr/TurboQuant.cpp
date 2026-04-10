@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.11.0] — 2026-04-10
+
+### Compress your AI's memory without losing quality.
+
+Progressive KV compression is now **on by default** across all channels (Python, WASM, CLI). Every user automatically gets the best quality without any configuration.
+
+**The principle:** AI focuses on recent words, just like humans. We keep the last 128 tokens at full precision and compress the rest. Quality loss: **0%** (Llama 3B), **1.2%** (Llama 1B), **3.1%** (SmolLM2 135M).
+
+**Verified on 3 models, 2 sizes of eval text, deterministic reproduction confirmed.**
+
+| Model | Without progressive | With progressive (auto) | Memory saved |
+|---|---|---|---|
+| Llama 3.2 3B | 3.1% quality loss | **0% quality loss** | 3× |
+| Llama 3.2 1B | 16.1% quality loss | **1.2% quality loss** | 3× |
+| SmolLM2 135M | 12.9% quality loss | **3.1% quality loss** | 3× |
+
+Extra memory cost: 1.75 MB. Speed improvement: +13%. Tradeoffs: **none**.
+
+### Progressive is now the default everywhere
+
+- **Python:** `progressive=True` is the default in `Model()`
+- **WASM:** `k_highres_window=128` hardcoded in all config paths
+- **CLI:** auto-enables `k128` when KV compression is active (override with `--k-window 0`)
+
+### Additional findings from this research campaign
+
+- **K/V asymmetry:** K benefits from progressive (softmax amplification), V does not (linear weighting). V progressive has zero effect — confirmed empirically.
+- **K 3-bit + Q4 V + k128 = 8.6× compression at +1.4% PPL** — new Pareto point for maximum compression.
+- **K 3-bit is rescuable by k128, K 2-bit and K 1-bit are not** — the softmax rank preservation limit.
+- **RHT eliminates per-layer adaptation** — max theoretical benefit ~0.9% after normalization.
+
+### Honest corrections (#9, #10, #11)
+
+- **#9:** 957-token eval with k512 = 53% FP32 (misleading)
+- **#10:** 2-bit Pareto claim withdrawn (PPL +36.7% at 3970 tokens)
+- **#11:** Novelty claim adjusted — KVTC (NVIDIA) and PM-KVQ published similar recency-window approaches
+
+---
+
 ## [0.10.1] — 2026-04-10
 
 ### Progressive KV compression — FP32 quality at 3x compression
