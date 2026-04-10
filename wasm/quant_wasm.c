@@ -23,6 +23,12 @@ static quant_ctx*   g_ctx = NULL;
 static char         g_output[65536];
 static int          g_output_pos = 0;
 static int          g_generating = 0;
+static int          g_wasm_threads = 1;
+
+/* Query thread count from JS navigator.hardwareConcurrency */
+EM_JS(int, js_get_hw_concurrency, (void), {
+    return Math.min(navigator.hardwareConcurrency || 1, 4);
+});
 
 /* JS callback: called for each generated token */
 EM_JS(void, js_on_token, (const char* text), {
@@ -86,11 +92,13 @@ int wasm_load_model(const char* path) {
         return -1;
     }
 
+    g_wasm_threads = js_get_hw_concurrency();
+
     quant_config cfg = {
         .temperature = 0.7f,
         .top_p = 0.9f,
         .max_tokens = 512,
-        .n_threads = 1,  /* WASM: single thread for compatibility */
+        .n_threads = g_wasm_threads,
         .kv_compress = 1, /* 4-bit KV compression */
     };
     g_ctx = quant_new(g_model, &cfg);
@@ -99,7 +107,10 @@ int wasm_load_model(const char* path) {
         return -1;
     }
 
-    js_on_status("Model loaded! Ready to chat.");
+    char status_msg[128];
+    snprintf(status_msg, sizeof(status_msg),
+             "Model loaded! Ready to chat. (%d threads)", g_wasm_threads);
+    js_on_status(status_msg);
     return 0;
 }
 
@@ -124,7 +135,7 @@ int wasm_generate_async(const char* prompt, float temperature, int max_tokens) {
         .temperature = temperature,
         .top_p = 0.9f,
         .max_tokens = max_tokens > 0 ? max_tokens : 256,
-        .n_threads = 1,
+        .n_threads = g_wasm_threads,
         .kv_compress = 1,
     };
 
@@ -170,7 +181,7 @@ int wasm_generate(const char* prompt, float temperature, int max_tokens) {
         .temperature = temperature,
         .top_p = 0.9f,
         .max_tokens = max_tokens > 0 ? max_tokens : 256,
-        .n_threads = 1,
+        .n_threads = g_wasm_threads,
         .kv_compress = 1,
     };
 
