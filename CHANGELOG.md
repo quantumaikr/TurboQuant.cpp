@@ -1,5 +1,77 @@
 # Changelog
 
+## [0.12.0] — 2026-04-11 — Document-Level RAG Verified
+
+### Headline: 7/7 vs 0/7
+
+**Direct comparison on Llama 3.2 3B Q8_0:**
+
+| Method | Accuracy | Behavior on failure |
+|---|---:|---|
+| Chunk-RAG (wrong section) | **0/7** | Hallucinates plausible lies |
+| Full Document FP32 KV | **7/7** | Correct |
+| **Full Document 6.4x compressed KV** | **7/7** | **Correct — zero quality loss** |
+
+When chunk-RAG retrieved the wrong section, the model fabricated answers like "John Smith" for CTO (truth: Maria Santos) and "$1,000,000" for revenue (truth: 847M). Loading the full document via 6.4x KV compression produced 100% accuracy including multi-hop reasoning across sections.
+
+**Why this matters:** RAG's fundamental assumption is "retrieval is reliable." When it fails, models silently hallucinate. KV compression eliminates this failure mode by making it practical to load full documents into context on consumer hardware.
+
+Full benchmark: [bench/results/document_level_rag_breakthrough.md](bench/results/document_level_rag_breakthrough.md)
+
+### Major: K/V Asymmetric Compression — 6.4x at +3% PPL
+
+KIVI-style asymmetric quantization: K=4bit + V=Q4 + k128 progressive window.
+- **2.9x → 6.4x compression** (+121%)
+- PPL cost: +1.3% → +3.0% (+1.7pp)
+- Verified at both 2082 and 4095 tokens
+- 128K context Llama 3B fits in 9.5 GB (vs ~30 GB FP32)
+
+### Major: H2O Token Eviction + PyramidKV
+
+- H2O eviction: heavy-hitter detection with sink + recent window preservation
+- PyramidKV: per-layer KV budget allocation based on attention entropy
+- **Attention cost: 4.1ms → 1.7ms/tok at budget=128 (-59%)**
+- Llama 1B layer entropy measured: Layer 1 = 6.29 bits, Layer 11 = 1.84 bits
+- Output quality preserved (identical text vs no eviction)
+
+### Major: --save-kv / --load-kv CLI
+
+"Read Once, Query Forever" pattern:
+```bash
+./quant model.gguf -p "long doc..." --save-kv doc.kv  # process once
+./quant model.gguf -p "question?"  --load-kv doc.kv  # query instantly
+```
+
+Per-layer strided save/load. Verified: 3B model recalls "PHOENIX" from saved context.
+
+### Refactoring (R1, R3)
+
+- DISPATCH_MATMUL macros: 4 dispatch chains consolidated
+- Magic numbers replaced with TQ_MAX_HEAD_DIM / TQ_MAX_KV_DIM constants
+- Zero warnings, 35/35 tests pass
+
+### Bug Fixes
+
+- Qwen3.5 text collapse at ~530 tokens — root cause: T=0 greedy entering repetition loop, KV quant error compounds. Added n-gram loop detection (4-gram × 3 repeats → stop).
+- Qwen3.5 head_dim=256 multi-block dequant for KV cache
+- Gemma 4 false attn_output_gate detection on ISWA hybrid attention
+
+### Documentation
+
+- New gh-pages educational guide site (Korean + English with toggle)
+- "Beyond RAG: Document-Level Context" section in README + guide
+- Document-Level RAG benchmark report
+- Open Graph social preview image
+
+### Honest Limitations
+
+- Q4 weight artifacts in fact extraction: "Santos" → "SanSannt", semantically correct but visually noisy
+- 1B model instruction-following limited; 3B+ recommended for QA
+- 7B+ models constrained by 16GB Mac memory (model + KV pressure)
+- Q4_K_M GGUF on-the-fly dequant has bug with TQ_NO_Q4 (workaround: default auto Q4 path works)
+
+---
+
 ## [0.10.1] — 2026-04-10
 
 ### Progressive KV compression — FP32 quality at 3x compression

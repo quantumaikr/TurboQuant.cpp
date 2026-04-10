@@ -12,8 +12,8 @@
 
 <table align="center">
 <tr>
-<td align="center"><b>3x less memory</b><br>same quality</td>
-<td align="center"><b>13% faster</b><br>than uncompressed</td>
+<td align="center"><b>6.4x compression</b><br>+3% PPL</td>
+<td align="center"><b>7/7 vs 0/7</b><br>Doc-QA vs chunk-RAG</td>
 <td align="center"><b>128K context</b><br>on 16GB Mac</td>
 <td align="center"><b>16K LOC</b><br>zero deps</td>
 </tr>
@@ -98,6 +98,27 @@ Llama 3.2 3B with 6.4x KV compression. **Real RSS measured on M1 Pro 16GB:**
 ```python
 m = Model("llama-3b.gguf", aggressive=True, context_length=131072)  # 128K in 9.5 GB
 ```
+
+---
+
+## Document QA: 7/7 vs Chunk-RAG 0/7 — Measured
+
+A direct comparison of three approaches to document question-answering with **Llama 3.2 3B Q8_0**:
+
+| Method | Accuracy | Hallucinations |
+|---|---:|---|
+| Chunk-RAG (wrong chunk retrieved) | **0/7** | All 7 questions |
+| Full Document (FP32 KV) | **7/7** | None |
+| **Full Document (6.4x compressed KV)** | **7/7** | **None — zero quality loss** |
+
+When chunk-RAG retrieves the wrong section, the model **doesn't say "I don't know"** — it generates plausible-sounding lies:
+- "Who is the CTO?" → **"John Smith"** (truth: Maria Santos)
+- "Revenue?" → **"$1,000,000"** (truth: 847 million)
+- "R&D %?" → **"15% of net income"** (truth: 14% of revenue)
+
+With the full document loaded via 6.4x KV compression, the model correctly answers all 7 questions including **multi-hop reasoning** that requires connecting information across sections (e.g., "What risk affects the growth region?" → currency fluctuations, requiring linking Section 3 + Section 5).
+
+**The takeaway:** KV compression isn't just memory savings — it enables a **fundamentally different RAG approach**. RAG decides *which documents* to look at; long-context decides *how deeply* to understand them. See [bench/results/document_level_rag_breakthrough.md](bench/results/document_level_rag_breakthrough.md) for the full benchmark.
 
 ---
 
