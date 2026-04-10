@@ -24,9 +24,9 @@ emcc "$SCRIPT_DIR/quant_wasm.c" \
     -flto \
     -pthread \
     -s WASM=1 \
-    -s INITIAL_MEMORY=1GB \
+    -s INITIAL_MEMORY=256MB \
     -s MAXIMUM_MEMORY=4GB \
-    -s ALLOW_MEMORY_GROWTH=0 \
+    -s ALLOW_MEMORY_GROWTH=1 \
     -s EXPORTED_FUNCTIONS='["_main","_wasm_load_model","_wasm_generate","_wasm_generate_async","_wasm_model_info","_wasm_is_ready","_malloc","_free"]' \
     -s EXPORTED_RUNTIME_METHODS='["UTF8ToString","allocateUTF8","FS"]' \
     -s FORCE_FILESYSTEM=1 \
