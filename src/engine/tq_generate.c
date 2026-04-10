@@ -254,13 +254,22 @@ int tq_generate(tq_model_t* model, tq_tokenizer_t* tokenizer,
     int vocab_size = model->config.vocab_size;
     float rep_penalty = config->rep_penalty;
     int rep_window = config->rep_window;
-    if (rep_window > 64) rep_window = 64;
-    int recent_tokens[64];
+    if (rep_window > 128) rep_window = 128;
+    int recent_tokens[128];
     int recent_count = 0;
+
+    /* N-gram loop detection: track recent 4-grams to detect infinite loops.
+     * Small models with T=0 greedy decoding enter repetition loops where
+     * the same ~30-token pattern repeats endlessly. KV quantization error
+     * compounds through these repetitions, eventually collapsing output
+     * into garbage. Detecting loops early prevents wasted compute. */
+    uint32_t ngram_hashes[64];
+    int ngram_hash_count = 0;
+    int loop_detected = 0;
 
     /* Seed recent tokens with tail of prompt for better penalty coverage */
     for (int i = (n_prompt > rep_window ? n_prompt - rep_window : 0); i < n_prompt; i++) {
-        recent_tokens[recent_count % 64] = prompt_tokens[i];
+        recent_tokens[recent_count % 128] = prompt_tokens[i];
         recent_count++;
     }
 
@@ -268,8 +277,8 @@ int tq_generate(tq_model_t* model, tq_tokenizer_t* tokenizer,
     if (rep_penalty > 1.0f) {
         int window = recent_count < rep_window ? recent_count : rep_window;
         for (int r = 0; r < window; r++) {
-            int idx = (recent_count - 1 - r) % 64;
-            if (idx < 0) idx += 64;
+            int idx = (recent_count - 1 - r) % 128;
+            if (idx < 0) idx += 128;
             int tok = recent_tokens[idx];
             if (tok >= 0 && tok < vocab_size) {
                 if (state->logits[tok] > 0)
@@ -288,7 +297,7 @@ int tq_generate(tq_model_t* model, tq_tokenizer_t* tokenizer,
                                      &rng_state);
 
     /* Record first sampled token */
-    recent_tokens[recent_count % 64] = next_token;
+    recent_tokens[recent_count % 128] = next_token;
     recent_count++;
 
     int generated = 0;
@@ -483,8 +492,32 @@ int tq_generate(tq_model_t* model, tq_tokenizer_t* tokenizer,
                                      &rng_state);
 
         /* Record sampled token for repetition penalty */
-        recent_tokens[recent_count % 64] = next_token;
+        recent_tokens[recent_count % 128] = next_token;
         recent_count++;
+
+        /* N-gram loop detection: hash recent 4-gram and check for repeats */
+        if (recent_count >= 4) {
+            uint32_t h = 0;
+            for (int r = 0; r < 4; r++) {
+                int gi = (recent_count - 4 + r) % 128;
+                h = h * 31 + (uint32_t)recent_tokens[gi];
+            }
+            int matches = 0;
+            int ring_len = ngram_hash_count < 64 ? ngram_hash_count : 64;
+            for (int r = 0; r < ring_len; r++) {
+                if (ngram_hashes[r] == h) matches++;
+            }
+            ngram_hashes[ngram_hash_count % 64] = h;
+            ngram_hash_count++;
+            if (matches >= 3) {
+                loop_detected = 1;
+                break;
+            }
+        }
+    }
+
+    if (loop_detected) {
+        fprintf(stderr, "[generate] repetition loop detected after %d tokens, stopping\n", generated);
     }
 
     /* Null-terminate output */
