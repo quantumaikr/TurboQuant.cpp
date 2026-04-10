@@ -174,15 +174,10 @@ input[type=file] { display: none; }
         <p class="subtitle">No install. No API key. No server.</p>
 
         <div class="model-cards" id="modelCards">
-            <div class="model-card recommended" id="card-qwen" onclick="loadDemoModel('qwen3.5-0.8b')">
-                <div class="name">Qwen3.5 0.8B</div>
-                <div class="meta" id="meta-qwen">~508 MB &middot; Q4_K_M</div>
+            <div class="model-card recommended" id="card-llama" onclick="loadDemoModel('llama-3.2-1b')">
+                <div class="name">Llama 3.2 1B Instruct</div>
+                <div class="meta" id="meta-llama">~770 MB &middot; Verified quality</div>
                 <span class="tag">Recommended</span>
-            </div>
-            <div class="model-card" id="card-llama" onclick="loadDemoModel('llama-3.2-1b')">
-                <div class="name">Llama 3.2 1B</div>
-                <div class="meta" id="meta-llama">~770 MB &middot; Q4_K_M</div>
-                <span class="tag blue">Higher quality</span>
             </div>
         </div>
 
@@ -223,17 +218,9 @@ let modelLoaded = false, generating = false, stopRequested = false;
 let activeModelId = null;
 
 const MODELS = {
-    'qwen3.5-0.8b': {
-        url: 'https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_K_M.gguf',
-        name: 'Qwen3.5 0.8B',
-        size: 508,
-        cacheKey: 'qwen3.5-0.8b-q4km',
-        chatTemplate: (t) => `<|im_start|>user\n${t}<|im_end|>\n<|im_start|>assistant\n`,
-        cardId: 'card-qwen', metaId: 'meta-qwen',
-    },
     'llama-3.2-1b': {
         url: 'https://huggingface.co/hugging-quants/Llama-3.2-1B-Instruct-Q4_K_M-GGUF/resolve/main/llama-3.2-1b-instruct-q4_k_m.gguf',
-        name: 'Llama 3.2 1B',
+        name: 'Llama 3.2 1B Instruct',
         size: 770,
         cacheKey: 'llama-3.2-1b-q4km',
         chatTemplate: (t) => `<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n${t}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n`,

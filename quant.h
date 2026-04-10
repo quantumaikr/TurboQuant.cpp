@@ -12179,8 +12179,13 @@ tq_model_t* tq_load_gguf(const char* path) {
         }
 
         const size_t MAX_FP32_BYTES = (size_t)16 * 1024 * 1024 * 1024ULL; /* 16 GB */
-        /* TQ_NO_Q4=1 disables Q4 recompression → use direct GGUF dequant for better quality */
+        /* TQ_NO_Q4=1 disables Q4 recompression → use direct GGUF dequant for better quality.
+         * Can be set via environment variable or compile-time define (useful for WASM). */
+#ifdef TQ_NO_Q4
+        if (1) {
+#else
         if (getenv("TQ_NO_Q4")) {
+#endif
             fprintf(stderr, "tq_load_gguf: TQ_NO_Q4 set — skipping Q4 conversion, using GGUF on-the-fly dequant\n");
             goto skip_q4_conversion;
         }

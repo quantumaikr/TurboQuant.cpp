@@ -40,6 +40,7 @@ emcc "$SCRIPT_DIR/quant_wasm.c" \
     -lm \
     -DNDEBUG \
     -D__EMSCRIPTEN__ \
+    -DTQ_NO_Q4=1 \
     -Wno-gnu-zero-variadic-macro-arguments \
     -Wno-dollar-in-identifier-extension
 
