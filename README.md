@@ -33,20 +33,29 @@
 
 ---
 
-## Quick Start (30 seconds)
+## Quick Start
 
+**Terminal (one command):**
 ```bash
 pip install quantcpp
+quantcpp "What is gravity?"
 ```
 
+**Python (3 lines):**
 ```python
 from quantcpp import Model
-
-m = Model.from_pretrained("Llama-3.2-1B")   # auto-downloads ~750 MB, cached
+m = Model.from_pretrained("Llama-3.2-1B")
 print(m.ask("What is gravity?"))
 ```
 
-No API key. No GPU. No configuration. [Try it in your browser →](https://quantumaikr.github.io/quant.cpp/)
+**Interactive chat:**
+```bash
+quantcpp
+# You: What is gravity?
+# AI: Gravity is a fundamental force...
+```
+
+Downloads Llama-3.2-1B (~750 MB) on first use, cached locally. No API key, no GPU. [Try in browser →](https://quantumaikr.github.io/quant.cpp/)
 
 ---
 

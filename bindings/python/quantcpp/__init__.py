@@ -1,18 +1,14 @@
 """
-quantcpp -- The SQLite of LLMs. Single-header C inference in Python.
+quantcpp -- Compress AI's memory 3x. It gets faster.
 
-Quick start (3 lines):
+Quick start:
 
     from quantcpp import Model
-    m = Model.from_pretrained("SmolLM2-135M")
+    m = Model.from_pretrained("Llama-3.2-1B")
     print(m.ask("What is gravity?"))
 
-Full control:
-
-    m = Model("path/to/model.gguf", temperature=0.7, max_tokens=256)
-    for token in m.generate("Once upon a time"):
-        print(token, end="", flush=True)
-    m.close()
+Note: SmolLM2-135M downloads faster but produces low-quality output.
+Use Llama-3.2-1B (~750 MB, one-time download) for good results.
 """
 
 try:
