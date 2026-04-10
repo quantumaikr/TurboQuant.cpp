@@ -3,13 +3,11 @@
 </p>
 
 <h3 align="center">quant.cpp</h3>
-<p align="center"><b>Compress your AI's memory without losing quality.</b></p>
+<p align="center"><b>We compressed AI's memory 3x. It got faster.</b></p>
 
 <p align="center">
-  AI models forget when conversations get long — they run out of memory.<br>
-  quant.cpp compresses that memory <b>3x</b> so your AI remembers <b>3x more</b>.<br>
-  The secret: AI naturally focuses on recent words, just like humans.<br>
-  We keep recent memory perfect and compress the rest. <b>Quality loss: 0%.</b>
+  No quality loss. 13% speed boost. One C file, zero dependencies.<br>
+  <code>pip install quantcpp</code> and your AI remembers 3x more on the same hardware.
 </p>
 
 <table align="center">

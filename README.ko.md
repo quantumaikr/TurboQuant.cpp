@@ -3,13 +3,11 @@
 </p>
 
 <h3 align="center">quant.cpp</h3>
-<p align="center"><b>AI의 대화 메모리를 압축해도, 품질은 떨어지지 않습니다.</b></p>
+<p align="center"><b>AI의 메모리를 3배 압축했더니, 더 빨라졌습니다.</b></p>
 
 <p align="center">
-  AI 모델은 대화가 길어지면 메모리가 부족해 대화를 잊습니다.<br>
-  quant.cpp는 이 메모리를 <b>3배 압축</b>해서 <b>3배 더 긴 대화</b>를 가능하게 합니다.<br>
-  비결: AI는 인간처럼 최근 대화에 집중합니다.<br>
-  최근 기억은 완벽하게 유지하고, 나머지만 압축합니다. <b>품질 손실: 0%.</b>
+  품질 손실 없음. 속도 13% 향상. C 파일 하나, 의존성 제로.<br>
+  <code>pip install quantcpp</code> 한 줄로 같은 하드웨어에서 3배 더 긴 대화.
 </p>
 
 <table align="center">
