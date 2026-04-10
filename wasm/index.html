@@ -433,10 +433,22 @@ async function generate() {
 
     await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
 
-    const ptr = Module.allocateUTF8(getChatPrompt(text));
-    try { await Module._wasm_generate_async(ptr, 0.7, 256); }
-    catch(e) { Module._wasm_generate(ptr, 0.7, 256); }
-    Module._free(ptr);
+    const prompt = getChatPrompt(text);
+
+    // Use ccall with async:true — this is the correct way to call
+    // ASYNCIFY-enabled C functions. Module._fn() direct calls do NOT
+    // return Promises; only ccall({async:true}) does.
+    try {
+        await Module.ccall(
+            'wasm_generate_async',
+            'number',
+            ['string', 'number', 'number'],
+            [prompt, 0.7, 256],
+            { async: true }
+        );
+    } catch(e) {
+        console.error('generate error:', e);
+    }
 
     if (!output && !count) {
         aDiv.innerHTML = '<em style="color:#555">No output. Try a different prompt.</em>';
