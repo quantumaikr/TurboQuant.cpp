@@ -27,7 +27,9 @@ echo "emcc version: $(emcc --version | head -1)"
 emcc "$SCRIPT_DIR/quant_wasm.c" \
     -I"$PROJECT_DIR" \
     -o "$SCRIPT_DIR/quant.js" \
-    -O2 \
+    -O3 \
+    -msimd128 \
+    -flto \
     -s WASM=1 \
     -s ALLOW_MEMORY_GROWTH=1 \
     -s MAXIMUM_MEMORY=4GB \

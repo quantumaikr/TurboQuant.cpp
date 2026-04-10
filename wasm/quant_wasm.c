@@ -37,7 +37,9 @@ EM_JS(void, js_on_status, (const char* msg), {
     if (Module.onStatus) Module.onStatus(UTF8ToString(msg));
 });
 
-/* Token callback for streaming — calls JS then yields to browser */
+/* Token callback for streaming — calls JS then yields to browser.
+ * Yields every 4 tokens to reduce ASYNCIFY stack unwind/rewind overhead. */
+static int g_stream_count = 0;
 static void on_token_streaming(const char* text, void* ud) {
     (void)ud;
     js_on_token(text);
@@ -47,9 +49,9 @@ static void on_token_streaming(const char* text, void* ud) {
         g_output_pos += len;
         g_output[g_output_pos] = '\0';
     }
-    /* Yield to browser event loop so DOM can repaint with the new token.
-     * emscripten_sleep(0) requires -sASYNCIFY but costs ~0 ms real time. */
-    emscripten_sleep(0);
+    if (++g_stream_count % 4 == 0) {
+        emscripten_sleep(0);
+    }
 }
 
 /* Non-yielding callback (fallback for non-ASYNCIFY builds) */
@@ -116,6 +118,7 @@ int wasm_generate_async(const char* prompt, float temperature, int max_tokens) {
     g_generating = 1;
     g_output_pos = 0;
     g_output[0] = '\0';
+    g_stream_count = 0;
 
     quant_config cfg = {
         .temperature = temperature,
@@ -130,8 +133,7 @@ int wasm_generate_async(const char* prompt, float temperature, int max_tokens) {
 
     double t0 = emscripten_get_now();
 
-    /* Streaming generation — on_token_streaming calls emscripten_sleep(0)
-     * which yields back to the browser event loop after each token. */
+    /* Streaming generation — yields every 4 tokens to browser. */
     int n_tokens = quant_generate(g_ctx, prompt, on_token_streaming, NULL);
 
     double elapsed = emscripten_get_now() - t0;
