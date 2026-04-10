@@ -68,6 +68,7 @@ body {
 .message.user { background: #1a1a2e; border: 1px solid #2a2a4e; }
 .message.assistant { background: #111; border: 1px solid #222; }
 .message.assistant .cursor { animation: blink 1s step-end infinite; }
+.message.assistant .thinking { color: #6ee7b7; font-size: 13px; font-style: italic; }
 @keyframes blink { 50% { opacity: 0; } }
 .message.system { color: #666; font-size: 12px; text-align: center; white-space: normal; }
 .message code { background: #1a1a1a; padding: 1px 4px; border-radius: 3px; font-size: 13px; }
@@ -412,9 +413,13 @@ async function generate() {
 
     addMessage('user', text);
     const assistantDiv = addMessage('assistant', '');
+    // Show "thinking" indicator during prompt prefill (before first token)
+    assistantDiv.innerHTML = '<span class="thinking"><span class="spinner" style="display:inline-block;width:12px;height:12px;vertical-align:middle;margin-right:6px"></span>Thinking...</span>';
     let output = '';
     let tokenCount = 0;
     const startTime = performance.now();
+    document.getElementById('statTokens').textContent = 'Processing prompt...';
+    document.getElementById('statSpeed').textContent = '';
 
     // Set streaming token callback
     Module.onToken = (token) => {
