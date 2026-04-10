@@ -43,6 +43,9 @@ Source        = "https://github.com/quantumaikr/quant.cpp"
 Issues        = "https://github.com/quantumaikr/quant.cpp/issues"
 Changelog     = "https://github.com/quantumaikr/quant.cpp/blob/main/CHANGELOG.md"
 
+[project.scripts]
+quantcpp = "quantcpp.cli:main"
+
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "build", "twine"]
 
