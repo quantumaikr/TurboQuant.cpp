@@ -12,14 +12,17 @@ from . import _llm
 from .locator import RegionPointer
 
 
-# EMPIRICAL: this exact format (doc + blank line + question) is what
-# worked in the Phase 3 Day 1 isolation test against Llama-3.2-3B-Q4.
-# Adding any wrap like "Based ONLY on the text above..." breaks the
-# model and causes it to fall back to primacy-bias entity selection.
-# Keep this prompt minimal — every word matters.
+# Day 2 redesign: reframe lookup as EXTRACTIVE ("find and quote the
+# sentence that contains the answer") rather than GENERATIVE ("answer
+# the question"). The extractive framing forces the model to do span
+# selection, which sidesteps primacy bias — instead of summarising the
+# region (which picks the first-mentioned entity) the model has to
+# identify the specific sentence that matches the question's keywords.
 LOOKUP_PROMPT_TEMPLATE = """{region_text}
 
-{question}"""
+Quote the single sentence from the text above that answers this question. Reply with only that sentence, no explanation.
+
+Question: {question}"""
 
 
 @dataclass

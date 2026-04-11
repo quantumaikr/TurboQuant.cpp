@@ -205,4 +205,48 @@ The Karpathy loop log lives in this section. Every round of work updates this wi
 
 ---
 
-### Day 2 — pending
+### Day 2 — 2026-04-12 — D2 GATE PASSED ✅
+
+**R1: Gist redesign — head_text + regex entities, no LLM** ✅
+- Added `head_text` field to `GistChunk` (first ~200 chars of actual chunk text)
+- Added `_extract_entities()` regex-based entity extraction (capitalized words + numbers + acronyms)
+- Made the LLM-summary path optional (`use_llm=False` by default)
+- `Gist.to_outline_text()` now uses `head_text` as the primary locator signal
+
+**R2: Verifier redesign — citation-grounded** ✅
+- Pivoted from "verify against gist" to "verify against actual lookup region"
+- `_literal_verify()` extracts key terms from the answer (multi-cap names, numbers) and checks each against the region with fuzzy substring matching
+- `_fuzzy_word_in_region()` handles Q4 visual jitter via progressively shorter prefix matching ("Williams" matches "williamlims" via 5-char prefix "willi")
+- `_fuzzy_in_region()` requires ≥50% of multi-word terms to match
+- LLM verifier kept as fallback when literal check is ambiguous
+
+**R3: Orchestrator preprocessing — acronym expansion** ✅
+- Diagnosed by direct test: "CFO" under Q4 jitter renders as "ccf" which the model can't distinguish from "ceo" → it returns the CEO instead of the CFO
+- Added `_expand_acronyms()` table for common business acronyms (CFO, CEO, CTO, COO, CIO, CMO, CDO, HR, R&D, IPO)
+- Expansion happens before any stage call: "Who is the CFO?" → "Who is the chief financial officer (CFO)?"
+- Verified by manual test: same model on same chunk now returns "John Williamlims" instead of "Maria Santos"
+
+**R4: Lookup reframe — extractive instead of generative** ✅
+- Reframed lookup prompt from "answer the question" to "Quote the single sentence from the text above that answers this question"
+- Extractive framing forces span selection over summarisation, sidesteps Phase 2B primacy bias
+
+**D2 gate result**: ✅ PASSED.
+- Final answer: `'The cchieef finnaancial ofoffficcer (CCF) of Acme Robbottic is John Williamlims.'`
+- Verdict: CONFIDENT (literal verifier matched 5/6 key terms in region)
+- Retries: 0 (clean first-pass success)
+- Total time: 77.1s (47s server startup + 30s pipeline)
+
+**Lessons** (embedded as code comments):
+- Q4 visual jitter on ALL-CAPS acronyms is a real failure mode — preprocessing acronym expansion is required for any business-domain RAG.
+- LLM-generated gist summaries are too generic to discriminate; raw chunk head_text is a better locator signal.
+- Citation-grounded verification (read the actual region) is much more reliable than gist-summary verification.
+- Extractive lookup framing ("quote a sentence") sidesteps the Phase 2B primacy bias.
+- Per-word fuzzy matching with prefix fallback handles Q4 jitter on identifiers.
+
+**Open issue for Day 3**: locator parser still fails on most calls ("## Step 1:" reasoning chains). Currently falls back to chunk 0; happened to be the right answer for the smoke test but won't generalise to multi-chunk benchmarks.
+
+**D3 plan**: redesign the locator with the same pattern that worked for the verifier — non-LLM hybrid (keyword overlap with chunk head_text) as primary signal, LLM as fallback. Then run the v0.12 Acme 7-question benchmark.
+
+---
+
+### Day 3 — pending

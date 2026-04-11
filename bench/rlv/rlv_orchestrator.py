@@ -23,10 +23,39 @@ For evals see bench/rlv/eval/.
 """
 import argparse
 import json
+import re
 import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
+
+# Day 2 finding: Llama-3.2-3B-Q4 in chat mode confuses ALL-CAPS acronyms
+# under Q4 visual jitter. The model renders "CFO" as "ccf" and can't
+# distinguish it from "CEO" → "ceoce". Result: asking "Who is the CFO?"
+# returns the CEO. Asking "Who is the chief financial officer?" returns
+# the right person. We pre-expand common acronyms before sending to any
+# stage so the model has the full term to anchor on.
+ACRONYM_EXPANSIONS = {
+    r"\bCFO\b":  "chief financial officer (CFO)",
+    r"\bCEO\b":  "chief executive officer (CEO)",
+    r"\bCTO\b":  "chief technology officer (CTO)",
+    r"\bCOO\b":  "chief operating officer (COO)",
+    r"\bCIO\b":  "chief information officer (CIO)",
+    r"\bCMO\b":  "chief marketing officer (CMO)",
+    r"\bCDO\b":  "chief data officer (CDO)",
+    r"\bHR\b":   "human resources (HR)",
+    r"\bR&D\b":  "research and development (R&D)",
+    r"\bIPO\b":  "initial public offering (IPO)",
+}
+
+
+def _expand_acronyms(text: str) -> str:
+    """Expand ALL-CAPS acronyms to full term + parenthesised acronym so
+    the model has both forms to match against (resilient to Q4 jitter)."""
+    out = text
+    for pattern, replacement in ACRONYM_EXPANSIONS.items():
+        out = re.sub(pattern, replacement, out)
+    return out
 
 # Make 'stages' importable when running from anywhere
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -50,6 +79,13 @@ def answer_question(
     and per-stage diagnostic info."""
     t_start = time.time()
     timings = {}
+
+    # Pre-process the question: expand acronyms (CFO -> "chief financial
+    # officer (CFO)") so Q4 visual jitter doesn't confuse the model.
+    original_question = question
+    question = _expand_acronyms(question)
+    if verbose and question != original_question:
+        print(f"[preprocess] expanded acronyms: {original_question!r} -> {question!r}")
 
     # Stage 1: GIST (or use cached one)
     t0 = time.time()
@@ -81,11 +117,15 @@ def answer_question(
     if verbose:
         print(f"[stage 3] -> answer: {look.answer[:80]!r}")
 
-    # Stage 4: VERIFY
+    # Stage 4: VERIFY (citation-grounded against the lookup region)
     t0 = time.time()
     if verbose:
-        print(f"[stage 4] verifying against gist")
-    ver = verifier_stage.verify(question, look.answer, gist, verbose=verbose)
+        print(f"[stage 4] verifying answer against region (citation-grounded)")
+    ver = verifier_stage.verify(
+        question, look.answer, gist,
+        region_text=look.region_text,
+        verbose=verbose,
+    )
     timings["stage4_verifier"] = time.time() - t0
     if verbose:
         print(f"[stage 4] -> verdict: {ver.verdict} ({ver.reason})")

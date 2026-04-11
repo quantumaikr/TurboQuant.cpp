@@ -65,7 +65,11 @@ def research(
             break
 
         new_lookup = lookup.lookup(question, new_region, doc_text, verbose=verbose)
-        new_verify = verifier.verify(question, new_lookup.answer, gist, verbose=verbose)
+        new_verify = verifier.verify(
+            question, new_lookup.answer, gist,
+            region_text=new_lookup.region_text,
+            verbose=verbose,
+        )
 
         attempts.append({
             "chunk": new_lookup.chunk_id,
