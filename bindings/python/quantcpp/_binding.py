@@ -132,6 +132,20 @@ def _setup_signatures(lib: ctypes.CDLL) -> None:
     ]
     lib.quant_generate.restype = ctypes.c_int
 
+    # int quant_chat(quant_ctx* ctx, const char* prompt,
+    #                void (*on_token)(const char*, void*), void* user_data)
+    # Multi-turn chat with KV cache reuse — avoids the O(n^2) prefill cost
+    # of quant_generate when the user re-sends conversation history.
+    # Optional: only present in single-header builds (>= v0.13).
+    if hasattr(lib, "quant_chat"):
+        lib.quant_chat.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ON_TOKEN_CB,
+            ctypes.c_void_p,
+        ]
+        lib.quant_chat.restype = ctypes.c_int
+
     # char* quant_ask(quant_ctx* ctx, const char* prompt)
     lib.quant_ask.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
     lib.quant_ask.restype = ctypes.c_void_p  # We use c_void_p so we can free()

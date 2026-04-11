@@ -601,3 +601,168 @@ int tq_generate(tq_model_t* model, tq_tokenizer_t* tokenizer,
     tq_free_state(state);
     return generated;
 }
+
+/* ============================================================================
+ * tq_generate_continue — chat-mode generation with KV cache reuse.
+ *
+ * Caller-managed state: state and cached_tokens persist across calls.
+ * Each call computes the longest common prefix between cached_tokens and
+ * the new prompt, prefills only the diverging suffix, and updates the
+ * cache record. Turns chat from O(history^2) into O(new_tokens_per_turn).
+ * ============================================================================ */
+static int tq_lcp_int(const int* a, int na, const int* b, int nb) {
+    int lim = na < nb ? na : nb;
+    int i = 0;
+    while (i < lim && a[i] == b[i]) i++;
+    return i;
+}
+
+int tq_generate_continue(tq_model_t* model,
+                          tq_tokenizer_t* tokenizer,
+                          tq_state_t* state,
+                          const char* prompt,
+                          tq_gen_config_t* config,
+                          int** cached_tokens_io,
+                          int*  n_cached_io,
+                          int*  cached_capacity_io,
+                          char* output, int output_size) {
+    if (!model || !state || !config || !cached_tokens_io || !n_cached_io || !cached_capacity_io) {
+        return -1;
+    }
+
+    /* Encode new prompt */
+    int new_tokens[4096];
+    int n_new = 0;
+    if (tokenizer && prompt) {
+        int add_bos = (model->config.model_type == 1) ? 1 : 0;
+        n_new = tq_encode(tokenizer, prompt, new_tokens, 4096, add_bos);
+    }
+    if (n_new <= 0) {
+        new_tokens[0] = (model->config.model_type == 1) ? 2 : 1;
+        n_new = 1;
+    }
+
+    int n_cached = *n_cached_io;
+    int* cached_tokens = *cached_tokens_io;
+    int lcp = tq_lcp_int(cached_tokens, n_cached, new_tokens, n_new);
+
+    /* Prefill only the new suffix [lcp, n_new) */
+    for (int i = lcp; i < n_new; i++) {
+        tq_forward(model, state, new_tokens[i], i);
+    }
+    int pos = n_new;
+
+    /* Grow cache buffer if needed */
+    int needed_cap = n_new + config->max_tokens + 16;
+    if (*cached_capacity_io < needed_cap) {
+        int new_cap = needed_cap < 4096 ? 4096 : needed_cap;
+        int* nb = (int*)realloc(*cached_tokens_io, (size_t)new_cap * sizeof(int));
+        if (!nb) return -1;
+        *cached_tokens_io = nb;
+        *cached_capacity_io = new_cap;
+        cached_tokens = nb;
+    }
+    memcpy(cached_tokens, new_tokens, (size_t)n_new * sizeof(int));
+    *n_cached_io = n_new;
+    n_cached = n_new;
+
+    int vocab_size = model->config.vocab_size;
+    float rep_penalty = config->rep_penalty;
+    int rep_window = config->rep_window;
+    if (rep_window > 64) rep_window = 64;
+    int recent_tokens[64];
+    int recent_count = 0;
+    for (int i = (n_new > rep_window ? n_new - rep_window : 0); i < n_new; i++) {
+        recent_tokens[recent_count % 64] = new_tokens[i];
+        recent_count++;
+    }
+
+    if (rep_penalty > 1.0f) {
+        int window = recent_count < rep_window ? recent_count : rep_window;
+        for (int r = 0; r < window; r++) {
+            int idx = (recent_count - 1 - r) % 64;
+            if (idx < 0) idx += 64;
+            int tok = recent_tokens[idx];
+            if (tok >= 0 && tok < vocab_size && state->logits) {
+                if (state->logits[tok] > 0) state->logits[tok] /= rep_penalty;
+                else                         state->logits[tok] *= rep_penalty;
+            }
+        }
+    }
+
+    unsigned long long rng_state = config->rng_seed ? (unsigned long long)config->rng_seed
+                                                    : (unsigned long long)time(NULL);
+    int next_token = tq_sample_topp(state->logits, vocab_size,
+                                     config->temperature, config->top_p,
+                                     &rng_state);
+
+    int generated = 0;
+    int output_pos = 0;
+    int prev_token = new_tokens[n_new - 1];
+
+    int eos_tokens[] = {
+        1, 2, 106, 128001, 128006, 128007, 128008, 128009, 248044, 248046,
+    };
+    int n_eos = sizeof(eos_tokens) / sizeof(eos_tokens[0]);
+
+    while (generated < config->max_tokens) {
+        int is_eos = 0;
+        for (int e = 0; e < n_eos; e++) {
+            if (next_token == eos_tokens[e]) { is_eos = 1; break; }
+        }
+        if (is_eos) break;
+        if (pos >= model->config.max_seq_len) break;
+
+        if (tokenizer) {
+            const char* piece = tq_decode(tokenizer, prev_token, next_token);
+            int should_stop = 0;
+            if (piece) {
+                if (strstr(piece, "<|im_end|>") || strstr(piece, "<|eot_id|>") ||
+                    strstr(piece, "<|start_header_id|>")) {
+                    should_stop = 1; piece = "";
+                }
+            }
+            if (should_stop) break;
+            int piece_len = (int)strlen(piece ? piece : "");
+            if (config->on_token && piece) config->on_token(piece, config->user_data);
+            if (output && piece && output_pos + piece_len < output_size - 1) {
+                memcpy(output + output_pos, piece, piece_len);
+                output_pos += piece_len;
+            }
+        }
+
+        if (n_cached < *cached_capacity_io) {
+            cached_tokens[n_cached++] = next_token;
+            *n_cached_io = n_cached;
+        }
+
+        prev_token = next_token;
+        tq_forward(model, state, next_token, pos);
+        pos++;
+        generated++;
+
+        if (rep_penalty > 1.0f) {
+            int window = recent_count < rep_window ? recent_count : rep_window;
+            for (int r = 0; r < window; r++) {
+                int idx = (recent_count - 1 - r) % 64;
+                if (idx < 0) idx += 64;
+                int tok = recent_tokens[idx];
+                if (tok >= 0 && tok < vocab_size) {
+                    if (state->logits[tok] > 0) state->logits[tok] /= rep_penalty;
+                    else                         state->logits[tok] *= rep_penalty;
+                }
+            }
+        }
+
+        next_token = tq_sample_topp(state->logits, vocab_size,
+                                     config->temperature, config->top_p,
+                                     &rng_state);
+        recent_tokens[recent_count % 64] = next_token;
+        recent_count++;
+    }
+
+    if (output && output_size > 0) {
+        output[output_pos < output_size ? output_pos : output_size - 1] = '\0';
+    }
+    return generated;
+}

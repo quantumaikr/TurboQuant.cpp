@@ -62,6 +62,13 @@ int quant_generate(quant_ctx* ctx, const char* prompt,
                    void (*on_token)(const char* text, void* user_data),
                    void* user_data);
 
+// Multi-turn chat with KV cache reuse (O(delta) per turn instead of O(n^2)).
+// Subsequent calls only re-prefill the suffix that diverges from history.
+// Pass prompt = NULL to reset the chat session. Returns tokens generated.
+int quant_chat(quant_ctx* ctx, const char* prompt,
+               void (*on_token)(const char* text, void* user_data),
+               void* user_data);
+
 // Generate and return full response as string. Caller must free().
 char* quant_ask(quant_ctx* ctx, const char* prompt);
 
@@ -1729,7 +1736,15 @@ struct quant_ctx {
     tq_state_t* state;
     tq_tokenizer_t* tokenizer;
     tq_gen_config_t config;
-    int n_ctx_tokens;  /* number of tokens currently in KV cache */
+    int n_ctx_tokens;     /* number of tokens currently in KV cache */
+    /* Prefix-match cache for chat history reuse:
+     * stores the actual token IDs that are committed to the KV cache,
+     * so the next quant_generate() can skip the matching prefix and
+     * only prefill the diverging suffix. Critical for chat mode where
+     * each turn re-sends the entire conversation history. */
+    int* cached_tokens;
+    int  n_cached;
+    int  cached_capacity;
 };
 
 // ============================================================================
@@ -15624,6 +15639,195 @@ int tq_generate(tq_model_t* model, tq_tokenizer_t* tokenizer,
     return generated;
 }
 
+/* ============================================================================
+ * tq_generate_continue — reuse an existing tq_state_t across calls.
+ *
+ * Unlike tq_generate (which allocates and frees its own state on every call),
+ * this function takes a caller-managed state plus a record of which tokens
+ * are currently committed to the KV cache. It computes the longest common
+ * prefix between the cached tokens and the new prompt, then prefills only
+ * the diverging suffix. After generation, *cached_tokens_out and
+ * *n_cached_out are updated to reflect the new cache contents.
+ *
+ * This turns chat mode from O(n^2) (full re-prefill every turn) into
+ * O(delta) (only the new tokens of each turn).
+ *
+ * Returns the number of tokens generated, or -1 on error.
+ * ============================================================================ */
+static int tq_lcp_int(const int* a, int na, const int* b, int nb) {
+    int lim = na < nb ? na : nb;
+    int i = 0;
+    while (i < lim && a[i] == b[i]) i++;
+    return i;
+}
+
+int tq_generate_continue(tq_model_t* model,
+                          tq_tokenizer_t* tokenizer,
+                          tq_state_t* state,
+                          const char* prompt,
+                          tq_gen_config_t* config,
+                          int** cached_tokens_io,   /* in/out: cached prefix tokens */
+                          int*  n_cached_io,        /* in/out: cached count */
+                          int*  cached_capacity_io, /* in/out: allocated capacity */
+                          char* output, int output_size) {
+    if (!model || !state || !config || !cached_tokens_io || !n_cached_io || !cached_capacity_io) {
+        return -1;
+    }
+
+    /* Encode new prompt */
+    int new_tokens[4096];
+    int n_new = 0;
+    if (tokenizer && prompt) {
+        int add_bos = (model->config.model_type == 1) ? 1 : 0;
+        n_new = tq_encode(tokenizer, prompt, new_tokens, 4096, add_bos);
+    }
+    if (n_new <= 0) {
+        new_tokens[0] = (model->config.model_type == 1) ? 2 : 1;
+        n_new = 1;
+    }
+
+    /* Find longest common prefix with the cached tokens.
+     * If the new prompt is just an extension of the cached one, we skip
+     * everything up to the LCP and only prefill the suffix. */
+    int n_cached = *n_cached_io;
+    int* cached_tokens = *cached_tokens_io;
+
+    int lcp = tq_lcp_int(cached_tokens, n_cached, new_tokens, n_new);
+
+    /* If the cached tokens go beyond the LCP (i.e., the new prompt diverges
+     * from history mid-way, e.g., user edited a previous message), we have
+     * to invalidate the divergent suffix. The simplest correct option is to
+     * roll the state position back to lcp. The KV cache itself doesn't need
+     * to be cleared — positions >= lcp will just be overwritten when we
+     * prefill the new suffix. */
+    int pos_start = lcp;
+
+    /* Prefill the new suffix */
+    for (int i = lcp; i < n_new; i++) {
+        tq_forward(model, state, new_tokens[i], i);
+    }
+    int pos = n_new;
+
+    /* Save the n_new prompt into the cache buffer (will append generated
+     * tokens below). Grow the buffer if needed. */
+    int needed_cap = n_new + config->max_tokens + 16;
+    if (*cached_capacity_io < needed_cap) {
+        int new_cap = needed_cap < 4096 ? 4096 : needed_cap;
+        int* nb = (int*)realloc(*cached_tokens_io, (size_t)new_cap * sizeof(int));
+        if (!nb) return -1;
+        *cached_tokens_io = nb;
+        *cached_capacity_io = new_cap;
+        cached_tokens = nb;
+    }
+    memcpy(cached_tokens, new_tokens, (size_t)n_new * sizeof(int));
+    *n_cached_io = n_new;
+    n_cached = n_new;
+
+    /* --- generation loop (mirrors tq_generate's loop) --- */
+    int vocab_size = model->config.vocab_size;
+    float rep_penalty = config->rep_penalty;
+    int rep_window = config->rep_window;
+    if (rep_window > 64) rep_window = 64;
+    int recent_tokens[64];
+    int recent_count = 0;
+    for (int i = (n_new > rep_window ? n_new - rep_window : 0); i < n_new; i++) {
+        recent_tokens[recent_count % 64] = new_tokens[i];
+        recent_count++;
+    }
+
+    if (rep_penalty > 1.0f) {
+        int window = recent_count < rep_window ? recent_count : rep_window;
+        for (int r = 0; r < window; r++) {
+            int idx = (recent_count - 1 - r) % 64;
+            if (idx < 0) idx += 64;
+            int tok = recent_tokens[idx];
+            if (tok >= 0 && tok < vocab_size && state->logits) {
+                if (state->logits[tok] > 0) state->logits[tok] /= rep_penalty;
+                else                         state->logits[tok] *= rep_penalty;
+            }
+        }
+    }
+
+    uint64_t rng_state = config->rng_seed ? (uint64_t)config->rng_seed
+                                          : (uint64_t)time(NULL);
+    int next_token = tq_sample_topp(state->logits, vocab_size,
+                                     config->temperature, config->top_p,
+                                     &rng_state);
+
+    int generated = 0;
+    int output_pos = 0;
+    int prev_token = new_tokens[n_new - 1];
+
+    int eos_tokens[] = {
+        1, 2, 106, 128001, 128006, 128007, 128008, 128009, 248044, 248046,
+    };
+    int n_eos = sizeof(eos_tokens) / sizeof(eos_tokens[0]);
+
+    while (generated < config->max_tokens) {
+        int is_eos = 0;
+        for (int e = 0; e < n_eos; e++) {
+            if (next_token == eos_tokens[e]) { is_eos = 1; break; }
+        }
+        if (is_eos) break;
+
+        if (pos >= model->config.max_seq_len) break;  /* simple stop, no shift */
+
+        /* Decode + stream */
+        if (tokenizer) {
+            const char* piece = tq_decode(tokenizer, prev_token, next_token);
+            int should_stop = 0;
+            if (piece) {
+                if (strstr(piece, "<|im_end|>") || strstr(piece, "<|eot_id|>") ||
+                    strstr(piece, "<|start_header_id|>")) {
+                    should_stop = 1; piece = "";
+                }
+            }
+            if (should_stop) break;
+            int piece_len = (int)strlen(piece ? piece : "");
+            if (config->on_token && piece) config->on_token(piece, config->user_data);
+            if (output && piece && output_pos + piece_len < output_size - 1) {
+                memcpy(output + output_pos, piece, piece_len);
+                output_pos += piece_len;
+            }
+        }
+
+        /* Append generated token to cache record */
+        if (n_cached < *cached_capacity_io) {
+            cached_tokens[n_cached++] = next_token;
+            *n_cached_io = n_cached;
+        }
+
+        prev_token = next_token;
+        tq_forward(model, state, next_token, pos);
+        pos++;
+        generated++;
+
+        if (rep_penalty > 1.0f) {
+            int window = recent_count < rep_window ? recent_count : rep_window;
+            for (int r = 0; r < window; r++) {
+                int idx = (recent_count - 1 - r) % 64;
+                if (idx < 0) idx += 64;
+                int tok = recent_tokens[idx];
+                if (tok >= 0 && tok < vocab_size) {
+                    if (state->logits[tok] > 0) state->logits[tok] /= rep_penalty;
+                    else                         state->logits[tok] *= rep_penalty;
+                }
+            }
+        }
+
+        next_token = tq_sample_topp(state->logits, vocab_size,
+                                     config->temperature, config->top_p,
+                                     &rng_state);
+        recent_tokens[recent_count % 64] = next_token;
+        recent_count++;
+    }
+
+    if (output && output_size > 0) {
+        output[output_pos < output_size ? output_pos : output_size - 1] = '\0';
+    }
+    return generated;
+}
+
 // ============================================================================
 
 // ============================================================================
@@ -15957,7 +16161,63 @@ void quant_free_ctx(quant_ctx* ctx) {
     if (!ctx) return;
     tq_free_state(ctx->state);
     tq_free_tokenizer(ctx->tokenizer);
+    if (ctx->cached_tokens) free(ctx->cached_tokens);
     free(ctx);
+}
+
+/* ----------------------------------------------------------------------
+ * quant_chat — chat-mode generate that reuses the KV cache across calls.
+ *
+ * Unlike quant_generate (which resets the state on every call and so makes
+ * each turn O(history_length)), quant_chat keeps the state alive between
+ * calls. The first call to quant_chat() prefills and generates as normal.
+ * Subsequent calls compute the longest common prefix between the new prompt
+ * and the previously processed tokens, skip the matched prefix, and only
+ * prefill the diverging suffix.
+ *
+ * Result: turn N's prefill cost is O(new tokens this turn), not
+ * O(total history). Chat experience matches what users expect from ollama.
+ *
+ * Reset behavior: pass NULL prompt to wipe the cache (start a new chat).
+ * Returns the number of tokens generated, or -1 on error.
+ * ---------------------------------------------------------------------- */
+int quant_chat(quant_ctx* ctx, const char* prompt,
+               void (*on_token)(const char* text, void* user_data),
+               void* user_data) {
+    if (!ctx || !ctx->model) return -1;
+
+    /* NULL prompt = reset the chat (clear cache + state) */
+    if (!prompt) {
+        tq_free_state(ctx->state);
+        ctx->state = tq_create_state_ex(&ctx->model->config,
+                                         ctx->config.kv_type,
+                                         ctx->config.value_quant_bits);
+        if (ctx->cached_tokens) free(ctx->cached_tokens);
+        ctx->cached_tokens = NULL;
+        ctx->n_cached = 0;
+        ctx->cached_capacity = 0;
+        ctx->n_ctx_tokens = 0;
+        return 0;
+    }
+
+    if (!ctx->state) {
+        ctx->state = tq_create_state_ex(&ctx->model->config,
+                                         ctx->config.kv_type,
+                                         ctx->config.value_quant_bits);
+        if (!ctx->state) return -1;
+    }
+
+    ctx->config.on_token = on_token;
+    ctx->config.user_data = user_data;
+
+    char output[65536];
+    int n = tq_generate_continue(
+        ctx->model, ctx->tokenizer, ctx->state, prompt, &ctx->config,
+        &ctx->cached_tokens, &ctx->n_cached, &ctx->cached_capacity,
+        output, sizeof(output));
+
+    if (n > 0) ctx->n_ctx_tokens = ctx->n_cached;
+    return n;
 }
 
 void quant_free_model(quant_model* model) {

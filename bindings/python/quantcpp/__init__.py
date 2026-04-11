@@ -383,6 +383,79 @@ class Model:
         if error_box[0] is not None:
             raise error_box[0]
 
+    def chat(self, prompt: str) -> Iterator[str]:
+        """Multi-turn chat with KV cache reuse.
+
+        Like ``generate()``, but the KV cache persists across calls. When you
+        re-send the conversation history each turn, only the new tokens are
+        prefilled — turn N's latency is O(new_tokens), not O(history^2).
+
+        Pass ``prompt=None`` to reset the chat session.
+
+        Falls back to ``generate()`` on older library builds without
+        ``quant_chat`` symbol.
+        """
+        self._ensure_open()
+        lib = get_lib()
+
+        if not hasattr(lib, "quant_chat"):
+            # Older library — silently fall back to non-reusing generate
+            yield from self.generate(prompt or "")
+            return
+
+        if prompt is None:
+            with self._lock:
+                lib.quant_chat(self._ctx, None, ON_TOKEN_CB(0), None)
+            return
+
+        if self._chat:
+            prompt = self._apply_chat_template(prompt)
+
+        tokens = []
+        done = threading.Event()
+        error_box = [None]
+
+        def _on_token(text_ptr, _user_data):
+            if text_ptr:
+                tokens.append(text_ptr.decode("utf-8", errors="replace"))
+
+        cb = ON_TOKEN_CB(_on_token)
+
+        def _run():
+            try:
+                with self._lock:
+                    lib.quant_chat(self._ctx, prompt.encode("utf-8"), cb, None)
+            except Exception as e:
+                error_box[0] = e
+            finally:
+                done.set()
+
+        thread = threading.Thread(target=_run, daemon=True)
+        thread.start()
+
+        yielded = 0
+        while not done.is_set() or yielded < len(tokens):
+            if yielded < len(tokens):
+                yield tokens[yielded]
+                yielded += 1
+            else:
+                done.wait(timeout=0.01)
+
+        while yielded < len(tokens):
+            yield tokens[yielded]
+            yielded += 1
+
+        if error_box[0] is not None:
+            raise error_box[0]
+
+    def reset_chat(self) -> None:
+        """Reset the chat KV cache. Next chat() call starts fresh."""
+        self._ensure_open()
+        lib = get_lib()
+        if hasattr(lib, "quant_chat"):
+            with self._lock:
+                lib.quant_chat(self._ctx, None, ON_TOKEN_CB(0), None)
+
     def save_context(self, path: str) -> None:
         """Save the current KV cache to disk.
 

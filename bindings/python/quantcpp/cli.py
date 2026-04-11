@@ -152,15 +152,23 @@ def cmd_run(args):
         print()
     else:
         print("quantcpp \u2014 type your message, Ctrl+C to exit", file=sys.stderr)
+        # Multi-turn chat: accumulate history as ChatML so the model sees
+        # prior turns. m.chat() reuses the KV cache via prefix-match, so
+        # repeating the history is cheap (O(new tokens), not O(n^2)).
+        history = ""
         try:
             while True:
                 question = input("\nYou: ")
                 if not question.strip():
                     continue
+                history += f"<|im_start|>user\n{question}<|im_end|>\n<|im_start|>assistant\n"
                 print("AI: ", end="", flush=True)
-                for tok in m.generate(question):
+                reply_buf = []
+                for tok in m.chat(history):
                     print(tok, end="", flush=True)
+                    reply_buf.append(tok)
                 print()
+                history += "".join(reply_buf) + "<|im_end|>\n"
         except (KeyboardInterrupt, EOFError):
             print("\nBye!", file=sys.stderr)
 

@@ -18,6 +18,18 @@
 #include <string.h>
 #include <stdarg.h>
 #include <stdbool.h>
+
+/* Forward decl: defined in src/engine/tq_generate.c.
+ * Not yet exposed in turboquant.h since it's a chat-mode helper. */
+extern int tq_generate_continue(tq_model_t* model,
+                                 tq_tokenizer_t* tokenizer,
+                                 tq_state_t* state,
+                                 const char* prompt,
+                                 tq_gen_config_t* config,
+                                 int** cached_tokens_io,
+                                 int*  n_cached_io,
+                                 int*  cached_capacity_io,
+                                 char* output, int output_size);
 #if defined(_MSC_VER)
 #include <intrin.h>
 typedef volatile long atomic_int;
@@ -67,6 +79,13 @@ struct tq_server {
     atomic_int         running;
     atomic_int         active_connections;  /* track concurrent threads */
     pthread_mutex_t    inference_mutex;     /* serialize inference (single model state) */
+
+    /* Persistent inference state — shared across requests for chat-mode
+     * KV cache reuse. The inference_mutex above serializes access. */
+    tq_state_t*        kv_state;
+    int*               cached_tokens;
+    int                n_cached;
+    int                cached_capacity;
 };
 
 /* Global server pointer for signal handler */
@@ -653,9 +672,20 @@ static void handle_chat_completions(tq_server_t* server, int fd, const char* bod
         gen_cfg.on_token = sse_token_callback;
         gen_cfg.user_data = &sse_ctx;
 
-        char output[1]; /* tq_generate writes to output, but we use callback */
-        tq_generate(server->config.model, server->config.tokenizer,
-                    req.prompt, &gen_cfg, output, sizeof(output));
+        char output[1]; /* writes via callback, output buffer unused */
+        /* Use tq_generate_continue with persistent KV state for chat reuse:
+         * matches the longest common prefix of req.prompt against
+         * server->cached_tokens, prefills only the suffix. Turns chat
+         * latency from O(history^2) into O(new_tokens). */
+        if (!server->kv_state) {
+            server->kv_state = tq_create_state_ex(
+                &server->config.model->config, gen_cfg.kv_type, gen_cfg.value_quant_bits);
+        }
+        tq_generate_continue(server->config.model, server->config.tokenizer,
+                              server->kv_state, req.prompt, &gen_cfg,
+                              &server->cached_tokens, &server->n_cached,
+                              &server->cached_capacity,
+                              output, sizeof(output));
 
         /* Send final chunk with finish_reason */
         char final_chunk[SSE_CHUNK_SIZE];
@@ -685,8 +715,15 @@ static void handle_chat_completions(tq_server_t* server, int fd, const char* bod
         gen_cfg.user_data = &collect;
 
         char output[1];
-        tq_generate(server->config.model, server->config.tokenizer,
-                    req.prompt, &gen_cfg, output, sizeof(output));
+        if (!server->kv_state) {
+            server->kv_state = tq_create_state_ex(
+                &server->config.model->config, gen_cfg.kv_type, gen_cfg.value_quant_bits);
+        }
+        tq_generate_continue(server->config.model, server->config.tokenizer,
+                              server->kv_state, req.prompt, &gen_cfg,
+                              &server->cached_tokens, &server->n_cached,
+                              &server->cached_capacity,
+                              output, sizeof(output));
 
         const char* content = collect.buf ? collect.buf : "";
 
@@ -1143,6 +1180,8 @@ void tq_server_stop(tq_server_t* server) {
 void tq_server_free(tq_server_t* server) {
     if (!server) return;
     pthread_mutex_destroy(&server->inference_mutex);
+    if (server->kv_state) tq_free_state(server->kv_state);
+    if (server->cached_tokens) free(server->cached_tokens);
     if (g_server == server) g_server = NULL;
     free(server);
 }
