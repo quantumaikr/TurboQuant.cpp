@@ -22,20 +22,33 @@
 
 ---
 
-## 3줄로 시작하기
+## 빠른 시작
 
+**Ollama 스타일 CLI (v0.12.0+):**
 ```bash
 pip install quantcpp
+
+quantcpp pull llama3.2:1b           # HuggingFace에서 다운로드
+quantcpp run llama3.2:1b            # 대화형 채팅
+quantcpp serve llama3.2:1b -p 8080  # OpenAI 호환 HTTP 서버
+quantcpp list                       # 캐시된 모델 목록
 ```
 
+짧은 별칭: `smollm2:135m`, `qwen3.5:0.8b`, `llama3.2:1b`. `run`/`serve` 첫 실행 시 자동 다운로드. `serve`는 OpenAI 호환 `POST /v1/chat/completions` 엔드포인트를 8080 포트에 제공합니다.
+
+**한 줄 질문:**
+```bash
+quantcpp run llama3.2:1b "중력이란 무엇인가요?"
+```
+
+**Python API (3줄):**
 ```python
 from quantcpp import Model
-
-m = Model.from_pretrained("Llama-3.2-1B")  # 모델 자동 다운로드 (~750 MB)
+m = Model.from_pretrained("Llama-3.2-1B")
 print(m.ask("중력이란 무엇인가요?"))
 ```
 
-API 키 없음. GPU 없음. 설정 없음. [브라우저에서 바로 체험 →](https://quantumaikr.github.io/quant.cpp/) · [**작동 원리 가이드 →**](https://quantumaikr.github.io/quant.cpp/guide/)
+API 키 없음. GPU 없음. 설정 없음. 모델은 `~/.cache/quantcpp/`에 캐시됩니다. [브라우저에서 바로 체험 →](https://quantumaikr.github.io/quant.cpp/) · [**작동 원리 가이드 →**](https://quantumaikr.github.io/quant.cpp/guide/)
 
 ---
 

@@ -727,12 +727,25 @@ footer a{color:var(--text2)}
 <section class="cta" style="background:var(--bg2)">
   <div class="container reveal">
     <h2 style="margin-bottom:1rem" data-i18n="cta.title">Try It Yourself</h2>
-    <p style="color:var(--text2);margin-bottom:2rem;max-width:500px;margin-left:auto;margin-right:auto" data-i18n="cta.desc">Three lines of Python. No GPU, no API key, no setup.</p>
-    <pre style="text-align:left;display:inline-block;margin-bottom:2rem"><code>pip install quantcpp
+    <p style="color:var(--text2);margin-bottom:2rem;max-width:560px;margin-left:auto;margin-right:auto" data-i18n="cta.desc">Ollama-style CLI. No GPU, no API key, no setup.</p>
+    <div style="display:flex;gap:1.5rem;flex-wrap:wrap;justify-content:center;margin-bottom:2rem;text-align:left">
+      <div>
+        <div style="font-size:.75rem;color:var(--text2);margin-bottom:.3rem;font-weight:600" data-i18n="cta.label.cli">CLI (v0.12.0+)</div>
+        <pre style="margin:0"><code>pip install quantcpp
 
-from quantcpp import Model
+quantcpp pull llama3.2:1b
+quantcpp run llama3.2:1b
+quantcpp serve llama3.2:1b -p 8080
+quantcpp list</code></pre>
+      </div>
+      <div>
+        <div style="font-size:.75rem;color:var(--text2);margin-bottom:.3rem;font-weight:600" data-i18n="cta.label.python">Python API</div>
+        <pre style="margin:0"><code>from quantcpp import Model
+
 m = Model.from_pretrained("Llama-3.2-1B")
 print(m.ask("What is gravity?"))</code></pre>
+      </div>
+    </div>
     <br>
     <a href="https://github.com/quantumaikr/quant.cpp" class="cta-btn cta-primary">GitHub</a>
     <a href="https://pypi.org/project/quantcpp/" class="cta-btn cta-secondary">PyPI</a>
@@ -896,7 +909,9 @@ var i18n = {
     "glossary.gguf.term": "GGUF",
     "glossary.gguf.def": "The standard file format for quantized LLM model weights, created by the llama.cpp project. quant.cpp loads GGUF models directly.",
     "cta.title": "Try It Yourself",
-    "cta.desc": "Three lines of Python. No GPU, no API key, no setup.",
+    "cta.desc": "Ollama-style CLI. No GPU, no API key, no setup.",
+    "cta.label.cli": "CLI (v0.12.0+)",
+    "cta.label.python": "Python API",
     "rag.label": "Movement",
     "rag.title": "Beyond RAG",
     "rag.intro": "Traditional RAG splits documents into 512-token chunks, embeds them in a vector database, and retrieves fragments. This was a reasonable engineering compromise when LLMs had 2K context windows. <strong>Now they have 128K. The compromise should have started disappearing.</strong>",
@@ -1083,7 +1098,9 @@ var i18n = {
     "glossary.gguf.term": "GGUF",
     "glossary.gguf.def": "\uC591\uC790\uD654\uB41C LLM \uBAA8\uB378 \uAC00\uC911\uCE58\uC758 \uD45C\uC900 \uD30C\uC77C \uD615\uC2DD. llama.cpp \uD504\uB85C\uC81D\uD2B8\uC5D0\uC11C \uB9CC\uB4E4\uC5C8\uC2B5\uB2C8\uB2E4. quant.cpp\uB294 GGUF \uBAA8\uB378\uC744 \uC9C1\uC811 \uB85C\uB4DC\uD569\uB2C8\uB2E4.",
     "cta.title": "\uC9C1\uC811 \uD574\uBCF4\uAE30",
-    "cta.desc": "Python 3\uC904. GPU\uB3C4, API \uD0A4\uB3C4, \uC124\uCE58\uB3C4 \uD544\uC694 \uC5C6\uC2B5\uB2C8\uB2E4.",
+    "cta.desc": "Ollama \uC2A4\uD0C0\uC77C CLI. GPU\uB3C4, API \uD0A4\uB3C4, \uC124\uCE58\uB3C4 \uD544\uC694 \uC5C6\uC2B5\uB2C8\uB2E4.",
+    "cta.label.cli": "CLI (v0.12.0+)",
+    "cta.label.python": "Python API",
     "rag.label": "운동",
     "rag.title": "Beyond RAG",
     "rag.intro": "전통적인 RAG는 문서를 512토큰 청크로 나누고, 벡터 DB에 임베딩하고, 조각을 검색합니다. 이것은 LLM이 2K 컨텍스트만 가졌을 때 합리적인 엔지니어링 타협이었습니다. <strong>지금은 128K입니다. 그 타협은 사라지기 시작했어야 합니다.</strong>",

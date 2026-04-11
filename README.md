@@ -37,27 +37,31 @@
 
 ## Quick Start
 
-**Terminal (one command):**
+**Ollama-style CLI (v0.12.0+):**
 ```bash
 pip install quantcpp
-quantcpp "What is gravity?"
+
+quantcpp pull llama3.2:1b           # download from HuggingFace
+quantcpp run llama3.2:1b            # interactive chat
+quantcpp serve llama3.2:1b -p 8080  # OpenAI-compatible HTTP server
+quantcpp list                       # show cached models
 ```
 
-**Python (3 lines):**
+Short aliases: `smollm2:135m`, `qwen3.5:0.8b`, `llama3.2:1b`. Auto-pulls on first `run`/`serve`. The `serve` subcommand exposes `POST /v1/chat/completions` (OpenAI-compatible) on port 8080.
+
+**One-shot question:**
+```bash
+quantcpp run llama3.2:1b "What is gravity?"
+```
+
+**Python API (3 lines):**
 ```python
 from quantcpp import Model
 m = Model.from_pretrained("Llama-3.2-1B")
 print(m.ask("What is gravity?"))
 ```
 
-**Interactive chat:**
-```bash
-quantcpp
-# You: What is gravity?
-# AI: Gravity is a fundamental force...
-```
-
-Downloads Llama-3.2-1B (~750 MB) on first use, cached locally. No API key, no GPU. [Try in browser →](https://quantumaikr.github.io/quant.cpp/) · [**How it works — Interactive Guide →**](https://quantumaikr.github.io/quant.cpp/guide/)
+Downloads on first use, cached at `~/.cache/quantcpp/`. No API key, no GPU. [Try in browser →](https://quantumaikr.github.io/quant.cpp/) · [**Interactive Guide →**](https://quantumaikr.github.io/quant.cpp/guide/)
 
 ---
 
