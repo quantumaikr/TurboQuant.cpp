@@ -630,16 +630,38 @@ int tq_generate_continue(tq_model_t* model,
         return -1;
     }
 
-    /* Encode new prompt */
-    int new_tokens[4096];
+    /* Encode new prompt — use a heap buffer that grows on demand instead
+     * of a fixed stack array. The previous int new_tokens[4096] silently
+     * truncated long contexts (10+ turns of accumulated chat history).
+     * Cap at the model's max_seq_len so we never exceed KV cache bounds. */
+    int max_prompt = model->config.max_seq_len > 0
+                       ? model->config.max_seq_len : 4096;
+    int* new_tokens = (int*)malloc((size_t)max_prompt * sizeof(int));
+    if (!new_tokens) return -1;
     int n_new = 0;
     if (tokenizer && prompt) {
         int add_bos = (model->config.model_type == 1) ? 1 : 0;
-        n_new = tq_encode(tokenizer, prompt, new_tokens, 4096, add_bos);
+        n_new = tq_encode(tokenizer, prompt, new_tokens, max_prompt, add_bos);
     }
     if (n_new <= 0) {
         new_tokens[0] = (model->config.model_type == 1) ? 2 : 1;
         n_new = 1;
+    }
+
+    /* Sliding window: if the new prompt + reserved generation room would
+     * exceed max_seq_len, drop the oldest tokens from the front of the
+     * prompt. We keep the most recent (max_seq_len - max_tokens - 32) tokens.
+     * Note: this discards conversation history; ideally callers send
+     * pre-trimmed prompts, but this prevents catastrophic failure. */
+    int reserve = config->max_tokens > 0 ? config->max_tokens : 256;
+    int budget  = max_prompt - reserve - 32;
+    if (budget < 64) budget = 64;
+    if (n_new > budget) {
+        int drop = n_new - budget;
+        memmove(new_tokens, new_tokens + drop, (size_t)budget * sizeof(int));
+        n_new = budget;
+        /* Force full reprefill since the prefix shifted */
+        *n_cached_io = 0;
     }
 
     int n_cached = *n_cached_io;
@@ -652,12 +674,16 @@ int tq_generate_continue(tq_model_t* model,
     }
     int pos = n_new;
 
+    /* Track prefill metrics for observability */
+    int prefill_tokens = n_new - lcp;
+    int prefix_hit    = lcp;
+
     /* Grow cache buffer if needed */
     int needed_cap = n_new + config->max_tokens + 16;
     if (*cached_capacity_io < needed_cap) {
         int new_cap = needed_cap < 4096 ? 4096 : needed_cap;
         int* nb = (int*)realloc(*cached_tokens_io, (size_t)new_cap * sizeof(int));
-        if (!nb) return -1;
+        if (!nb) { free(new_tokens); return -1; }
         *cached_tokens_io = nb;
         *cached_capacity_io = new_cap;
         cached_tokens = nb;
@@ -764,5 +790,15 @@ int tq_generate_continue(tq_model_t* model,
     if (output && output_size > 0) {
         output[output_pos < output_size ? output_pos : output_size - 1] = '\0';
     }
+
+    /* Log cache metrics: prefix_hit / prefill_tokens / generated.
+     * Useful for tuning chat clients that want to maximize KV reuse. */
+    if (getenv("TQ_CHAT_DEBUG")) {
+        fprintf(stderr,
+            "[chat] prefix_hit=%d prefill=%d generated=%d cached=%d\n",
+            prefix_hit, prefill_tokens, generated, *n_cached_io);
+    }
+
+    free(new_tokens);
     return generated;
 }
