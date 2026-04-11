@@ -866,6 +866,7 @@ typedef struct {
     int n_threads;
     float rep_penalty;    /* repetition penalty (default: 1.1, 1.0 = disabled) */
     int rep_window;       /* how many recent tokens to penalize (default: 32) */
+    unsigned long long rng_seed; /* sampling seed (default: 42, 0 = use 42 for back-compat) */
     /* Callback for streaming output */
     void (*on_token)(const char* text, void* user_data);
     void* user_data;
@@ -4129,6 +4130,7 @@ tq_gen_config_t tq_default_gen_config(void) {
     config.n_threads = 1;
     config.rep_penalty = 1.1f;
     config.rep_window = 32;
+    config.rng_seed = 42ULL;
     config.on_token = NULL;
     config.user_data = NULL;
     return config;
@@ -15453,9 +15455,11 @@ int tq_generate(tq_model_t* model, tq_tokenizer_t* tokenizer,
         }
     }
 
-    /* Sample first generated token */
+    /* Sample first generated token. The seed is configurable via
+     * config->rng_seed (default 42); 0 falls back to 42 so existing
+     * callers that never set rng_seed get bit-identical behaviour. */
     int pos = n_prompt;
-    unsigned long long rng_state = 42;
+    unsigned long long rng_state = config->rng_seed ? config->rng_seed : 42ULL;
     int next_token = tq_sample_topp(state->logits, vocab_size,
                                      config->temperature, config->top_p,
                                      &rng_state);

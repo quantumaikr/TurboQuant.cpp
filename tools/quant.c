@@ -199,6 +199,7 @@ int main(int argc, char** argv) {
     const char* kl_baseline_file = NULL;
     const char* save_kv_file = NULL;   /* --save-kv: save KV cache after generation */
     const char* load_kv_file = NULL;   /* --load-kv: load pre-computed KV cache */
+    unsigned long long rng_seed = 42ULL; /* -s <seed>: sampling RNG seed */
 
     for (int i = 1; i < argc; i++) {
         if (argv[i][0] != '-') {
@@ -229,6 +230,9 @@ int main(int argc, char** argv) {
             }
         } else if (strcmp(argv[i], "-j") == 0 && i + 1 < argc) {
             n_threads = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) {
+            rng_seed = strtoull(argv[++i], NULL, 10);
+            if (rng_seed == 0ULL) rng_seed = 42ULL; /* 0 reserved for "use default" */
         } else if (strcmp(argv[i], "-q") == 0) {
             if (i + 1 < argc && argv[i + 1][0] != '-') {
                 const char* qarg = argv[++i];
@@ -1265,6 +1269,7 @@ int main(int argc, char** argv) {
     config.k_highres_window = k_highres_window;
     config.save_kv_path = save_kv_file;
     config.load_kv_path = load_kv_file;
+    config.rng_seed = rng_seed;
     config.on_token = print_token;
     config.user_data = NULL;
 

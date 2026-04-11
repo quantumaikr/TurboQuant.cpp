@@ -383,6 +383,7 @@ typedef struct {
     int n_threads;
     float rep_penalty;    /* repetition penalty (default: 1.1, 1.0 = disabled) */
     int rep_window;       /* how many recent tokens to penalize (default: 32) */
+    unsigned long long rng_seed; /* sampling seed (default: 42, 0 = use 42 for back-compat) */
     /* KV cache persistence (Document-Level RAG: read once, query forever) */
     const char* save_kv_path; /* save KV cache after generation (NULL = don't save) */
     const char* load_kv_path; /* load pre-computed KV cache before generation (NULL = normal) */

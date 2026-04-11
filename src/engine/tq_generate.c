@@ -359,9 +359,12 @@ int tq_generate(tq_model_t* model, tq_tokenizer_t* tokenizer,
         }
     }
 
-    /* Sample first generated token */
+    /* Sample first generated token. The seed is configurable via
+     * config->rng_seed to support reproducible sampling sweeps; 0 falls
+     * back to the historical default of 42 so existing callers that
+     * never set rng_seed get bit-identical behaviour. */
     int pos = pos_after_prefill;
-    unsigned long long rng_state = 42;
+    unsigned long long rng_state = config->rng_seed ? config->rng_seed : 42ULL;
     int next_token = tq_sample_topp(state->logits, vocab_size,
                                      config->temperature, config->top_p,
                                      &rng_state);

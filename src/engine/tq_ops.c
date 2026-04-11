@@ -1682,6 +1682,7 @@ tq_gen_config_t tq_default_gen_config(void) {
     config.n_threads = 1;
     config.rep_penalty = 1.1f;
     config.rep_window = 32;
+    config.rng_seed = 42ULL;
     config.on_token = NULL;
     config.user_data = NULL;
     return config;
