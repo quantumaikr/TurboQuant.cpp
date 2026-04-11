@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build a release for (e.g., v0.12.0)'
+        required: true
+        default: 'v0.12.0'
 
 permissions:
   contents: write
@@ -13,6 +19,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Build
         run: |
@@ -37,6 +45,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Build
         run: |
@@ -62,10 +72,16 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Build
         run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release -DTQ_BUILD_SERVER=ON
+          # Note: TQ_BUILD_SERVER is not enabled on Windows because quant-server
+          # uses POSIX sockets (sys/socket.h). CMakeLists.txt guards it with
+          # `if(TQ_BUILD_SERVER AND NOT MSVC)`. Windows users should use the
+          # Python `quantcpp serve` wrapper instead, or run the server in WSL.
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --config Release -j $env:NUMBER_OF_PROCESSORS
 
       - name: Package
@@ -73,7 +89,6 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path quant.cpp-windows-x64
           Copy-Item build/Release/quant.exe quant.cpp-windows-x64/
-          Copy-Item build/Release/quant-server.exe quant.cpp-windows-x64/
           if (Test-Path LICENSE) { Copy-Item LICENSE quant.cpp-windows-x64/ }
           if (Test-Path README.md) { Copy-Item README.md quant.cpp-windows-x64/ }
           Compress-Archive -Path quant.cpp-windows-x64/* -DestinationPath quant.cpp-windows-x64.zip
@@ -96,6 +111,7 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           generate_release_notes: true
           files: |
             artifacts/quant.cpp-macos-arm64/quant.cpp-macos-arm64.tar.gz
