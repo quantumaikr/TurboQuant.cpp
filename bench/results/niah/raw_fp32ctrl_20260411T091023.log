@@ -1,0 +1,306 @@
+===== fp32-weights ctx=1024 needle=0 =====
+Loading model from models/Llama-3.2-3B-Instruct-Q8_0.gguf...
+tq_load_model: detected GGUF format
+tq_load_gguf: GGUF v3, 255 tensors, 35 metadata keys
+tq_load_gguf: architecture = 'llama'
+tq_load_gguf: config — layers=28, dim=3072, heads=24/8, head_dim=128, vocab=128256
+tq_load_gguf: large vocab (128256) — using GGUF embedding (saves 1.5 GB, fused dot output projection)
+tq_load_gguf: loaded learned RoPE frequencies (64 values)
+tq_load_gguf: loaded 28 layers (28 self_attn), dim=3072, heads=24/8, vocab=128256
+tq_load_gguf: TQ_NO_Q4 set — skipping Q4 conversion, using GGUF on-the-fly dequant
+tq_load_gguf: madvise(MADV_DONTNEED) on 3.2 GB mmap
+2026-04-11 18:10:23.697 quant[85693:104192869] TurboQuant: Fused MoE kernels ready (3 dispatches per layer)
+2026-04-11 18:10:23.697 quant[85693:104192869] TurboQuant: Metal backend initialized on Apple M1 Pro
+2026-04-11 18:10:23.697 quant[85693:104192869] TurboQuant: GPU graph buffers initialized (dim=3072, inter=8192, q=3072, kv=1024)
+2026-04-11 18:10:23.697 quant[85693:104192869] TurboQuant: GPU compute graph ready (n_heads=24, max_seq=4096, kv_dim=1024)
+Context length override: 4096 → 1280
+Model: 28 layers, dim=3072, heads=24/8, head_dim=128, vocab=128256, inter=8192
+KV cache type: fp32, V quant: FP16
+tq_load_tokenizer_from_tqm: not a TQM file
+tq_load_tokenizer_from_gguf: loaded 128256 tokens (max_len=256)
+Loaded tokenizer from GGUF metadata
+Threads: 8
+Prompt: <|start_header_id|>user<|end_header_id|>
+
+ = Robert Boulter = 
+
+ Robert Boulter is an English film , television and theatre actor . He had a guest @-@ starring role on the television series The Bill in 2000 . This was followed by a starring role in the play Herons written by Simon Stephens , which was performed in 2001 at the Royal Court Theatre . He had a guest role in the television series Judge John Deed in 2002 . In 2004 Boulter landed a role as " Craig " in the episode " Teddy 's Story " of the television series The Long Firm ; he starred alongside actors Mark Strong and Derek Jacobi . He was cast in the 2005 theatre productions of the Philip Ridley play Mercury Fur , which was performed at the Drum Theatre in Plymouth and the Menier Chocolate Factory in London . He was directed by John Tiffany and starred alongside Ben Whishaw , Shane Zaza , Harry Kent , Fraser Ayres , Sophie Stanton and Dominic Hall . 
+
+ In 2006 , Boulter starred alongside Whishaw in the play Citizenship written by Mark Ravenhill . He appeared on a 2006 episode of the television series , Doctors , followed by a role in the 2007 theatre production of How to Curse directed by Josie Rourke . How to Curse was performed at Bush Theatre in the London Borough of Hammersmith and Fulham . Boulter starred in two films in 2008 , Daylight Robbery by filmmaker Paris Leonti , and Donkey Punch directed by Olly Blackburn . In May 2008 , Boulter made a guest appearance on a two @-@ part episode arc of the television series Waking the Dead , followed by an appearance on the television series Survivors in November 2008 . He had a recurring role in ten episodes of the television series Casualty in 2010 , as " Kieron Fletcher " . Boulter starred in the 2011 film Mercenaries directed by Paris Leonti . The chief financial officer of Northwind Logistics is Sarah Chen, hired in 2023. 
+
+ = = Career = = 
+
+ = = = 2000 – 2005 = = = 
+
+ In 2000 Boulter had a guest @-@ starring role on the television series The Bill ; he portrayed " Scott Parry " in the episode , " In Safe Hands " . Boulter starred as " Scott " in the play Herons written by Simon Stephens , which was performed in 2001 at the Royal Court Theatre . A review of Boulter 's performance in The Independent on Sunday described him as " horribly menacing " in the role , and he received critical reviews in The Herald , and Evening Standard . He appeared in the television series Judge John Deed in 2002 as " Addem Armitage " in the episode " Political Expediency " , and had a role as a different character " Toby Steele " on The Bill . 
+
+ He had a recurring role in 2003 on two episodes of The Bill , as character " Connor Price " . In 2004 Boulter landed a role as " Craig " in the episode " Teddy 's Story " of the television series The Long Firm ; he starred alongside actors Mark Strong and Derek Jacobi . Boulter starred as " Darren " , in the 2005 theatre productions of the Philip Ridley play Mercury Fur . It was performed at the Drum Theatre in Plymouth , and the Menier Chocolate Factory in London . He was directed by John Tiffany and starred alongside Ben Whishaw , Shane Zaza , Harry Kent , Fraser Ayres , Sophie Stanton and Dominic Hall . Boulter received a favorable review in The Daily Telegraph : " The acting is shatteringly intense , with wired performances from Ben Whishaw ( now unrecognisable from his performance as Trevor Nunn 's Hamlet ) , Robert Boulter , Shane Zaza and Fraser Ayres . " The Guardian noted , " Ben Whishaw and Robert Boulter offer tenderness amid the savagery . " 
+
+ = = = 2006 – present = = = 
+
+ In 2006 Boulter starred in the play Citizenship written by Mark Ravenhill . The play was part of a series which featured different playwrights , titled Burn / Chatroom / Citizenship .
+
+Question: Who is the chief financial officer of Northwind Logistics? Answer with the full name.<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+
+---
+The answer is Sarah Chen.
+---
+6 tokens in 703.9s (0.0 tok/s, 8 threads, weights=FP32, kv=fp32)
+
+===== fp32-weights ctx=1024 needle=1 =====
+Loading model from models/Llama-3.2-3B-Instruct-Q8_0.gguf...
+tq_load_model: detected GGUF format
+tq_load_gguf: GGUF v3, 255 tensors, 35 metadata keys
+tq_load_gguf: architecture = 'llama'
+tq_load_gguf: config — layers=28, dim=3072, heads=24/8, head_dim=128, vocab=128256
+tq_load_gguf: large vocab (128256) — using GGUF embedding (saves 1.5 GB, fused dot output projection)
+tq_load_gguf: loaded learned RoPE frequencies (64 values)
+tq_load_gguf: loaded 28 layers (28 self_attn), dim=3072, heads=24/8, vocab=128256
+tq_load_gguf: TQ_NO_Q4 set — skipping Q4 conversion, using GGUF on-the-fly dequant
+tq_load_gguf: madvise(MADV_DONTNEED) on 3.2 GB mmap
+2026-04-11 18:22:07.857 quant[93644:104215212] TurboQuant: Fused MoE kernels ready (3 dispatches per layer)
+2026-04-11 18:22:07.857 quant[93644:104215212] TurboQuant: Metal backend initialized on Apple M1 Pro
+2026-04-11 18:22:07.857 quant[93644:104215212] TurboQuant: GPU graph buffers initialized (dim=3072, inter=8192, q=3072, kv=1024)
+2026-04-11 18:22:07.857 quant[93644:104215212] TurboQuant: GPU compute graph ready (n_heads=24, max_seq=4096, kv_dim=1024)
+Context length override: 4096 → 1280
+Model: 28 layers, dim=3072, heads=24/8, head_dim=128, vocab=128256, inter=8192
+KV cache type: fp32, V quant: FP16
+tq_load_tokenizer_from_tqm: not a TQM file
+tq_load_tokenizer_from_gguf: loaded 128256 tokens (max_len=256)
+Loaded tokenizer from GGUF metadata
+Threads: 8
+Prompt: <|start_header_id|>user<|end_header_id|>
+
+ = Robert Boulter = 
+
+ Robert Boulter is an English film , television and theatre actor . He had a guest @-@ starring role on the television series The Bill in 2000 . This was followed by a starring role in the play Herons written by Simon Stephens , which was performed in 2001 at the Royal Court Theatre . He had a guest role in the television series Judge John Deed in 2002 . In 2004 Boulter landed a role as " Craig " in the episode " Teddy 's Story " of the television series The Long Firm ; he starred alongside actors Mark Strong and Derek Jacobi . He was cast in the 2005 theatre productions of the Philip Ridley play Mercury Fur , which was performed at the Drum Theatre in Plymouth and the Menier Chocolate Factory in London . He was directed by John Tiffany and starred alongside Ben Whishaw , Shane Zaza , Harry Kent , Fraser Ayres , Sophie Stanton and Dominic Hall . 
+
+ In 2006 , Boulter starred alongside Whishaw in the play Citizenship written by Mark Ravenhill . He appeared on a 2006 episode of the television series , Doctors , followed by a role in the 2007 theatre production of How to Curse directed by Josie Rourke . How to Curse was performed at Bush Theatre in the London Borough of Hammersmith and Fulham . Boulter starred in two films in 2008 , Daylight Robbery by filmmaker Paris Leonti , and Donkey Punch directed by Olly Blackburn . In May 2008 , Boulter made a guest appearance on a two @-@ part episode arc of the television series Waking the Dead , followed by an appearance on the television series Survivors in November 2008 . He had a recurring role in ten episodes of the television series Casualty in 2010 , as " Kieron Fletcher " . Boulter starred in the 2011 film Mercenaries directed by Paris Leonti . The launch date for Project Aurora is November 14th in San Francisco. 
+
+ = = Career = = 
+
+ = = = 2000 – 2005 = = = 
+
+ In 2000 Boulter had a guest @-@ starring role on the television series The Bill ; he portrayed " Scott Parry " in the episode , " In Safe Hands " . Boulter starred as " Scott " in the play Herons written by Simon Stephens , which was performed in 2001 at the Royal Court Theatre . A review of Boulter 's performance in The Independent on Sunday described him as " horribly menacing " in the role , and he received critical reviews in The Herald , and Evening Standard . He appeared in the television series Judge John Deed in 2002 as " Addem Armitage " in the episode " Political Expediency " , and had a role as a different character " Toby Steele " on The Bill . 
+
+ He had a recurring role in 2003 on two episodes of The Bill , as character " Connor Price " . In 2004 Boulter landed a role as " Craig " in the episode " Teddy 's Story " of the television series The Long Firm ; he starred alongside actors Mark Strong and Derek Jacobi . Boulter starred as " Darren " , in the 2005 theatre productions of the Philip Ridley play Mercury Fur . It was performed at the Drum Theatre in Plymouth , and the Menier Chocolate Factory in London . He was directed by John Tiffany and starred alongside Ben Whishaw , Shane Zaza , Harry Kent , Fraser Ayres , Sophie Stanton and Dominic Hall . Boulter received a favorable review in The Daily Telegraph : " The acting is shatteringly intense , with wired performances from Ben Whishaw ( now unrecognisable from his performance as Trevor Nunn 's Hamlet ) , Robert Boulter , Shane Zaza and Fraser Ayres . " The Guardian noted , " Ben Whishaw and Robert Boulter offer tenderness amid the savagery . " 
+
+ = = = 2006 – present = = = 
+
+ In 2006 Boulter starred in the play Citizenship written by Mark Ravenhill . The play was part of a series which featured different playwrights , titled Burn / Chatroom / Citizenship .
+
+Question: When and where will Project Aurora launch? Answer in one sentence.<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+
+---
+The launch date for Project Aurora is November 14th in San Francisco.
+---
+15 tokens in 569.6s (0.0 tok/s, 8 threads, weights=FP32, kv=fp32)
+
+===== fp32-weights ctx=1024 needle=2 =====
+Loading model from models/Llama-3.2-3B-Instruct-Q8_0.gguf...
+tq_load_model: detected GGUF format
+tq_load_gguf: GGUF v3, 255 tensors, 35 metadata keys
+tq_load_gguf: architecture = 'llama'
+tq_load_gguf: config — layers=28, dim=3072, heads=24/8, head_dim=128, vocab=128256
+tq_load_gguf: large vocab (128256) — using GGUF embedding (saves 1.5 GB, fused dot output projection)
+tq_load_gguf: loaded learned RoPE frequencies (64 values)
+tq_load_gguf: loaded 28 layers (28 self_attn), dim=3072, heads=24/8, vocab=128256
+tq_load_gguf: TQ_NO_Q4 set — skipping Q4 conversion, using GGUF on-the-fly dequant
+tq_load_gguf: madvise(MADV_DONTNEED) on 3.2 GB mmap
+2026-04-11 18:31:37.689 quant[99756:104231716] TurboQuant: Fused MoE kernels ready (3 dispatches per layer)
+2026-04-11 18:31:37.689 quant[99756:104231716] TurboQuant: Metal backend initialized on Apple M1 Pro
+2026-04-11 18:31:37.689 quant[99756:104231716] TurboQuant: GPU graph buffers initialized (dim=3072, inter=8192, q=3072, kv=1024)
+2026-04-11 18:31:37.689 quant[99756:104231716] TurboQuant: GPU compute graph ready (n_heads=24, max_seq=4096, kv_dim=1024)
+Context length override: 4096 → 1280
+Model: 28 layers, dim=3072, heads=24/8, head_dim=128, vocab=128256, inter=8192
+KV cache type: fp32, V quant: FP16
+tq_load_tokenizer_from_tqm: not a TQM file
+tq_load_tokenizer_from_gguf: loaded 128256 tokens (max_len=256)
+Loaded tokenizer from GGUF metadata
+Threads: 8
+Prompt: <|start_header_id|>user<|end_header_id|>
+
+ = Robert Boulter = 
+
+ Robert Boulter is an English film , television and theatre actor . He had a guest @-@ starring role on the television series The Bill in 2000 . This was followed by a starring role in the play Herons written by Simon Stephens , which was performed in 2001 at the Royal Court Theatre . He had a guest role in the television series Judge John Deed in 2002 . In 2004 Boulter landed a role as " Craig " in the episode " Teddy 's Story " of the television series The Long Firm ; he starred alongside actors Mark Strong and Derek Jacobi . He was cast in the 2005 theatre productions of the Philip Ridley play Mercury Fur , which was performed at the Drum Theatre in Plymouth and the Menier Chocolate Factory in London . He was directed by John Tiffany and starred alongside Ben Whishaw , Shane Zaza , Harry Kent , Fraser Ayres , Sophie Stanton and Dominic Hall . 
+
+ In 2006 , Boulter starred alongside Whishaw in the play Citizenship written by Mark Ravenhill . He appeared on a 2006 episode of the television series , Doctors , followed by a role in the 2007 theatre production of How to Curse directed by Josie Rourke . How to Curse was performed at Bush Theatre in the London Borough of Hammersmith and Fulham . Boulter starred in two films in 2008 , Daylight Robbery by filmmaker Paris Leonti , and Donkey Punch directed by Olly Blackburn . In May 2008 , Boulter made a guest appearance on a two @-@ part episode arc of the television series Waking the Dead , followed by an appearance on the television series Survivors in November 2008 . He had a recurring role in ten episodes of the television series Casualty in 2010 , as " Kieron Fletcher " . Boulter starred in the 2011 film Mercenaries directed by Paris Leonti . The reactor cooling tank at the Helios facility holds exactly eight thousand liters of distilled water. 
+
+ = = Career = = 
+
+ = = = 2000 – 2005 = = = 
+
+ In 2000 Boulter had a guest @-@ starring role on the television series The Bill ; he portrayed " Scott Parry " in the episode , " In Safe Hands " . Boulter starred as " Scott " in the play Herons written by Simon Stephens , which was performed in 2001 at the Royal Court Theatre . A review of Boulter 's performance in The Independent on Sunday described him as " horribly menacing " in the role , and he received critical reviews in The Herald , and Evening Standard . He appeared in the television series Judge John Deed in 2002 as " Addem Armitage " in the episode " Political Expediency " , and had a role as a different character " Toby Steele " on The Bill . 
+
+ He had a recurring role in 2003 on two episodes of The Bill , as character " Connor Price " . In 2004 Boulter landed a role as " Craig " in the episode " Teddy 's Story " of the television series The Long Firm ; he starred alongside actors Mark Strong and Derek Jacobi . Boulter starred as " Darren " , in the 2005 theatre productions of the Philip Ridley play Mercury Fur . It was performed at the Drum Theatre in Plymouth , and the Menier Chocolate Factory in London . He was directed by John Tiffany and starred alongside Ben Whishaw , Shane Zaza , Harry Kent , Fraser Ayres , Sophie Stanton and Dominic Hall . Boulter received a favorable review in The Daily Telegraph : " The acting is shatteringly intense , with wired performances from Ben Whishaw ( now unrecognisable from his performance as Trevor Nunn 's Hamlet ) , Robert Boulter , Shane Zaza and Fraser Ayres . " The Guardian noted , " Ben Whishaw and Robert Boulter offer tenderness amid the savagery . " 
+
+ = = = 2006 – present = = = 
+
+ In 2006 Boulter starred in the play Citizenship written by Mark Ravenhill . The play was part of a series which featured different playwrights , titled Burn / Chatroom / Citizenship .
+
+Question: How much distilled water does the reactor cooling tank at Helios hold?<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+
+---
+Answer: The reactor cooling tank at the Helios facility holds exactly eight thousand liters of distilled water.
+---
+20 tokens in 583.0s (0.0 tok/s, 8 threads, weights=FP32, kv=fp32)
+
+===== fp32-weights ctx=1280 needle=0 =====
+Loading model from models/Llama-3.2-3B-Instruct-Q8_0.gguf...
+tq_load_model: detected GGUF format
+tq_load_gguf: GGUF v3, 255 tensors, 35 metadata keys
+tq_load_gguf: architecture = 'llama'
+tq_load_gguf: config — layers=28, dim=3072, heads=24/8, head_dim=128, vocab=128256
+tq_load_gguf: large vocab (128256) — using GGUF embedding (saves 1.5 GB, fused dot output projection)
+tq_load_gguf: loaded learned RoPE frequencies (64 values)
+tq_load_gguf: loaded 28 layers (28 self_attn), dim=3072, heads=24/8, vocab=128256
+tq_load_gguf: TQ_NO_Q4 set — skipping Q4 conversion, using GGUF on-the-fly dequant
+tq_load_gguf: madvise(MADV_DONTNEED) on 3.2 GB mmap
+2026-04-11 18:41:20.930 quant[6455:104249324] TurboQuant: Fused MoE kernels ready (3 dispatches per layer)
+2026-04-11 18:41:20.930 quant[6455:104249324] TurboQuant: Metal backend initialized on Apple M1 Pro
+2026-04-11 18:41:20.931 quant[6455:104249324] TurboQuant: GPU graph buffers initialized (dim=3072, inter=8192, q=3072, kv=1024)
+2026-04-11 18:41:20.931 quant[6455:104249324] TurboQuant: GPU compute graph ready (n_heads=24, max_seq=4096, kv_dim=1024)
+Context length override: 4096 → 1536
+Model: 28 layers, dim=3072, heads=24/8, head_dim=128, vocab=128256, inter=8192
+KV cache type: fp32, V quant: FP16
+tq_load_tokenizer_from_tqm: not a TQM file
+tq_load_tokenizer_from_gguf: loaded 128256 tokens (max_len=256)
+Loaded tokenizer from GGUF metadata
+Threads: 8
+Prompt: <|start_header_id|>user<|end_header_id|>
+
+ = Robert Boulter = 
+
+ Robert Boulter is an English film , television and theatre actor . He had a guest @-@ starring role on the television series The Bill in 2000 . This was followed by a starring role in the play Herons written by Simon Stephens , which was performed in 2001 at the Royal Court Theatre . He had a guest role in the television series Judge John Deed in 2002 . In 2004 Boulter landed a role as " Craig " in the episode " Teddy 's Story " of the television series The Long Firm ; he starred alongside actors Mark Strong and Derek Jacobi . He was cast in the 2005 theatre productions of the Philip Ridley play Mercury Fur , which was performed at the Drum Theatre in Plymouth and the Menier Chocolate Factory in London . He was directed by John Tiffany and starred alongside Ben Whishaw , Shane Zaza , Harry Kent , Fraser Ayres , Sophie Stanton and Dominic Hall . 
+
+ In 2006 , Boulter starred alongside Whishaw in the play Citizenship written by Mark Ravenhill . He appeared on a 2006 episode of the television series , Doctors , followed by a role in the 2007 theatre production of How to Curse directed by Josie Rourke . How to Curse was performed at Bush Theatre in the London Borough of Hammersmith and Fulham . Boulter starred in two films in 2008 , Daylight Robbery by filmmaker Paris Leonti , and Donkey Punch directed by Olly Blackburn . In May 2008 , Boulter made a guest appearance on a two @-@ part episode arc of the television series Waking the Dead , followed by an appearance on the television series Survivors in November 2008 . He had a recurring role in ten episodes of the television series Casualty in 2010 , as " Kieron Fletcher " . Boulter starred in the 2011 film Mercenaries directed by Paris Leonti . 
+
+ = = Career = = 
+
+ = = = 2000 – 2005 = = = 
+
+ In 2000 Boulter had a guest @-@ starring role on the television series The Bill ; he portrayed " Scott Parry " in the episode , " In Safe Hands " . Boulter starred as " Scott " in the play Herons written by Simon Stephens , which was performed in 2001 at the Royal Court Theatre . A review of Boulter 's performance in The Independent on Sunday described him as " horribly menacing " in the role , and he received critical reviews in The Herald , and Evening Standard . The chief financial officer of Northwind Logistics is Sarah Chen, hired in 2023. He appeared in the television series Judge John Deed in 2002 as " Addem Armitage " in the episode " Political Expediency " , and had a role as a different character " Toby Steele " on The Bill . 
+
+ He had a recurring role in 2003 on two episodes of The Bill , as character " Connor Price " . In 2004 Boulter landed a role as " Craig " in the episode " Teddy 's Story " of the television series The Long Firm ; he starred alongside actors Mark Strong and Derek Jacobi . Boulter starred as " Darren " , in the 2005 theatre productions of the Philip Ridley play Mercury Fur . It was performed at the Drum Theatre in Plymouth , and the Menier Chocolate Factory in London . He was directed by John Tiffany and starred alongside Ben Whishaw , Shane Zaza , Harry Kent , Fraser Ayres , Sophie Stanton and Dominic Hall . Boulter received a favorable review in The Daily Telegraph : " The acting is shatteringly intense , with wired performances from Ben Whishaw ( now unrecognisable from his performance as Trevor Nunn 's Hamlet ) , Robert Boulter , Shane Zaza and Fraser Ayres . " The Guardian noted , " Ben Whishaw and Robert Boulter offer tenderness amid the savagery . " 
+
+ = = = 2006 – present = = = 
+
+ In 2006 Boulter starred in the play Citizenship written by Mark Ravenhill . The play was part of a series which featured different playwrights , titled Burn / Chatroom / Citizenship . In a 2006 interview , fellow actor Ben Whishaw identified Boulter as one of his favorite co @-@ stars : " I loved working with a guy called Robert Boulter , who was in the triple bill of Burn , Chatroom and Citizenship at the National . He played my brother in Mercury Fur . " He portrayed " Jason Tyler " on the 2006 episode of the television series , Doctors , titled " Something I Ate " . Boulter starred as " William " in the 2007 production of How to Curse directed by Josie Rourke . How to Curse was performed at Bush Theatre in the London Borough of Hammersmith and Fulham . In a review of the production for The Daily Telegraph , theatre critic Charles Spencer noted , " Robert Boulter brings a touching vulnerability to the stage as William . " 
+
+ Boulter starred in two films in 2008 , Daylight Robbery by filmmaker Paris Leonti , and Donkey Punch directed by Olly Blackburn .
+
+Question: Who is the chief financial officer of Northwind Logistics? Answer with the full name.<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+
+---
+ Doctors , followed by a role in the 2007 theatre production of How to Curse directed by Josie Roukke . Boulter starred alongside Whisha
+---
+32 tokens in 622.1s (0.1 tok/s, 8 threads, weights=FP32, kv=fp32)
+
+===== fp32-weights ctx=1280 needle=1 =====
+Loading model from models/Llama-3.2-3B-Instruct-Q8_0.gguf...
+tq_load_model: detected GGUF format
+tq_load_gguf: GGUF v3, 255 tensors, 35 metadata keys
+tq_load_gguf: architecture = 'llama'
+tq_load_gguf: config — layers=28, dim=3072, heads=24/8, head_dim=128, vocab=128256
+tq_load_gguf: large vocab (128256) — using GGUF embedding (saves 1.5 GB, fused dot output projection)
+tq_load_gguf: loaded learned RoPE frequencies (64 values)
+tq_load_gguf: loaded 28 layers (28 self_attn), dim=3072, heads=24/8, vocab=128256
+tq_load_gguf: TQ_NO_Q4 set — skipping Q4 conversion, using GGUF on-the-fly dequant
+tq_load_gguf: madvise(MADV_DONTNEED) on 3.2 GB mmap
+2026-04-11 18:51:43.292 quant[13174:104267737] TurboQuant: Fused MoE kernels ready (3 dispatches per layer)
+2026-04-11 18:51:43.292 quant[13174:104267737] TurboQuant: Metal backend initialized on Apple M1 Pro
+2026-04-11 18:51:43.292 quant[13174:104267737] TurboQuant: GPU graph buffers initialized (dim=3072, inter=8192, q=3072, kv=1024)
+2026-04-11 18:51:43.292 quant[13174:104267737] TurboQuant: GPU compute graph ready (n_heads=24, max_seq=4096, kv_dim=1024)
+Context length override: 4096 → 1536
+Model: 28 layers, dim=3072, heads=24/8, head_dim=128, vocab=128256, inter=8192
+KV cache type: fp32, V quant: FP16
+tq_load_tokenizer_from_tqm: not a TQM file
+tq_load_tokenizer_from_gguf: loaded 128256 tokens (max_len=256)
+Loaded tokenizer from GGUF metadata
+Threads: 8
+Prompt: <|start_header_id|>user<|end_header_id|>
+
+ = Robert Boulter = 
+
+ Robert Boulter is an English film , television and theatre actor . He had a guest @-@ starring role on the television series The Bill in 2000 . This was followed by a starring role in the play Herons written by Simon Stephens , which was performed in 2001 at the Royal Court Theatre . He had a guest role in the television series Judge John Deed in 2002 . In 2004 Boulter landed a role as " Craig " in the episode " Teddy 's Story " of the television series The Long Firm ; he starred alongside actors Mark Strong and Derek Jacobi . He was cast in the 2005 theatre productions of the Philip Ridley play Mercury Fur , which was performed at the Drum Theatre in Plymouth and the Menier Chocolate Factory in London . He was directed by John Tiffany and starred alongside Ben Whishaw , Shane Zaza , Harry Kent , Fraser Ayres , Sophie Stanton and Dominic Hall . 
+
+ In 2006 , Boulter starred alongside Whishaw in the play Citizenship written by Mark Ravenhill . He appeared on a 2006 episode of the television series , Doctors , followed by a role in the 2007 theatre production of How to Curse directed by Josie Rourke . How to Curse was performed at Bush Theatre in the London Borough of Hammersmith and Fulham . Boulter starred in two films in 2008 , Daylight Robbery by filmmaker Paris Leonti , and Donkey Punch directed by Olly Blackburn . In May 2008 , Boulter made a guest appearance on a two @-@ part episode arc of the television series Waking the Dead , followed by an appearance on the television series Survivors in November 2008 . He had a recurring role in ten episodes of the television series Casualty in 2010 , as " Kieron Fletcher " . Boulter starred in the 2011 film Mercenaries directed by Paris Leonti . 
+
+ = = Career = = 
+
+ = = = 2000 – 2005 = = = 
+
+ In 2000 Boulter had a guest @-@ starring role on the television series The Bill ; he portrayed " Scott Parry " in the episode , " In Safe Hands " . Boulter starred as " Scott " in the play Herons written by Simon Stephens , which was performed in 2001 at the Royal Court Theatre . A review of Boulter 's performance in The Independent on Sunday described him as " horribly menacing " in the role , and he received critical reviews in The Herald , and Evening Standard . The launch date for Project Aurora is November 14th in San Francisco. He appeared in the television series Judge John Deed in 2002 as " Addem Armitage " in the episode " Political Expediency " , and had a role as a different character " Toby Steele " on The Bill . 
+
+ He had a recurring role in 2003 on two episodes of The Bill , as character " Connor Price " . In 2004 Boulter landed a role as " Craig " in the episode " Teddy 's Story " of the television series The Long Firm ; he starred alongside actors Mark Strong and Derek Jacobi . Boulter starred as " Darren " , in the 2005 theatre productions of the Philip Ridley play Mercury Fur . It was performed at the Drum Theatre in Plymouth , and the Menier Chocolate Factory in London . He was directed by John Tiffany and starred alongside Ben Whishaw , Shane Zaza , Harry Kent , Fraser Ayres , Sophie Stanton and Dominic Hall . Boulter received a favorable review in The Daily Telegraph : " The acting is shatteringly intense , with wired performances from Ben Whishaw ( now unrecognisable from his performance as Trevor Nunn 's Hamlet ) , Robert Boulter , Shane Zaza and Fraser Ayres . " The Guardian noted , " Ben Whishaw and Robert Boulter offer tenderness amid the savagery . " 
+
+ = = = 2006 – present = = = 
+
+ In 2006 Boulter starred in the play Citizenship written by Mark Ravenhill . The play was part of a series which featured different playwrights , titled Burn / Chatroom / Citizenship . In a 2006 interview , fellow actor Ben Whishaw identified Boulter as one of his favorite co @-@ stars : " I loved working with a guy called Robert Boulter , who was in the triple bill of Burn , Chatroom and Citizenship at the National . He played my brother in Mercury Fur . " He portrayed " Jason Tyler " on the 2006 episode of the television series , Doctors , titled " Something I Ate " . Boulter starred as " William " in the 2007 production of How to Curse directed by Josie Rourke . How to Curse was performed at Bush Theatre in the London Borough of Hammersmith and Fulham . In a review of the production for The Daily Telegraph , theatre critic Charles Spencer noted , " Robert Boulter brings a touching vulnerability to the stage as William . " 
+
+ Boulter starred in two films in 2008 , Daylight Robbery by filmmaker Paris Leonti , and Donkey Punch directed by Olly Blackburn .
+
+Question: When and where will Project Aurora launch? Answer in one sentence.<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+
+---
+ion series Doctors , and appeared in a 2007 theatre production of How to Curse directed by Josie Roukke . Boulter starred alongside Whisha
+---
+32 tokens in 679.2s (0.0 tok/s, 8 threads, weights=FP32, kv=fp32)
+
+===== fp32-weights ctx=1280 needle=2 =====
+Loading model from models/Llama-3.2-3B-Instruct-Q8_0.gguf...
+tq_load_model: detected GGUF format
+tq_load_gguf: GGUF v3, 255 tensors, 35 metadata keys
+tq_load_gguf: architecture = 'llama'
+tq_load_gguf: config — layers=28, dim=3072, heads=24/8, head_dim=128, vocab=128256
+tq_load_gguf: large vocab (128256) — using GGUF embedding (saves 1.5 GB, fused dot output projection)
+tq_load_gguf: loaded learned RoPE frequencies (64 values)
+tq_load_gguf: loaded 28 layers (28 self_attn), dim=3072, heads=24/8, vocab=128256
+tq_load_gguf: TQ_NO_Q4 set — skipping Q4 conversion, using GGUF on-the-fly dequant
+tq_load_gguf: madvise(MADV_DONTNEED) on 3.2 GB mmap
+2026-04-11 19:03:02.747 quant[20614:104288435] TurboQuant: Fused MoE kernels ready (3 dispatches per layer)
+2026-04-11 19:03:02.747 quant[20614:104288435] TurboQuant: Metal backend initialized on Apple M1 Pro
+2026-04-11 19:03:02.747 quant[20614:104288435] TurboQuant: GPU graph buffers initialized (dim=3072, inter=8192, q=3072, kv=1024)
+2026-04-11 19:03:02.747 quant[20614:104288435] TurboQuant: GPU compute graph ready (n_heads=24, max_seq=4096, kv_dim=1024)
+Context length override: 4096 → 1536
+Model: 28 layers, dim=3072, heads=24/8, head_dim=128, vocab=128256, inter=8192
+KV cache type: fp32, V quant: FP16
+tq_load_tokenizer_from_tqm: not a TQM file
+tq_load_tokenizer_from_gguf: loaded 128256 tokens (max_len=256)
+Loaded tokenizer from GGUF metadata
+Threads: 8
+Prompt: <|start_header_id|>user<|end_header_id|>
+
+ = Robert Boulter = 
+
+ Robert Boulter is an English film , television and theatre actor . He had a guest @-@ starring role on the television series The Bill in 2000 . This was followed by a starring role in the play Herons written by Simon Stephens , which was performed in 2001 at the Royal Court Theatre . He had a guest role in the television series Judge John Deed in 2002 . In 2004 Boulter landed a role as " Craig " in the episode " Teddy 's Story " of the television series The Long Firm ; he starred alongside actors Mark Strong and Derek Jacobi . He was cast in the 2005 theatre productions of the Philip Ridley play Mercury Fur , which was performed at the Drum Theatre in Plymouth and the Menier Chocolate Factory in London . He was directed by John Tiffany and starred alongside Ben Whishaw , Shane Zaza , Harry Kent , Fraser Ayres , Sophie Stanton and Dominic Hall . 
+
+ In 2006 , Boulter starred alongside Whishaw in the play Citizenship written by Mark Ravenhill . He appeared on a 2006 episode of the television series , Doctors , followed by a role in the 2007 theatre production of How to Curse directed by Josie Rourke . How to Curse was performed at Bush Theatre in the London Borough of Hammersmith and Fulham . Boulter starred in two films in 2008 , Daylight Robbery by filmmaker Paris Leonti , and Donkey Punch directed by Olly Blackburn . In May 2008 , Boulter made a guest appearance on a two @-@ part episode arc of the television series Waking the Dead , followed by an appearance on the television series Survivors in November 2008 . He had a recurring role in ten episodes of the television series Casualty in 2010 , as " Kieron Fletcher " . Boulter starred in the 2011 film Mercenaries directed by Paris Leonti . 
+
+ = = Career = = 
+
+ = = = 2000 – 2005 = = = 
+
+ In 2000 Boulter had a guest @-@ starring role on the television series The Bill ; he portrayed " Scott Parry " in the episode , " In Safe Hands " . Boulter starred as " Scott " in the play Herons written by Simon Stephens , which was performed in 2001 at the Royal Court Theatre . A review of Boulter 's performance in The Independent on Sunday described him as " horribly menacing " in the role , and he received critical reviews in The Herald , and Evening Standard . The reactor cooling tank at the Helios facility holds exactly eight thousand liters of distilled water. He appeared in the television series Judge John Deed in 2002 as " Addem Armitage " in the episode " Political Expediency " , and had a role as a different character " Toby Steele " on The Bill . 
+
+ He had a recurring role in 2003 on two episodes of The Bill , as character " Connor Price " . In 2004 Boulter landed a role as " Craig " in the episode " Teddy 's Story " of the television series The Long Firm ; he starred alongside actors Mark Strong and Derek Jacobi . Boulter starred as " Darren " , in the 2005 theatre productions of the Philip Ridley play Mercury Fur . It was performed at the Drum Theatre in Plymouth , and the Menier Chocolate Factory in London . He was directed by John Tiffany and starred alongside Ben Whishaw , Shane Zaza , Harry Kent , Fraser Ayres , Sophie Stanton and Dominic Hall . Boulter received a favorable review in The Daily Telegraph : " The acting is shatteringly intense , with wired performances from Ben Whishaw ( now unrecognisable from his performance as Trevor Nunn 's Hamlet ) , Robert Boulter , Shane Zaza and Fraser Ayres . " The Guardian noted , " Ben Whishaw and Robert Boulter offer tenderness amid the savagery . " 
+
+ = = = 2006 – present = = = 
+
+ In 2006 Boulter starred in the play Citizenship written by Mark Ravenhill . The play was part of a series which featured different playwrights , titled Burn / Chatroom / Citizenship . In a 2006 interview , fellow actor Ben Whishaw identified Boulter as one of his favorite co @-@ stars : " I loved working with a guy called Robert Boulter , who was in the triple bill of Burn , Chatroom and Citizenship at the National . He played my brother in Mercury Fur . " He portrayed " Jason Tyler " on the 2006 episode of the television series , Doctors , titled " Something I Ate " . Boulter starred as " William " in the 2007 production of How to Curse directed by Josie Rourke . How to Curse was performed at Bush Theatre in the London Borough of Hammersmith and Fulham . In a review of the production for The Daily Telegraph , theatre critic Charles Spencer noted , " Robert Boulter brings a touching vulnerability to the stage as William . " 
+
+ Boulter starred in two films in 2008 , Daylight Robbery by filmmaker Paris Leonti , and Donkey Punch directed by Olly Blackburn .
+
+Question: How much distilled water does the reactor cooling tank at Helios hold?<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+
+---
+ in the 2006 episode of Doctors , followed by a role as a different character on the television series Judge John Deeed . Boulter appeared in the
+---
+32 tokens in 614.2s (0.1 tok/s, 8 threads, weights=FP32, kv=fp32)
+

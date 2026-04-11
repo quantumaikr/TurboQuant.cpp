@@ -1,0 +1,300 @@
+===== 1B fp32 ctx=1024 needle=0 seed=42 =====
+Loading model from 42...
+tq_load_model: cannot open '42'
+Failed to load model
+
+===== 1B fp32 ctx=1024 needle=0 seed=1337 =====
+Loading model from 1337...
+tq_load_model: cannot open '1337'
+Failed to load model
+
+===== 1B fp32 ctx=1024 needle=0 seed=7 =====
+Loading model from 7...
+tq_load_model: cannot open '7'
+Failed to load model
+
+===== 1B fp32 ctx=1024 needle=0 seed=2024 =====
+Loading model from 2024...
+tq_load_model: cannot open '2024'
+Failed to load model
+
+===== 1B fp32 ctx=1024 needle=0 seed=31415 =====
+Loading model from 31415...
+tq_load_model: cannot open '31415'
+Failed to load model
+
+===== 1B fp32 ctx=1024 needle=1 seed=42 =====
+Loading model from 42...
+tq_load_model: cannot open '42'
+Failed to load model
+
+===== 1B fp32 ctx=1024 needle=1 seed=1337 =====
+Loading model from 1337...
+tq_load_model: cannot open '1337'
+Failed to load model
+
+===== 1B fp32 ctx=1024 needle=1 seed=7 =====
+Loading model from 7...
+tq_load_model: cannot open '7'
+Failed to load model
+
+===== 1B fp32 ctx=1024 needle=1 seed=2024 =====
+Loading model from 2024...
+tq_load_model: cannot open '2024'
+Failed to load model
+
+===== 1B fp32 ctx=1024 needle=1 seed=31415 =====
+Loading model from 31415...
+tq_load_model: cannot open '31415'
+Failed to load model
+
+===== 1B fp32 ctx=1024 needle=2 seed=42 =====
+Loading model from 42...
+tq_load_model: cannot open '42'
+Failed to load model
+
+===== 1B fp32 ctx=1024 needle=2 seed=1337 =====
+Loading model from 1337...
+tq_load_model: cannot open '1337'
+Failed to load model
+
+===== 1B fp32 ctx=1024 needle=2 seed=7 =====
+Loading model from 7...
+tq_load_model: cannot open '7'
+Failed to load model
+
+===== 1B fp32 ctx=1024 needle=2 seed=2024 =====
+Loading model from 2024...
+tq_load_model: cannot open '2024'
+Failed to load model
+
+===== 1B fp32 ctx=1024 needle=2 seed=31415 =====
+Loading model from 31415...
+tq_load_model: cannot open '31415'
+Failed to load model
+
+===== 1B turbo_q4_w128 ctx=1024 needle=0 seed=42 =====
+Loading model from 42...
+tq_load_model: cannot open '42'
+Failed to load model
+
+===== 1B turbo_q4_w128 ctx=1024 needle=0 seed=1337 =====
+Loading model from 1337...
+tq_load_model: cannot open '1337'
+Failed to load model
+
+===== 1B turbo_q4_w128 ctx=1024 needle=0 seed=7 =====
+Loading model from 7...
+tq_load_model: cannot open '7'
+Failed to load model
+
+===== 1B turbo_q4_w128 ctx=1024 needle=0 seed=2024 =====
+Loading model from 2024...
+tq_load_model: cannot open '2024'
+Failed to load model
+
+===== 1B turbo_q4_w128 ctx=1024 needle=0 seed=31415 =====
+Loading model from 31415...
+tq_load_model: cannot open '31415'
+Failed to load model
+
+===== 1B turbo_q4_w128 ctx=1024 needle=1 seed=42 =====
+Loading model from 42...
+tq_load_model: cannot open '42'
+Failed to load model
+
+===== 1B turbo_q4_w128 ctx=1024 needle=1 seed=1337 =====
+Loading model from 1337...
+tq_load_model: cannot open '1337'
+Failed to load model
+
+===== 1B turbo_q4_w128 ctx=1024 needle=1 seed=7 =====
+Loading model from 7...
+tq_load_model: cannot open '7'
+Failed to load model
+
+===== 1B turbo_q4_w128 ctx=1024 needle=1 seed=2024 =====
+Loading model from 2024...
+tq_load_model: cannot open '2024'
+Failed to load model
+
+===== 1B turbo_q4_w128 ctx=1024 needle=1 seed=31415 =====
+Loading model from 31415...
+tq_load_model: cannot open '31415'
+Failed to load model
+
+===== 1B turbo_q4_w128 ctx=1024 needle=2 seed=42 =====
+Loading model from 42...
+tq_load_model: cannot open '42'
+Failed to load model
+
+===== 1B turbo_q4_w128 ctx=1024 needle=2 seed=1337 =====
+Loading model from 1337...
+tq_load_model: cannot open '1337'
+Failed to load model
+
+===== 1B turbo_q4_w128 ctx=1024 needle=2 seed=7 =====
+Loading model from 7...
+tq_load_model: cannot open '7'
+Failed to load model
+
+===== 1B turbo_q4_w128 ctx=1024 needle=2 seed=2024 =====
+Loading model from 2024...
+tq_load_model: cannot open '2024'
+Failed to load model
+
+===== 1B turbo_q4_w128 ctx=1024 needle=2 seed=31415 =====
+Loading model from 31415...
+tq_load_model: cannot open '31415'
+Failed to load model
+
+===== 3B fp32 ctx=1280 needle=0 seed=42 =====
+Loading model from 42...
+tq_load_model: cannot open '42'
+Failed to load model
+
+===== 3B fp32 ctx=1280 needle=0 seed=1337 =====
+Loading model from 1337...
+tq_load_model: cannot open '1337'
+Failed to load model
+
+===== 3B fp32 ctx=1280 needle=0 seed=7 =====
+Loading model from 7...
+tq_load_model: cannot open '7'
+Failed to load model
+
+===== 3B fp32 ctx=1280 needle=0 seed=2024 =====
+Loading model from 2024...
+tq_load_model: cannot open '2024'
+Failed to load model
+
+===== 3B fp32 ctx=1280 needle=0 seed=31415 =====
+Loading model from 31415...
+tq_load_model: cannot open '31415'
+Failed to load model
+
+===== 3B fp32 ctx=1280 needle=1 seed=42 =====
+Loading model from 42...
+tq_load_model: cannot open '42'
+Failed to load model
+
+===== 3B fp32 ctx=1280 needle=1 seed=1337 =====
+Loading model from 1337...
+tq_load_model: cannot open '1337'
+Failed to load model
+
+===== 3B fp32 ctx=1280 needle=1 seed=7 =====
+Loading model from 7...
+tq_load_model: cannot open '7'
+Failed to load model
+
+===== 3B fp32 ctx=1280 needle=1 seed=2024 =====
+Loading model from 2024...
+tq_load_model: cannot open '2024'
+Failed to load model
+
+===== 3B fp32 ctx=1280 needle=1 seed=31415 =====
+Loading model from 31415...
+tq_load_model: cannot open '31415'
+Failed to load model
+
+===== 3B fp32 ctx=1280 needle=2 seed=42 =====
+Loading model from 42...
+tq_load_model: cannot open '42'
+Failed to load model
+
+===== 3B fp32 ctx=1280 needle=2 seed=1337 =====
+Loading model from 1337...
+tq_load_model: cannot open '1337'
+Failed to load model
+
+===== 3B fp32 ctx=1280 needle=2 seed=7 =====
+Loading model from 7...
+tq_load_model: cannot open '7'
+Failed to load model
+
+===== 3B fp32 ctx=1280 needle=2 seed=2024 =====
+Loading model from 2024...
+tq_load_model: cannot open '2024'
+Failed to load model
+
+===== 3B fp32 ctx=1280 needle=2 seed=31415 =====
+Loading model from 31415...
+tq_load_model: cannot open '31415'
+Failed to load model
+
+===== 3B turbo_q4_w128 ctx=1280 needle=0 seed=42 =====
+Loading model from 42...
+tq_load_model: cannot open '42'
+Failed to load model
+
+===== 3B turbo_q4_w128 ctx=1280 needle=0 seed=1337 =====
+Loading model from 1337...
+tq_load_model: cannot open '1337'
+Failed to load model
+
+===== 3B turbo_q4_w128 ctx=1280 needle=0 seed=7 =====
+Loading model from 7...
+tq_load_model: cannot open '7'
+Failed to load model
+
+===== 3B turbo_q4_w128 ctx=1280 needle=0 seed=2024 =====
+Loading model from 2024...
+tq_load_model: cannot open '2024'
+Failed to load model
+
+===== 3B turbo_q4_w128 ctx=1280 needle=0 seed=31415 =====
+Loading model from 31415...
+tq_load_model: cannot open '31415'
+Failed to load model
+
+===== 3B turbo_q4_w128 ctx=1280 needle=1 seed=42 =====
+Loading model from 42...
+tq_load_model: cannot open '42'
+Failed to load model
+
+===== 3B turbo_q4_w128 ctx=1280 needle=1 seed=1337 =====
+Loading model from 1337...
+tq_load_model: cannot open '1337'
+Failed to load model
+
+===== 3B turbo_q4_w128 ctx=1280 needle=1 seed=7 =====
+Loading model from 7...
+tq_load_model: cannot open '7'
+Failed to load model
+
+===== 3B turbo_q4_w128 ctx=1280 needle=1 seed=2024 =====
+Loading model from 2024...
+tq_load_model: cannot open '2024'
+Failed to load model
+
+===== 3B turbo_q4_w128 ctx=1280 needle=1 seed=31415 =====
+Loading model from 31415...
+tq_load_model: cannot open '31415'
+Failed to load model
+
+===== 3B turbo_q4_w128 ctx=1280 needle=2 seed=42 =====
+Loading model from 42...
+tq_load_model: cannot open '42'
+Failed to load model
+
+===== 3B turbo_q4_w128 ctx=1280 needle=2 seed=1337 =====
+Loading model from 1337...
+tq_load_model: cannot open '1337'
+Failed to load model
+
+===== 3B turbo_q4_w128 ctx=1280 needle=2 seed=7 =====
+Loading model from 7...
+tq_load_model: cannot open '7'
+Failed to load model
+
+===== 3B turbo_q4_w128 ctx=1280 needle=2 seed=2024 =====
+Loading model from 2024...
+tq_load_model: cannot open '2024'
+Failed to load model
+
+===== 3B turbo_q4_w128 ctx=1280 needle=2 seed=31415 =====
+Loading model from 31415...
+tq_load_model: cannot open '31415'
+Failed to load model
+

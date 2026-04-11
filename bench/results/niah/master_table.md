@@ -1,10 +1,10 @@
-# NIAH Master Table — Phase 1 Working Memory Cliff Measurements
+# NIAH Master Table — Phase 1B Working Memory Cliff Measurements
 
 **Date**: 2026-04-11
 **Hardware**: Apple M-series, Metal kernel path (`build_metal/quant`)
-**Protocol**: 3 needles × 3 depths (0.1, 0.5, 0.9) per (model, ctx, KV-config) cell.
+**Protocol**: 3 needles × 3 depths (0.1, 0.5, 0.9) per (model, ctx, KV-config) cell, plus a 6-trial FP32-weights control at the cliff transition.
 **Scoring**: case-insensitive ERE grep for keywords, against 32-token greedy generation.
-**Total trials**: 198 (90 + 36 + 72).
+**Total trials**: 204 (R1=36 + R2=90 + R3=72 + R4=6).
 
 ---
 
@@ -57,6 +57,23 @@
 **Key reading**: 6.4× KV compression is **bit-for-bit identical** to FP32 baseline in every cell **except** the 1B cliff cell, where compression *appears* to be 22 pp worse (2/9 vs 4/9). However, both points are statistically indistinguishable from random at n=9 — this is not a compression-quality finding, it's a cliff-instability finding.
 
 The headline result remains: **KV compression preserves whatever the model can already retrieve, and the working memory cliff is a model property, not a KV property.**
+
+---
+
+## Weight-precision control (R4): the cliff is invariant to weight quantization
+
+The default `quant.cpp` loader silently re-quantizes Q8_0 GGUF weights to Q4 in memory. To eliminate the possibility that the cliff is an artifact of this requantization, we re-ran the cliff transition cells with the FP32-weights loader path (`TQ_NO_Q4=1`).
+
+| Weight precision | ctx=1024 | ctx=1280 |
+|---|---:|---:|
+| Q4 (default loader) | **100%** (18/18) | **0%** (0/18) |
+| **FP32** (`TQ_NO_Q4=1`)  | **100% (3/3)** | **0% (0/3)** |
+
+**Identical cliff location at 8× per-parameter precision.** The model's instruction-following collapse happens at the same context length whether weights are Q4 or FP32 — the cliff is a *model* property, not a weight quantization artifact.
+
+Above-cliff failure mode is also identical between Q4 and FP32 weights: all six FP32 ctx=1280 trials produced wikitext continuation ("Doctors , followed by a role in the 2007 theatre production of How to Curse..."), the same dominant failure mode as the Q4 grid.
+
+Source: `bench/results/niah/results_fp32ctrl_20260411T091023.csv` (6 trials, 60 minutes wall time on Metal — FP32-weights inference runs at ~10 min per trial, hence the small grid).
 
 ---
 

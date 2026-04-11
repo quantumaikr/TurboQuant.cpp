@@ -1,0 +1,7 @@
+method,context,depth,needle_idx,pass,response
+fp32-weights,1024,0.5,0,1,"The answer is Sarah Chen. "
+fp32-weights,1024,0.5,1,1,"The launch date for Project Aurora is November 14th in San Francisco. "
+fp32-weights,1024,0.5,2,1,"Answer: The reactor cooling tank at the Helios facility holds exactly eight thousand liters of distilled water. "
+fp32-weights,1280,0.5,0,0," Doctors , followed by a role in the 2007 theatre production of How to Curse directed by Josie Roukke . Boulter starred alongside Whisha "
+fp32-weights,1280,0.5,1,0,"ion series Doctors , and appeared in a 2007 theatre production of How to Curse directed by Josie Roukke . Boulter starred alongside Whisha "
+fp32-weights,1280,0.5,2,0," in the 2006 episode of Doctors , followed by a role as a different character on the television series Judge John Deeed . Boulter appeared in the "
