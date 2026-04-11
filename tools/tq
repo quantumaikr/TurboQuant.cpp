@@ -26,7 +26,10 @@ import json
 import argparse
 import time
 import struct
-import numpy as np
+try:
+    import numpy as np  # optional — only used by bench/compare
+except ImportError:
+    np = None
 
 # Add bindings to path
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../bindings/python"))
@@ -65,6 +68,225 @@ EXIT_USAGE = 1
 EXIT_LIB_MISSING = 2
 EXIT_MODEL_ERROR = 3
 EXIT_IO_ERROR = 4
+
+# ═══════════════════════════════════════════════════════════
+# Ollama-style model registry (short alias → Python registry key)
+# ═══════════════════════════════════════════════════════════
+# User-friendly short names. Maps to quantcpp.* registry keys.
+MODEL_ALIASES = {
+    "smollm2":        "SmolLM2-135M",
+    "smollm2:135m":   "SmolLM2-135M",
+    "qwen3.5":        "Qwen3.5-0.8B",
+    "qwen3.5:0.8b":   "Qwen3.5-0.8B",
+    "llama3.2":       "Llama-3.2-1B",
+    "llama3.2:1b":    "Llama-3.2-1B",
+}
+
+def resolve_model_name(name):
+    """Resolve user input to canonical registry key.
+
+    Accepts:
+      - short alias (llama3.2:1b)
+      - canonical key (Llama-3.2-1B)
+      - local .gguf path
+    """
+    if name is None:
+        return None
+    # Local file path takes precedence
+    if os.path.exists(name) and name.endswith(".gguf"):
+        return name
+    # Short alias
+    lower = name.lower()
+    if lower in MODEL_ALIASES:
+        return MODEL_ALIASES[lower]
+    return name  # try as-is (might match canonical key)
+
+def _load_quantcpp():
+    """Import quantcpp bindings, exit with helpful error if missing."""
+    try:
+        import quantcpp
+        return quantcpp
+    except ImportError as e:
+        print(f"{C.RED}error:{C.NC} quantcpp bindings not importable: {e}", file=sys.stderr)
+        print(f"  install: {C.CYAN}pip install quantcpp{C.NC}", file=sys.stderr)
+        print(f"  or dev:  {C.CYAN}cd bindings/python && pip install -e .{C.NC}", file=sys.stderr)
+        sys.exit(EXIT_LIB_MISSING)
+
+def _find_quant_binary():
+    """Locate the ./build/quant binary relative to this script."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    project = os.path.dirname(here)
+    candidates = [
+        os.path.join(project, "build", "quant"),
+        os.path.join(project, "build_metal", "quant"),
+        "quant",  # in PATH
+    ]
+    for c in candidates:
+        if os.path.isfile(c) and os.access(c, os.X_OK):
+            return c
+        # shutil.which fallback
+    import shutil
+    found = shutil.which("quant")
+    if found:
+        return found
+    return None
+
+def _find_quant_server_binary():
+    here = os.path.dirname(os.path.abspath(__file__))
+    project = os.path.dirname(here)
+    candidates = [
+        os.path.join(project, "build", "quant-server"),
+        os.path.join(project, "build_metal", "quant-server"),
+        "quant-server",
+    ]
+    for c in candidates:
+        if os.path.isfile(c) and os.access(c, os.X_OK):
+            return c
+    import shutil
+    return shutil.which("quant-server")
+
+# ═══════════════════════════════════════════════════════════
+# Ollama-style commands: pull / list / run / serve
+# ═══════════════════════════════════════════════════════════
+
+def cmd_pull(args):
+    """Download a model by short alias or canonical name."""
+    quantcpp = _load_quantcpp()
+    name = resolve_model_name(args.model)
+
+    # Check if it's a local path — already present, nothing to do
+    if os.path.exists(name) and name.endswith(".gguf"):
+        print(f"{C.GREEN}already local:{C.NC} {name}")
+        return EXIT_OK
+
+    if name not in quantcpp._MODEL_REGISTRY:
+        avail = ", ".join(sorted(quantcpp._MODEL_REGISTRY.keys()))
+        aliases = ", ".join(sorted(MODEL_ALIASES.keys()))
+        print(f"{C.RED}unknown model:{C.NC} {args.model!r}", file=sys.stderr)
+        print(f"  registry:  {avail}", file=sys.stderr)
+        print(f"  aliases:   {aliases}", file=sys.stderr)
+        return EXIT_USAGE
+
+    print(f"{C.CYAN}pulling{C.NC} {name}...")
+    try:
+        path = quantcpp.download(name)
+        size_mb = os.path.getsize(path) / (1024 * 1024)
+        print(f"{C.GREEN}✓{C.NC} {name} → {path} ({size_mb:.0f} MB)")
+        return EXIT_OK
+    except Exception as e:
+        print(f"{C.RED}download failed:{C.NC} {e}", file=sys.stderr)
+        return EXIT_IO_ERROR
+
+def cmd_list(args):
+    """List cached models and registry availability."""
+    quantcpp = _load_quantcpp()
+    cache_dir = quantcpp._CACHE_DIR
+    registry = quantcpp._MODEL_REGISTRY
+
+    rows = []  # (status, name, alias, size_mb, path)
+    for name, (repo, filename, approx_mb) in sorted(registry.items()):
+        path = cache_dir / filename
+        if path.exists():
+            size_mb = path.stat().st_size / (1024 * 1024)
+            status = "cached"
+        else:
+            size_mb = approx_mb
+            status = "remote"
+        # find alias
+        alias = next((a for a, n in MODEL_ALIASES.items() if n == name and ":" in a), "")
+        rows.append((status, name, alias, size_mb, str(path) if status == "cached" else f"~{approx_mb} MB"))
+
+    if args.json_output:
+        print(json.dumps([
+            {"status": s, "name": n, "alias": a, "size_mb": round(sz, 1), "path": p}
+            for (s, n, a, sz, p) in rows
+        ], indent=2))
+        return EXIT_OK
+
+    print(f"\n  {C.BOLD}Models{C.NC}  cache: {cache_dir}\n")
+    print(f"  {C.BOLD}{'STATUS':<8} {'NAME':<16} {'ALIAS':<14} {'SIZE':>8}{C.NC}")
+    print(f"  {'─'*8} {'─'*16} {'─'*14} {'─'*8}")
+    for status, name, alias, size_mb, path in rows:
+        color = C.GREEN if status == "cached" else C.DIM
+        size_str = f"{size_mb:.0f} MB"
+        print(f"  {color}{status:<8}{C.NC} {name:<16} {C.DIM}{alias:<14}{C.NC} {size_str:>8}")
+    print()
+    return EXIT_OK
+
+def cmd_run(args):
+    """Run an interactive chat with a model (auto-pull if needed)."""
+    quantcpp = _load_quantcpp()
+    name = resolve_model_name(args.model)
+
+    # Resolve to local path (pull if needed)
+    if os.path.exists(name) and name.endswith(".gguf"):
+        model_path = name
+    elif name in quantcpp._MODEL_REGISTRY:
+        repo, filename, _ = quantcpp._MODEL_REGISTRY[name]
+        cached = quantcpp._CACHE_DIR / filename
+        if not cached.exists():
+            print(f"{C.CYAN}model not cached — pulling{C.NC} {name}")
+            try:
+                model_path = quantcpp.download(name)
+            except Exception as e:
+                print(f"{C.RED}pull failed:{C.NC} {e}", file=sys.stderr)
+                return EXIT_IO_ERROR
+        else:
+            model_path = str(cached)
+    else:
+        avail = ", ".join(sorted(quantcpp._MODEL_REGISTRY.keys()))
+        print(f"{C.RED}unknown model:{C.NC} {args.model!r}", file=sys.stderr)
+        print(f"  available: {avail}", file=sys.stderr)
+        return EXIT_USAGE
+
+    binary = _find_quant_binary()
+    if not binary:
+        print(f"{C.RED}quant binary not found:{C.NC} run `cmake --build build` first", file=sys.stderr)
+        return EXIT_LIB_MISSING
+
+    cmd = [binary, model_path, "--chat"]
+    if args.prompt:
+        cmd += ["-p", args.prompt]
+    cmd += ["-j", str(args.threads)]
+    cmd += ["-n", str(args.max_tokens)]
+
+    print(f"{C.DIM}→ {' '.join(cmd)}{C.NC}")
+    os.execvp(cmd[0], cmd)
+
+def cmd_serve(args):
+    """Start OpenAI-compatible HTTP server (auto-pull if needed)."""
+    quantcpp = _load_quantcpp()
+    name = resolve_model_name(args.model)
+
+    if os.path.exists(name) and name.endswith(".gguf"):
+        model_path = name
+    elif name in quantcpp._MODEL_REGISTRY:
+        repo, filename, _ = quantcpp._MODEL_REGISTRY[name]
+        cached = quantcpp._CACHE_DIR / filename
+        if not cached.exists():
+            print(f"{C.CYAN}model not cached — pulling{C.NC} {name}")
+            try:
+                model_path = quantcpp.download(name)
+            except Exception as e:
+                print(f"{C.RED}pull failed:{C.NC} {e}", file=sys.stderr)
+                return EXIT_IO_ERROR
+        else:
+            model_path = str(cached)
+    else:
+        print(f"{C.RED}unknown model:{C.NC} {args.model!r}", file=sys.stderr)
+        return EXIT_USAGE
+
+    binary = _find_quant_server_binary()
+    if not binary:
+        print(f"{C.RED}quant-server binary not found:{C.NC} build with "
+              f"`cmake -B build -DTQ_BUILD_SERVER=ON && cmake --build build`",
+              file=sys.stderr)
+        return EXIT_LIB_MISSING
+
+    cmd = [binary, model_path, "-p", str(args.port), "-j", str(args.threads)]
+    print(f"{C.GREEN}quant serve{C.NC} {name} on :{args.port}")
+    print(f"{C.DIM}→ {' '.join(cmd)}{C.NC}")
+    os.execvp(cmd[0], cmd)
 
 # ═══════════════════════════════════════════════════════════
 # COMMANDS
@@ -226,23 +448,48 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 commands:
+  pull MODEL            Download a model (e.g., llama3.2:1b)
+  list                  List cached and available models
+  run MODEL [PROMPT]    Chat with a model (auto-pulls if needed)
+  serve MODEL           Start OpenAI-compatible HTTP server
   info                  Show quantization types and recommendations
   bench                 Run performance benchmark
   +memory MODEL CTX     Calculate memory savings
   +compare              Run A/B comparison (requires build)
-  demo                  Chat with Qwen3.5-0.8B (native C engine)
+  demo                  Chat with Qwen3.5-0.8B (legacy, use `run` instead)
 
 examples:
-  tq info
+  tq pull llama3.2:1b
+  tq list
+  tq run llama3.2:1b
+  tq run llama3.2:1b "What is gravity?"
+  tq serve llama3.2:1b --port 8080
   tq info --json
   tq bench --seq-len 2048 --head-dim 256
-  tq +memory llama-3.2-3b 65536
-  tq +memory qwen3.5-0.8b 131072 --json
-  tq demo "What is quantization?"
-  tq demo --engine pytorch "What is quantization?"
 """)
     parser.add_argument("--json", dest="json_output", action="store_true", help="JSON output (for AI agents)")
     sub = parser.add_subparsers(dest="command")
+
+    # pull
+    p_pull = sub.add_parser("pull", help="Download a model from HuggingFace")
+    p_pull.add_argument("model", help="Model name or alias (e.g., llama3.2:1b)")
+
+    # list
+    p_list = sub.add_parser("list", help="List cached and available models")
+    p_list.add_argument("--json", dest="json_output", action="store_true")
+
+    # run
+    p_run = sub.add_parser("run", help="Chat with a model (auto-pulls if needed)")
+    p_run.add_argument("model", help="Model name or alias")
+    p_run.add_argument("prompt", nargs="?", default=None, help="Optional prompt (interactive if omitted)")
+    p_run.add_argument("-j", "--threads", type=int, default=4)
+    p_run.add_argument("-n", "--max-tokens", type=int, default=256)
+
+    # serve
+    p_serve = sub.add_parser("serve", help="Start OpenAI-compatible HTTP server")
+    p_serve.add_argument("model", help="Model name or alias")
+    p_serve.add_argument("-p", "--port", type=int, default=8080)
+    p_serve.add_argument("-j", "--threads", type=int, default=4)
 
     # info
     p_info = sub.add_parser("info", help="Quantization type information")
@@ -275,7 +522,15 @@ examples:
         parser.print_help()
         return EXIT_USAGE
 
-    if args.command == "info":
+    if args.command == "pull":
+        return cmd_pull(args)
+    elif args.command == "list":
+        return cmd_list(args)
+    elif args.command == "run":
+        return cmd_run(args)
+    elif args.command == "serve":
+        return cmd_serve(args)
+    elif args.command == "info":
         return cmd_info(args)
     elif args.command == "bench":
         return cmd_bench(args)
