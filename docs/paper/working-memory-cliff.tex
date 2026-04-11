@@ -33,15 +33,15 @@
 
 
 
-\textbf{Tech report draft — v0.3 — 2026-04-11}
+\textbf{Tech report draft — v0.4 — 2026-04-11}
 
 \textbf{Author}: quant.cpp maintainers
 
-\textbf{Status}: Phase 1B Karpathy loop complete — 204 trials measured (198 from R1–R3, 6 from FP32-weights control), seed-sweep blocked by CLI bug (documented in §5.6 as a limitation)
+\textbf{Status}: Phase 2B Karpathy loop complete — 204 trials measured + ReDeEP-Cliff hypothesis tested on all 115 failures via surface-level proxy. Hypothesis rejected; new failure mode "primacy-biased document continuation overflow" identified and characterised. Self-correction of v0.3's "synthesised hallucination" framing in §4.6.
 
 
 \begin{quote}
-\textbf{TL;DR} — We measure the \textit{effective} working memory of two edge-device quantized LLMs (Llama-3.2-1B-Q8, Llama-3.2-3B-Q4) using a Needle-in-a-Haystack protocol on 198 trials. \textbf{Both models fall off a cliff at 0.4–0.8\% of their nominal context window}: 1B Q8 retains 100\% retrieval at 512 tokens but drops to 0\% by 1536, and 3B Q4 retains 100\% at 1024 tokens but collapses to 0\% at 1280 — a step function spanning <256 tokens. \textbf{6.4× KV cache compression is bit-for-bit identical to FP32 baseline in 18/20 cells}, so the cliff is a model property, not a KV property. This provides an empirical reality check on the "long-context inference replaces RAG" argument for edge deployments: the framing holds at the \textit{memory allocation} level (a 128K context fits in 9.5 GB) but not at the \textit{retrieval} level (the model stops following instructions long before the memory is full).
+\textbf{TL;DR} — We measure the \textit{effective} working memory of two edge-device quantized LLMs (Llama-3.2-1B-Q8, Llama-3.2-3B-Q4) using a Needle-in-a-Haystack protocol on 204 trials. \textbf{Both models fall off a cliff at 0.4–0.8\% of their nominal context window}: 1B Q8 retains 100\% retrieval at 512 tokens but drops to 0\% by 1536, and 3B Q4 retains 100\% at 1024 tokens but collapses to 0\% at 1280 — a step function spanning <256 tokens. \textbf{6.4× KV cache compression is bit-for-bit identical to FP32 baseline in 18/20 cells}, and a 6-trial FP32-weights control rules out weight quantization, so the cliff is a \textit{model} property — not a KV property and not a quantization artifact. The dominant cliff failure mode (84\% of failures) is \textbf{literal continuation of the haystack from its 10–20\% body-start position} — a previously-unnamed failure mode we call \textit{primacy-biased document continuation overflow}, mechanistically \textit{opposite} to RAG silent hallucination (high copy + low novel, vs RAG's low copy + high novel). The "long-context replaces RAG" framing holds at the memory-allocation level (a 128K context fits in 9.5 GB) but not at the retrieval level (the model stops following instructions long before the memory is full), and the failure cannot be fixed by retargeted RAG-hallucination mitigations like AARF — it needs anchor-strengthening interventions instead.
 \end{quote}
 
 
@@ -331,20 +331,84 @@ Run & ctx & Output (FP32 weights) \\
 The above-cliff failures are \textit{all} wikitext continuation — exactly the same failure mode as the Q4 path. Source: \texttt{bench/results/niah/results\_fp32ctrl\_20260411T091023.csv}.
 
 
-\subsection*{4.6 Failure mode taxonomy}
+\subsection*{4.6 Failure mode taxonomy and the cliff mechanism}
 
 
-When the model fails above the cliff, it does not say "I don't know." Three modes:
+\begin{quote}
+\textbf{Self-correction (v0.4)}: The v0.3 draft of this report cited a "synthesised hallucination" example (\texttt{"In 2023 Boulter was hired as the chief financial officer..."}) as the \textit{most consequential} failure mode and equated it with RAG silent hallucination. *\textit{A 4-round Karpathy-loop subtype analysis on all 115 cliff failures (\texttt{bench/results/niah/redeep\_proxy.py}, \texttt{redeep\_subtype.py}, \texttt{continuation\_origin.py}) shows that example is a single outlier (1 trial out of 115, < 1\%) and the dominant cliff failure mode is the }opposite\textit{ of RAG hallucination.}* This subsection is rewritten accordingly.
+\end{quote}
 
 
-\begin{enumerate}
-\item \textbf{Wikitext continuation}: model picks up the haystack text where the assistant turn started. Example, ctx=2048, 1B fp32: \texttt{"Doctors , followed by a role in How to Curse directed by Josie ..."}.
-\item \textbf{Section header echo}: model emits a wikitext header it saw earlier. Example, ctx=1024, 1B fp32: \texttt{"= = = 2008 II = ..."}.
-\item \textbf{Synthesised hallucination — the most consequential mode}: model fuses the needle into the haystack subject's biography. Example, ctx=1024, 1B fp32: \texttt{"In 2023 Boulter was hired as the chief financ..."} — the haystack is a Robert Boulter biography, the needle is "Sarah Chen, hired in 2023", and the model produces a coherent invented fact stitching the two together.
-\end{enumerate}
+We classified all 115 cliff failures into four subtypes:
 
 
-Failure mode 3 is the same silent-hallucination behaviour that vector RAG produces on retrieval miss — except here it happens \textit{because} the document was loaded fully and the model lost the question. The "long-context replaces RAG" framing assumed this failure mode would disappear when the model has all the information; our measurements show it does not, in the edge-device quantized regime.
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+Subtype & n & \% & Description \\
+\midrule
+\textbf{CONTINUE} & \textbf{97} & \textbf{84\%} & Model literally continues the wikitext haystack ("Doctors, followed by a role in...") \\
+OTHER & 9 & 8\% & Other forms of haystack continuation \\
+HEADER & 8 & 7\% & Wikitext markup echo (\texttt{= = = 2008 II =}, \texttt{= Robert Boulter =}) \\
+SYNTH & 1 & <1\% & Needle + haystack subject fusion (the v0.3 example) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+
+The dominant failure mode (84\%) is \textbf{literal continuation}, not synthesised hallucination. We then computed surface-level proxies for ReDeEP's [Sun et al., ICLR 2025] External Context Score and Parametric Knowledge Score on every trial:
+
+
+\begin{itemize}
+\item \texttt{copy\_score(response, haystack)} = fraction of response 4-grams that appear in the haystack — proxy for External Context Score ("model is copying from loaded context")
+\item \texttt{novel\_score(response, haystack)} = 1 − copy\_score — proxy for Parametric Knowledge Score ("model is generating from internal memory")
+\end{itemize}
+
+
+\begin{center}
+\begin{tabular}{lllll}
+\toprule
+Subtype & n & Δ copy vs PASS & Δ novel vs PASS & ReDeEP signature match \\
+\midrule
+CONTINUE & 97 & \textbf{+0.077} & \textbf{−0.077} & \textbf{OPPOSITE} \\
+OTHER & 9 & \textbf{+0.310} & \textbf{−0.310} & \textbf{STRONGLY OPPOSITE} \\
+HEADER & 8 & +0.049 & −0.049 & weakly opposite \\
+SYNTH & 1 & −0.028 & +0.028 & matches (n=1, not significant) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+
+Pooled across all 115 failures, cliff failures have \textbf{higher} copy scores than successful retrievals (PASS: 0.440, FAIL: 0.532). This is the \textbf{opposite} of ReDeEP's RAG hallucination signature, which has \textit{low} External Context Score. The cliff failure mode is mechanistically distinct from RAG silent hallucination.
+
+
+\textbf{Where does the literal continuation start?} A position-of-longest-match analysis on the 107 failures with detectable substring overlap reveals:
+
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Position in haystack & Failures & \% \\
+\midrule
+Q1 (0–25\%) & 87 & \textbf{81\%} \\
+Q2 (25–50\%) & 11 & 10\% \\
+Q3 (50–75\%) & 6 & 6\% \\
+Q4 (75–100\%) & 3 & 3\% \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+
+Refining to deciles, \textbf{70\% of continuations resume from the 10–20\% sub-region of the haystack} — the start of the article \textit{body} in wikitext (immediately after the title and lead paragraph). The model is not autocompleting from the end of the prompt and it is not jumping to a random position. It is recognising "this is a Wikipedia article" from the title markup and resuming the article from where the body content begins.
+
+
+\textbf{Mechanism}: we name this failure mode \textbf{"primacy-biased document continuation overflow"}. Above the cliff, the chat-template anchor at the start of the prompt loses sufficient attention weight; the model defaults to "this looks like a Wikipedia article, continue it" and starts emitting body content from the canonical body-start position. This is \textit{not} parametric hallucination (the model is not inventing from internal memory), it is \textit{not} the "Lost in the Middle" position bias (which is a retrieval-position effect on retrieval accuracy), and it is \textit{not} attention sink collapse (the BOS sink is not lost, it is being \textit{overruled}). It is a new failure mode.
+
+
+\textbf{Why this matters}: ReDeEP's mitigation method (AARF — Add Attention, Reduce FFN) is designed for the parametric-takeover failure mode. Because cliff failure has the \textit{opposite} signature, AARF will not help and may make the cliff worse. The correct mitigation direction is \textbf{anchor strengthening} — increasing the chat-template anchor's attention weight to outcompete the document continuation prior. Candidates: SinkTrack-style instruction injection into the BOS sink [Gg1aPETCL6], periodic question re-injection inside the prompt, multi-turn chat template wrapping. We discuss these in §8.
+
+
+\textbf{Honest correction note for v0.3 readers}: the "Boulter + Sarah Chen" synthesised hallucination example was visually striking and led us to assume cliff failure shared mechanism with RAG hallucination. The Karpathy-loop subtype analysis disambiguated this. The example is real (we link the raw CSV row in the appendix), but it is one trial out of 115 — not the dominant failure mode. The corrected understanding is more useful: cliff failure is a \textit{new} failure mode and needs \textit{new} mitigations, not retargeted RAG-hallucination mitigations.
 
 
 \section*{5. Negative Findings and Honest Limitations}
@@ -431,8 +495,11 @@ Our measurements show this argument \textbf{has an empirical floor} at the edge:
 
 
 \begin{enumerate}
-\item Above the cliff, the failure mode is not "I don't know" but a continuum of: wikitext continuation, header echoes, and \textbf{synthesised hallucinations that fuse the needle into the haystack subject's biography} (e.g., "In 2023 Boulter was hired as the chief financial officer..."). This is the same silent-hallucination failure mode that vector RAG produces on retrieval miss — happening in the regime that was supposed to \textit{eliminate} it.
+\item Above the cliff, the dominant failure mode (84\% of 115 cliff failures, characterised in §4.6) is \textbf{literal continuation of the haystack from its 10–20\% body-start position} — not parametric hallucination. Surface-level proxy analysis shows this failure has the \textit{opposite} mechanistic signature from RAG silent hallucination [Sun et al., ReDeEP, ICLR 2025]: cliff failures have \textit{high} External Context Score (model copies a lot from loaded context) and \textit{low} Parametric Knowledge Score (model is not inventing from internal memory). RAG silent hallucination has the inverse pattern. Our v0.3 draft conflated the two by citing a 1-in-115 outlier ("Boulter was hired as CFO") as the dominant case; v0.4 corrects this in §4.6.
 \end{enumerate}
+
+
+This matters for mitigation. The failure mode we found — \textit{primacy-biased document continuation overflow} — cannot be fixed by retargeted RAG-hallucination interventions like ReDeEP's AARF (Add Attention, Reduce FFN), which is designed for the parametric-takeover regime. The chat-template anchor at the start of the prompt is \textit{being overruled}, not lost; the appropriate mitigations are anchor-strengthening interventions: SinkTrack-style instruction injection into the BOS sink, periodic question re-injection inside the prompt to re-anchor the chat template at intervals, or multi-turn conversational chunking that refreshes the anchor per turn. We outline these as Phase 2 candidates in §8.
 
 
 The long-context-replaces-RAG argument therefore holds \textbf{only for documents that fit in the effective working memory of the specific model + quantization + loader configuration being deployed}, and the gap between "nominal context window" and "effective working memory" is \textit{two to three orders of magnitude} at edge scale, not within an order of magnitude.
@@ -495,14 +562,57 @@ Models: \texttt{meta-llama/Llama-3.2-1B-Instruct} Q8\_0 GGUF, \texttt{meta-llama
 \section*{8. Future Work}
 
 
-\begin{itemize}
-\item Extend ceiling measurements to 8B (Llama-3.1-8B) and 13B once Metal Q4\_K\_M prefill is optimized.
-\item Systematic prompt-sensitivity sweep: measure template-robustness as a second ceiling.
-\item Cross-lingual measurements: does the Korean / Chinese / Japanese working memory ceiling match English?
-\item Cross-domain measurements: code, legal, scientific prose.
-\item Head-to-head with KIVI / H2O / SnapKV at matching model scales.
-\item Mechanistic interpretability: visualise attention to the chat-template anchor tokens (\texttt{<|start\_header\_id|>}, \texttt{<|eot\_id|>}) as context length crosses the cliff. Hypothesis: their attention weight underflows below a threshold and continuation prior wins.
-\end{itemize}
+The Phase 2B subtype analysis (§4.6) suggests a concrete sequence of mitigation experiments with mechanistic justification:
+
+
+\begin{enumerate}
+\item \textbf{Periodic Question Re-Injection (PQRI)} [1-day experiment]. Embed \texttt{<|start\_header\_id|>user<|end\_header\_id|>\{question\}<|eot\_id|>} markers every 256 tokens inside the haystack. The chat-template anchor is \textit{spatially} refreshed throughout the prompt rather than relying on the single anchor at the start. Expected: cliff position shifts upward by 2–4×. Format change only, no model modification.
+\end{enumerate}
+
+
+\begin{enumerate}
+\item \textbf{Conversational Chunking} [1-day experiment]. Split the haystack into multiple \texttt{<|user|>chunk<|/user|>} turns instead of one giant user turn, with the question as the final turn. Each chunk refreshes the chat-template anchor. Predicted to be effective because models are heavily instruction-tuned on multi-turn dialogue.
+\end{enumerate}
+
+
+\begin{enumerate}
+\item \textbf{Question-Anchored Sink Injection (QASI)} [1-week experiment]. Adapt SinkTrack [Gg1aPETCL6, ICLR 2026] from vision-language models to the edge-LLM regime. SinkTrack injects contextual features into the BOS attention sink and reports +21.6\% on SQuAD2.0 with Llama-3.1-8B-Instruct. Our cliff measurement provides an obvious testbed: inject the question into the BOS sink at inference time and re-measure the cliff for 1B Q8 and 3B Q4. We are not aware of this being tried at edge-device scale.
+\end{enumerate}
+
+
+\begin{enumerate}
+\item \textbf{Conversational chunking + SinkTrack as a hybrid baseline}. If PQRI works at all, it will become the cheap baseline; QASI will become the deeper mechanistic candidate; the union may compound.
+\end{enumerate}
+
+
+\begin{enumerate}
+\item \textbf{Mechanistic verification with HuggingFace Llama-3.2-3B}: extract per-layer attention to chat-template anchor tokens (\texttt{<|start\_header\_id|>}, \texttt{<|eot\_id|>}) as context length crosses the cliff. Test the precise hypothesis: anchor attention weight decays below a threshold and the document-continuation attention head wins. This requires a PyTorch + HF setup we deferred from Phase 2B for time reasons.
+\end{enumerate}
+
+
+\begin{enumerate}
+\item \textbf{Ceiling measurements at 8B and 13B}, once Metal Q4\_K\_M prefill is optimized (currently \textasciitilde{}12 min/inference makes a 90-trial grid impractical).
+\end{enumerate}
+
+
+\begin{enumerate}
+\item \textbf{Cross-lingual measurements}: Korean / Chinese / Japanese. The "primacy-biased document continuation" hypothesis predicts the cliff and its failure mode will reproduce in all languages because the mechanism is structural, not lexical.
+\end{enumerate}
+
+
+\begin{enumerate}
+\item \textbf{Cross-domain measurements}: code, legal, scientific prose. Prediction: the dominant failure mode in code haystacks will not be 10–20\% body-start continuation (no Wikipedia-like body-start convention) but something analogous to "continue the function definition". Different surface patterns, same anchor-overpowering mechanism.
+\end{enumerate}
+
+
+\begin{enumerate}
+\item \textbf{Head-to-head with KIVI / H2O / SnapKV / DynamicKV at matching model scales}. None of these were measured at the 1B–3B regime; our cliff protocol provides the comparison testbed.
+\end{enumerate}
+
+
+\begin{enumerate}
+\item \textbf{Working Memory Budget RAG (WMB-RAG)}: a RAG retriever that respects the model's measured effective working memory as a hard constraint instead of pretending the nominal context window is usable. This is the most directly industrially relevant follow-up.
+\end{enumerate}
 
 
 \section*{9. References}

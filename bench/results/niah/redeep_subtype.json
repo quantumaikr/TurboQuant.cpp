@@ -1,0 +1,53 @@
+{
+  "by_subtype": {
+    "HEADER": {
+      "n": 8,
+      "mean_copy": 0.48888986615379804,
+      "mean_novel": 0.511110133846202,
+      "samples": [
+        " = Robert Boulter =   Robert Boult\u00c3\u00a9r is an English film , television and theatre actor . He had a guest @-@ starring role on ",
+        " = = = 2008  II. Guest appearance on a television series, Doctors , followed by a role in the 2007 theatre production of How to ",
+        " = = = 2010 \ufffd\ufffd present =    In the television series Casualty , Boult\u00c3\u00a9r starred as \" Kiernan Flecther ",
+        " = = = 2010 \ufffd\ufffd present =    In the year of the century , Boult\u00c3\u00a9r starred in ten episodes of the television series Casual ",
+        " = = = 2008  II 2009=    In May of that year Boulter made a guest appearance on the television series , Doctors . "
+      ]
+    },
+    "CONTINUE": {
+      "n": 97,
+      "mean_copy": 0.5170717805287783,
+      "mean_novel": 0.4829282194712217,
+      "samples": [
+        " Doctors , followed by a role in How to Curse directed by Josie Rourk\u00c3\u00a9 . Boulter starred in two films : Daylight Robbery and Don ",
+        " @-@ion series Doctors , followed by a role in the 2007 theatre production How to Curse directed by Josie Rouk @e . Boulte ",
+        " Doctors , followed by a role in the 2007 theatre production How to Curse directed by Josie Rourk\u00c3\u00a9 . Boulter starred in two films in ",
+        " @-@ion series Doctors , followed by a role in the 2007 theatre production How to Curse directed by Josie Rourk . He appeared on a ",
+        " different character in two episodes of The Bill on 2006 @-@ episode arc : he portrayed the role of \" Scott Parry \" . He appeared as "
+      ]
+    },
+    "SYNTH": {
+      "n": 1,
+      "mean_copy": 0.4117647058823529,
+      "mean_novel": 0.5882352941176471,
+      "samples": [
+        " = = 2023 =    In 2023 Boulter was hired as the chief financial officer of Northwind Logistics . He had a guest role in "
+      ]
+    },
+    "OTHER": {
+      "n": 9,
+      "mean_copy": 0.75,
+      "mean_novel": 0.25,
+      "samples": [
+        " @-@ part in the 2007 theatre production of How to Curse directed by Josie Roukke , which was performed at Bush Theatre in the London ",
+        " @-@ part in the 2007 theatre production of How to Curse directed by Josie Roukke , which was performed at Bush Theatre in the London ",
+        " @-@ part in the 2007 theatre production of How to Curse directed by Josie Roukke , which was performed at Bush Theatre in the London ",
+        " @-@ part in the 2007 theatre production of How to Curse directed by Josie Roukke , which was performed at Bush Theatre in the London ",
+        " @-@ part in the 2007 theatre production of How to Curse directed by Josie Roukke , which was performed at Bush Theatre in the London "
+      ]
+    }
+  },
+  "pass_reference": {
+    "n": 73,
+    "mean_copy": 0.44011500637046674,
+    "mean_novel": 0.5598849936295333
+  }
+}
