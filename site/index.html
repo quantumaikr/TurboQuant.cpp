@@ -522,7 +522,7 @@ footer a{color:var(--text2)}
     <div class="section-label" data-i18n="rag.label">Movement</div>
     <h2 class="reveal" data-i18n="rag.title">Beyond RAG</h2>
 
-    <blockquote class="reveal" style="border-left:3px solid var(--accent);padding:1rem 1.5rem;margin:1.5rem 0;background:rgba(108,92,231,.05);font-size:1.1rem;line-height:1.6;color:var(--text)">
+    <blockquote class="reveal" style="border-left:3px solid var(--accent);padding:1rem 1.5rem;margin:1.5rem 0;background:rgba(108,92,231,.05);font-size:1.1rem;line-height:1.6;color:var(--text)" data-i18n-html="rag.quote">
       <strong>Chunking RAG was a workaround for small context windows.</strong><br>
       The workaround became dogma.<br>
       Now context windows are big enough that we don't need the workaround.<br>
@@ -531,7 +531,7 @@ footer a{color:var(--text2)}
 
     <p class="reveal" data-i18n-html="rag.intro">Traditional RAG splits documents into 512-token chunks, embeds them in a vector database, and retrieves fragments. This was a reasonable engineering compromise when LLMs had 2K context windows. <strong>Now they have 128K. The compromise should have started disappearing.</strong></p>
 
-    <p class="reveal">It didn't. The infrastructure became dogma. Vector DBs became billion-dollar companies. "RAG pipeline" became something every AI engineer was expected to build, regardless of whether their use case actually needed one.</p>
+    <p class="reveal" data-i18n="rag.para2">It didn't. The infrastructure became dogma. Vector DBs became billion-dollar companies. "RAG pipeline" became something every AI engineer was expected to build, regardless of whether their use case actually needed one.</p>
 
     <div class="viz reveal">
       <div class="viz-title" data-i18n="rag.viz.title">Chunk-Level RAG vs Document-Level RAG</div>
@@ -600,34 +600,34 @@ footer a{color:var(--text2)}
 <!-- ===== Verification Box ===== -->
 <section id="verification">
   <div class="container">
-    <div class="section-label">Measured Result</div>
-    <h2 class="reveal">7/7 vs 0/7 — Verified</h2>
-    <p class="reveal">We compared three approaches on a synthetic 5-section document with 7 questions (4 single-hop, 3 multi-hop). Tested with <strong>Llama 3.2 3B Q8_0</strong>:</p>
+    <div class="section-label" data-i18n="verify.label">Measured Result</div>
+    <h2 class="reveal" data-i18n="verify.title">7/7 vs 0/7 — Verified</h2>
+    <p class="reveal" data-i18n-html="verify.intro">We compared three approaches on a synthetic 5-section document with 7 questions (4 single-hop, 3 multi-hop). Tested with <strong>Llama 3.2 3B Q8_0</strong>:</p>
 
     <div class="viz reveal">
-      <div class="viz-title">Fact Extraction Accuracy</div>
+      <div class="viz-title" data-i18n="verify.viz.title">Fact Extraction Accuracy</div>
 
       <div class="mem-bar-container">
-        <div class="mem-bar-label"><span>Chunk-RAG (wrong section retrieved)</span><span style="color:var(--red)">0/7 — all hallucinated</span></div>
+        <div class="mem-bar-label"><span data-i18n="verify.bar1.label">Chunk-RAG (wrong section retrieved)</span><span style="color:var(--red)" data-i18n="verify.bar1.val">0/7 — all hallucinated</span></div>
         <div class="mem-bar"><div class="mem-bar-fill bar-fp32" style="--w:0%">0%</div></div>
       </div>
 
       <div class="mem-bar-container">
-        <div class="mem-bar-label"><span>Full Document (FP32 KV)</span><span style="color:var(--green)">7/7</span></div>
+        <div class="mem-bar-label"><span data-i18n="verify.bar2.label">Full Document (FP32 KV)</span><span style="color:var(--green)">7/7</span></div>
         <div class="mem-bar"><div class="mem-bar-fill bar-aggr" style="--w:100%">100%</div></div>
       </div>
 
       <div class="mem-bar-container">
-        <div class="mem-bar-label"><span><strong>Full Document (6.4x KV compression)</strong></span><span style="color:var(--green)"><strong>7/7</strong></span></div>
-        <div class="mem-bar"><div class="mem-bar-fill bar-aggr" style="--w:100%">100% — same as FP32</div></div>
+        <div class="mem-bar-label"><span data-i18n-html="verify.bar3.label"><strong>Full Document (6.4x KV compression)</strong></span><span style="color:var(--green)"><strong>7/7</strong></span></div>
+        <div class="mem-bar"><div class="mem-bar-fill bar-aggr" style="--w:100%" data-i18n="verify.bar3.inner">100% — same as FP32</div></div>
       </div>
     </div>
 
-    <h3 class="reveal">The Hallucination Problem</h3>
-    <p class="reveal">When chunk-RAG retrieved the wrong section, the model didn't say "I don't know" — it generated <strong>plausible-sounding lies</strong>:</p>
+    <h3 class="reveal" data-i18n="verify.halluc.title">The Hallucination Problem</h3>
+    <p class="reveal" data-i18n-html="verify.halluc.desc">When chunk-RAG retrieved the wrong section, the model didn't say "I don't know" — it generated <strong>plausible-sounding lies</strong>:</p>
 
     <div class="viz reveal">
-      <div style="font-family:monospace;font-size:.85rem;line-height:2;color:var(--text2)">
+      <div style="font-family:monospace;font-size:.85rem;line-height:2;color:var(--text2)" data-i18n-html="verify.halluc.examples">
         <div><span style="color:var(--accent2)">Q:</span> Who is the CTO?</div>
         <div><span style="color:var(--red)">Chunk-RAG:</span> "John Smith" &emsp; <span style="color:var(--text3)">→ truth: Maria Santos</span></div>
         <br>
@@ -639,28 +639,28 @@ footer a{color:var(--text2)}
       </div>
     </div>
 
-    <p class="reveal" style="color:var(--text);font-weight:500;font-size:1.1rem">This is the fundamental danger of chunk-RAG: <strong>retrieval failure becomes silent hallucination</strong>. KV compression makes it possible to load the entire document into context, eliminating this failure mode on consumer hardware.</p>
+    <p class="reveal" style="color:var(--text);font-weight:500;font-size:1.1rem" data-i18n-html="verify.halluc.summary">This is the fundamental danger of chunk-RAG: <strong>retrieval failure becomes silent hallucination</strong>. KV compression makes it possible to load the entire document into context, eliminating this failure mode on consumer hardware.</p>
 
     <div class="card-grid stagger" style="margin-top:2rem">
       <div class="info-card">
         <div class="card-icon">&#x2705;</div>
-        <h4>KV Compression = Zero Quality Loss</h4>
-        <p>FP32 7/7 = 6.4x compressed 7/7. The 6.4x memory savings cost nothing in fact extraction quality.</p>
+        <h4 data-i18n="verify.card1.t">KV Compression = Zero Quality Loss</h4>
+        <p data-i18n="verify.card1.d">FP32 7/7 = 6.4x compressed 7/7. The 6.4x memory savings cost nothing in fact extraction quality.</p>
       </div>
       <div class="info-card">
         <div class="card-icon">&#x1F517;</div>
-        <h4>Multi-Hop Reasoning Works</h4>
-        <p>"What risk affects the growth region?" requires linking Section 3 (Asia growth) with Section 5 (Asia currency risk). Full-doc: ✓. Chunk-RAG: impossible.</p>
+        <h4 data-i18n="verify.card2.t">Multi-Hop Reasoning Works</h4>
+        <p data-i18n="verify.card2.d">"What risk affects the growth region?" requires linking Section 3 (Asia growth) with Section 5 (Asia currency risk). Full-doc: ✓. Chunk-RAG: impossible.</p>
       </div>
       <div class="info-card">
         <div class="card-icon">&#x1F4BB;</div>
-        <h4>Runs on 16GB Mac</h4>
-        <p>Llama 3.2 3B Q8_0, no GPU. 6.4x KV compression makes this practical on consumer hardware.</p>
+        <h4 data-i18n="verify.card3.t">Runs on 16GB Mac</h4>
+        <p data-i18n="verify.card3.d">Llama 3.2 3B Q8_0, no GPU. 6.4x KV compression makes this practical on consumer hardware.</p>
       </div>
     </div>
 
     <div style="text-align:center;margin-top:3rem">
-      <a href="https://github.com/quantumaikr/quant.cpp/blob/main/docs/beyond-rag-manifesto.md" class="cta-btn cta-primary" style="font-size:.95rem">Read the Beyond RAG Manifesto &rarr;</a>
+      <a href="https://github.com/quantumaikr/quant.cpp/blob/main/docs/beyond-rag-manifesto.md" class="cta-btn cta-primary" style="font-size:.95rem" data-i18n-html="verify.cta">Read the Beyond RAG Manifesto &rarr;</a>
     </div>
   </div>
 </section>
@@ -743,7 +743,7 @@ print(m.ask("What is gravity?"))</code></pre>
 <!-- ===== Footer ===== -->
 <footer>
   <div class="container">
-    <p>quant.cpp &middot; Apache 2.0 &middot; <a href="https://github.com/quantumaikr/quant.cpp">GitHub</a> &middot; Made by <a href="https://github.com/quantumaikr">quantumaikr</a></p>
+    <p data-i18n-html="footer.text">quant.cpp &middot; Apache 2.0 &middot; <a href="https://github.com/quantumaikr/quant.cpp">GitHub</a> &middot; Made by <a href="https://github.com/quantumaikr">quantumaikr</a></p>
   </div>
 </footer>
 
@@ -913,7 +913,30 @@ var i18n = {
     "rag.card2.d": "Can't fit 100K documents in context. Prefill is slow. RAG narrows the search to 2-3 relevant documents that DO fit.",
     "rag.card3.t": "Read Once, Query Forever",
     "rag.card3.d": "Pre-process documents into .kv files (GPU, once). Load instantly on any laptop (0.5s). Query offline, unlimited, private.",
-    "rag.pipeline.title": "Pre-computed KV Library Pattern"
+    "rag.pipeline.title": "Pre-computed KV Library Pattern",
+    "rag.quote": "<strong>Chunking RAG was a workaround for small context windows.</strong><br>The workaround became dogma.<br>Now context windows are big enough that we don't need the workaround.<br><em style=\"color:var(--accent2)\">— Welcome to Beyond RAG.</em>",
+    "rag.para2": "It didn't. The infrastructure became dogma. Vector DBs became billion-dollar companies. \"RAG pipeline\" became something every AI engineer was expected to build, regardless of whether their use case actually needed one.",
+    "verify.label": "Measured Result",
+    "verify.title": "7/7 vs 0/7 — Verified",
+    "verify.intro": "We compared three approaches on a synthetic 5-section document with 7 questions (4 single-hop, 3 multi-hop). Tested with <strong>Llama 3.2 3B Q8_0</strong>:",
+    "verify.viz.title": "Fact Extraction Accuracy",
+    "verify.bar1.label": "Chunk-RAG (wrong section retrieved)",
+    "verify.bar1.val": "0/7 — all hallucinated",
+    "verify.bar2.label": "Full Document (FP32 KV)",
+    "verify.bar3.label": "<strong>Full Document (6.4x KV compression)</strong>",
+    "verify.bar3.inner": "100% — same as FP32",
+    "verify.halluc.title": "The Hallucination Problem",
+    "verify.halluc.desc": "When chunk-RAG retrieved the wrong section, the model didn't say \"I don't know\" — it generated <strong>plausible-sounding lies</strong>:",
+    "verify.halluc.examples": "<div><span style=\"color:var(--accent2)\">Q:</span> Who is the CTO?</div><div><span style=\"color:var(--red)\">Chunk-RAG:</span> \"John Smith\" &emsp; <span style=\"color:var(--text3)\">→ truth: Maria Santos</span></div><br><div><span style=\"color:var(--accent2)\">Q:</span> What is the revenue?</div><div><span style=\"color:var(--red)\">Chunk-RAG:</span> \"$1,000,000\" &emsp; <span style=\"color:var(--text3)\">→ truth: 847 million</span></div><br><div><span style=\"color:var(--accent2)\">Q:</span> What percent is R&D?</div><div><span style=\"color:var(--red)\">Chunk-RAG:</span> \"15% of net income\" &emsp; <span style=\"color:var(--text3)\">→ truth: 14% of revenue</span></div>",
+    "verify.halluc.summary": "This is the fundamental danger of chunk-RAG: <strong>retrieval failure becomes silent hallucination</strong>. KV compression makes it possible to load the entire document into context, eliminating this failure mode on consumer hardware.",
+    "verify.card1.t": "KV Compression = Zero Quality Loss",
+    "verify.card1.d": "FP32 7/7 = 6.4x compressed 7/7. The 6.4x memory savings cost nothing in fact extraction quality.",
+    "verify.card2.t": "Multi-Hop Reasoning Works",
+    "verify.card2.d": "\"What risk affects the growth region?\" requires linking Section 3 (Asia growth) with Section 5 (Asia currency risk). Full-doc: ✓. Chunk-RAG: impossible.",
+    "verify.card3.t": "Runs on 16GB Mac",
+    "verify.card3.d": "Llama 3.2 3B Q8_0, no GPU. 6.4x KV compression makes this practical on consumer hardware.",
+    "verify.cta": "Read the Beyond RAG Manifesto &rarr;",
+    "footer.text": "quant.cpp &middot; Apache 2.0 &middot; <a href=\"https://github.com/quantumaikr/quant.cpp\">GitHub</a> &middot; Made by <a href=\"https://github.com/quantumaikr\">quantumaikr</a>"
   },
   ko: {
     "nav.problem": "\uBB38\uC81C\uC810",
@@ -1077,7 +1100,30 @@ var i18n = {
     "rag.card2.d": "100K 문서를 한 번에 컨텍스트에 넣을 수 없습니다. Prefill이 느립니다. RAG는 검색을 2-3개 관련 문서로 좁혀줍니다.",
     "rag.card3.t": "한 번 읽고, 영원히 질문",
     "rag.card3.d": "문서를 .kv 파일로 사전 처리 (GPU, 1회). 어떤 노트북에서든 즉시 로드 (0.5초). 오프라인, 무제한, 프라이빗 질문.",
-    "rag.pipeline.title": "사전 계산된 KV 라이브러리 패턴"
+    "rag.pipeline.title": "사전 계산된 KV 라이브러리 패턴",
+    "rag.quote": "<strong>청킹 RAG는 작은 컨텍스트 윈도우에 대한 임시방편이었습니다.</strong><br>그 임시방편이 정설이 됐습니다.<br>이제 컨텍스트 윈도우가 충분히 커져서 임시방편이 필요 없습니다.<br><em style=\"color:var(--accent2)\">— Beyond RAG에 오신 것을 환영합니다.</em>",
+    "rag.para2": "사라지지 않았습니다. 인프라가 정설이 됐습니다. 벡터 DB는 수십억 달러 기업이 됐습니다. \"RAG 파이프라인\"은 실제 용도가 필요하든 아니든 모든 AI 엔지니어가 구축해야 할 무언가가 됐습니다.",
+    "verify.label": "측정 결과",
+    "verify.title": "7/7 vs 0/7 — 검증됨",
+    "verify.intro": "5개 섹션의 합성 문서와 7개 질문(4개 단일-hop, 3개 multi-hop)으로 세 가지 접근법을 비교했습니다. <strong>Llama 3.2 3B Q8_0</strong>으로 테스트:",
+    "verify.viz.title": "사실 추출 정확도",
+    "verify.bar1.label": "Chunk-RAG (잘못된 섹션 검색)",
+    "verify.bar1.val": "0/7 — 전부 환각",
+    "verify.bar2.label": "전체 문서 (FP32 KV)",
+    "verify.bar3.label": "<strong>전체 문서 (6.4배 KV 압축)</strong>",
+    "verify.bar3.inner": "100% — FP32와 동일",
+    "verify.halluc.title": "환각 문제",
+    "verify.halluc.desc": "Chunk-RAG가 잘못된 섹션을 검색했을 때, 모델은 \"모르겠습니다\"라고 말하지 않고 <strong>그럴듯한 거짓말</strong>을 생성했습니다:",
+    "verify.halluc.examples": "<div><span style=\"color:var(--accent2)\">Q:</span> CTO는 누구인가요?</div><div><span style=\"color:var(--red)\">Chunk-RAG:</span> \"John Smith\" &emsp; <span style=\"color:var(--text3)\">→ 정답: Maria Santos</span></div><br><div><span style=\"color:var(--accent2)\">Q:</span> 매출은 얼마인가요?</div><div><span style=\"color:var(--red)\">Chunk-RAG:</span> \"$1,000,000\" &emsp; <span style=\"color:var(--text3)\">→ 정답: 8억 4,700만</span></div><br><div><span style=\"color:var(--accent2)\">Q:</span> R&D는 몇 퍼센트인가요?</div><div><span style=\"color:var(--red)\">Chunk-RAG:</span> \"순이익의 15%\" &emsp; <span style=\"color:var(--text3)\">→ 정답: 매출의 14%</span></div>",
+    "verify.halluc.summary": "이것이 chunk-RAG의 근본적 위험입니다: <strong>검색 실패가 조용한 환각이 됩니다</strong>. KV 압축은 전체 문서를 컨텍스트에 로드할 수 있게 하여, 소비자 하드웨어에서 이 실패 모드를 제거합니다.",
+    "verify.card1.t": "KV 압축 = 품질 손실 0",
+    "verify.card1.d": "FP32 7/7 = 6.4배 압축 7/7. 6.4배 메모리 절감이 사실 추출 품질에 아무런 비용도 들이지 않습니다.",
+    "verify.card2.t": "Multi-Hop 추론 작동",
+    "verify.card2.d": "\"성장 지역에 영향을 미치는 위험은?\"은 섹션 3(아시아 성장)과 섹션 5(아시아 통화 위험)를 연결해야 합니다. 전체 문서: ✓. Chunk-RAG: 불가능.",
+    "verify.card3.t": "16GB Mac에서 실행",
+    "verify.card3.d": "Llama 3.2 3B Q8_0, GPU 없음. 6.4배 KV 압축으로 소비자 하드웨어에서 실용적이 됩니다.",
+    "verify.cta": "Beyond RAG 선언문 읽기 &rarr;",
+    "footer.text": "quant.cpp &middot; Apache 2.0 &middot; <a href=\"https://github.com/quantumaikr/quant.cpp\">GitHub</a> &middot; 제작 <a href=\"https://github.com/quantumaikr\">quantumaikr</a>"
   }
 };
 
