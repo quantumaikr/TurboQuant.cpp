@@ -195,8 +195,90 @@ def cmd_serve(args):
         return 2
 
     cmd = [binary, model_path, "-p", str(args.port), "-j", str(args.threads)]
-    print(f"quant serve {os.path.basename(model_path)} on :{args.port}", file=sys.stderr)
+    print(f"quantcpp serve {os.path.basename(model_path)} on :{args.port}", file=sys.stderr)
+    print("", file=sys.stderr)
+    print("OpenAI-compatible endpoints:", file=sys.stderr)
+    print(f"  POST http://localhost:{args.port}/v1/chat/completions", file=sys.stderr)
+    print(f"  GET  http://localhost:{args.port}/v1/models", file=sys.stderr)
+    print(f"  GET  http://localhost:{args.port}/health", file=sys.stderr)
+    print("", file=sys.stderr)
+    print("Streaming (SSE — token-by-token):", file=sys.stderr)
+    print(f"  curl -N http://localhost:{args.port}/v1/chat/completions \\", file=sys.stderr)
+    print("    -H 'Content-Type: application/json' \\", file=sys.stderr)
+    print('    -d \'{"messages":[{"role":"user","content":"Hi"}],"stream":true}\'',
+          file=sys.stderr)
+    print("", file=sys.stderr)
+    print("Non-streaming (single JSON response):", file=sys.stderr)
+    print(f"  curl http://localhost:{args.port}/v1/chat/completions \\", file=sys.stderr)
+    print("    -H 'Content-Type: application/json' \\", file=sys.stderr)
+    print('    -d \'{"messages":[{"role":"user","content":"Hi"}]}\'',
+          file=sys.stderr)
+    print("", file=sys.stderr)
+    print("OpenAI Python SDK works as-is:", file=sys.stderr)
+    print(f"  client = OpenAI(base_url='http://localhost:{args.port}/v1', api_key='none')",
+          file=sys.stderr)
+    print("  client.chat.completions.create(model='quantcpp', messages=[...], stream=True)",
+          file=sys.stderr)
+    print("", file=sys.stderr)
     os.execvp(cmd[0], cmd)
+
+
+def cmd_client(args):
+    """Send a chat request to a running quantcpp serve endpoint.
+
+    Default mode is streaming (SSE) — tokens print as they arrive.
+    Use --no-stream for a single JSON response.
+    """
+    import json as _json
+    import urllib.request
+
+    url = args.url.rstrip("/") + "/v1/chat/completions"
+    payload = {
+        "model": args.model_name,
+        "messages": [{"role": "user", "content": args.prompt}],
+        "max_tokens": args.max_tokens,
+        "temperature": args.temperature,
+        "stream": not args.no_stream,
+    }
+    body = _json.dumps(payload).encode()
+    req = urllib.request.Request(
+        url, data=body,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "quantcpp-client",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(req) as resp:
+            if args.no_stream:
+                data = _json.loads(resp.read())
+                print(data["choices"][0]["message"]["content"])
+                return 0
+
+            # SSE stream — parse `data: {...}\n\n` chunks
+            for line in resp:
+                line = line.decode("utf-8", errors="replace").rstrip()
+                if not line.startswith("data:"):
+                    continue
+                payload_str = line[5:].strip()
+                if payload_str == "[DONE]":
+                    break
+                try:
+                    chunk = _json.loads(payload_str)
+                    delta = chunk["choices"][0]["delta"].get("content", "")
+                    if delta:
+                        print(delta, end="", flush=True)
+                except Exception:
+                    pass
+            print()
+            return 0
+    except urllib.error.URLError as e:
+        print(f"connection failed: {e}", file=sys.stderr)
+        print(f"  Is the server running on {args.url}?", file=sys.stderr)
+        print(f"  Start it with: quantcpp serve llama3.2:1b -p {args.url.rsplit(':', 1)[-1].rstrip('/')}",
+              file=sys.stderr)
+        return 1
 
 
 def cmd_chat_default(args):
@@ -222,6 +304,7 @@ commands:
   list                  List cached and available models
   run MODEL [PROMPT]    Chat with a model (auto-pulls if needed)
   serve MODEL           Start OpenAI-compatible HTTP server
+  client PROMPT         Send a request to a running serve (default: SSE streaming)
 
 examples:
   quantcpp pull llama3.2:1b
@@ -229,6 +312,9 @@ examples:
   quantcpp run llama3.2:1b
   quantcpp run llama3.2:1b "What is gravity?"
   quantcpp serve llama3.2:1b --port 8080
+  quantcpp client "What is gravity?"                  # streams from :8080
+  quantcpp client "Hi" --url http://localhost:8081
+  quantcpp client "Hi" --no-stream                    # single JSON response
 
 backwards-compat (no subcommand):
   quantcpp                          # default chat with Llama-3.2-1B
@@ -261,6 +347,19 @@ backwards-compat (no subcommand):
     p_serve.add_argument("-p", "--port", type=int, default=8080)
     p_serve.add_argument("-j", "--threads", type=int, default=4)
 
+    # client
+    p_client = sub.add_parser("client",
+        help="Send a chat request to a running quantcpp serve endpoint")
+    p_client.add_argument("prompt", help="Question to send")
+    p_client.add_argument("--url", default="http://localhost:8080",
+                          help="Server URL (default: http://localhost:8080)")
+    p_client.add_argument("--model-name", "-m", default="quantcpp",
+                          help="Model name in the request body (server ignores)")
+    p_client.add_argument("-n", "--max-tokens", type=int, default=256)
+    p_client.add_argument("-t", "--temperature", type=float, default=0.7)
+    p_client.add_argument("--no-stream", action="store_true",
+                          help="Disable SSE streaming (single JSON response)")
+
     # Backwards-compat: top-level args for direct chat
     parser.add_argument("prompt", nargs="*", default=None,
                         help="(default mode) question to ask")
@@ -280,6 +379,8 @@ backwards-compat (no subcommand):
         return cmd_run(args)
     if args.command == "serve":
         return cmd_serve(args)
+    if args.command == "client":
+        return cmd_client(args)
 
     # No subcommand → backwards-compat default chat
     return cmd_chat_default(args)

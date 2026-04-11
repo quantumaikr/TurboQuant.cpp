@@ -41,13 +41,14 @@
 ```bash
 pip install quantcpp
 
-quantcpp pull llama3.2:1b           # download from HuggingFace
-quantcpp run llama3.2:1b            # interactive chat
-quantcpp serve llama3.2:1b -p 8080  # OpenAI-compatible HTTP server
-quantcpp list                       # show cached models
+quantcpp pull llama3.2:1b               # download from HuggingFace
+quantcpp run llama3.2:1b                # interactive chat
+quantcpp serve llama3.2:1b -p 8080      # OpenAI-compatible HTTP server (SSE streaming)
+quantcpp client "Hi"                    # streaming client → server on :8080
+quantcpp list                           # show cached models
 ```
 
-Short aliases: `smollm2:135m`, `qwen3.5:0.8b`, `llama3.2:1b`. Auto-pulls on first `run`/`serve`. The `serve` subcommand exposes `POST /v1/chat/completions` (OpenAI-compatible) on port 8080.
+Short aliases: `smollm2:135m`, `qwen3.5:0.8b`, `llama3.2:1b`. Auto-pulls on first `run`/`serve`. The `serve` subcommand exposes `POST /v1/chat/completions` (OpenAI-compatible) on port 8080 — clients pass `"stream": true` for SSE streaming, or omit it for a single JSON response. Built-in `quantcpp client` supports both modes (default: streaming, `--no-stream` for single response).
 
 **One-shot question:**
 ```bash

@@ -28,13 +28,14 @@
 ```bash
 pip install quantcpp
 
-quantcpp pull llama3.2:1b           # HuggingFace에서 다운로드
-quantcpp run llama3.2:1b            # 대화형 채팅
-quantcpp serve llama3.2:1b -p 8080  # OpenAI 호환 HTTP 서버
-quantcpp list                       # 캐시된 모델 목록
+quantcpp pull llama3.2:1b               # HuggingFace에서 다운로드
+quantcpp run llama3.2:1b                # 대화형 채팅
+quantcpp serve llama3.2:1b -p 8080      # OpenAI 호환 HTTP 서버 (SSE 스트리밍)
+quantcpp client "안녕"                   # 스트리밍 클라이언트 → :8080 서버
+quantcpp list                           # 캐시된 모델 목록
 ```
 
-짧은 별칭: `smollm2:135m`, `qwen3.5:0.8b`, `llama3.2:1b`. `run`/`serve` 첫 실행 시 자동 다운로드. `serve`는 OpenAI 호환 `POST /v1/chat/completions` 엔드포인트를 8080 포트에 제공합니다.
+짧은 별칭: `smollm2:135m`, `qwen3.5:0.8b`, `llama3.2:1b`. `run`/`serve` 첫 실행 시 자동 다운로드. `serve`는 OpenAI 호환 `POST /v1/chat/completions` 엔드포인트를 8080 포트에 제공합니다 — 클라이언트가 `"stream": true`를 보내면 SSE 토큰 단위 스트리밍, 생략하면 단일 JSON 응답. 내장 `quantcpp client`는 두 모드 모두 지원 (기본: 스트리밍, `--no-stream`: 단일 응답).
 
 **한 줄 질문:**
 ```bash

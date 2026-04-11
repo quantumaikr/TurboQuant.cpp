@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "quantcpp"
-version = "0.12.0"
+version = "0.12.1"
 description = "Single-header LLM inference engine with KV cache compression (7× compression at fp32 parity)"
 readme = "README.md"
 license = { text = "Apache-2.0" }
