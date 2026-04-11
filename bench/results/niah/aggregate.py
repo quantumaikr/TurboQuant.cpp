@@ -12,7 +12,9 @@ from pathlib import Path
 
 def load(csv_path):
     rows = []
-    with open(csv_path) as f:
+    # errors='replace' handles garbage bytes from model responses that
+    # leaked non-UTF-8 sequences into the csv response column.
+    with open(csv_path, encoding="utf-8", errors="replace") as f:
         reader = csv.DictReader(f)
         for r in reader:
             rows.append({

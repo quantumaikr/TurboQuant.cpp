@@ -12,6 +12,13 @@
 
 set -e
 
+# Force byte-level locale for all child processes — the model can emit
+# multibyte UTF-8 sequences and the default macOS awk path will abort
+# a 90-run grid with "towc: multibyte conversion failure" on the first
+# non-ASCII byte. Keeping C everywhere makes response extraction robust.
+export LC_ALL=C
+export LANG=C
+
 TQ=${TQ:-./build_metal/quant}
 MODEL=${MODEL:-models/Llama-3.2-3B-Instruct-Q8_0.gguf}
 THREADS=${THREADS:-8}
@@ -43,22 +50,33 @@ fi
 # Grid sizes therefore stay within the regime where the model can actually
 # retrieve, so we measure compression-vs-baseline cleanly.
 # ----------------------------------------------------------------------------
-case "$GRID" in
-  quick)
-    CONTEXTS=(512 1024)
-    DEPTHS=(0.1 0.5 0.9)
-    ;;
-  default)
-    CONTEXTS=(512 1024 1536)
-    DEPTHS=(0.1 0.5 0.9)
-    ;;
-  full)
-    CONTEXTS=(512 1024 1536)
-    DEPTHS=(0.1 0.25 0.5 0.75 0.9)
-    ;;
-  *)
-    echo "Unknown GRID: $GRID" >&2; exit 1 ;;
-esac
+# Env-var override: set NIAH_CONTEXTS / NIAH_DEPTHS (space-separated) to
+# bypass the case-based grid for ad-hoc measurement runs without editing
+# this file. Example:
+#   NIAH_CONTEXTS="1280 1536 1792 2048" bash bench/niah_test.sh
+if [ -n "${NIAH_CONTEXTS:-}" ]; then
+  # shellcheck disable=SC2206
+  CONTEXTS=($NIAH_CONTEXTS)
+  # shellcheck disable=SC2206
+  DEPTHS=(${NIAH_DEPTHS:-0.1 0.5 0.9})
+else
+  case "$GRID" in
+    quick)
+      CONTEXTS=(512 1024)
+      DEPTHS=(0.1 0.5 0.9)
+      ;;
+    default)
+      CONTEXTS=(512 1024 1536)
+      DEPTHS=(0.1 0.5 0.9)
+      ;;
+    full)
+      CONTEXTS=(512 1024 1536)
+      DEPTHS=(0.1 0.25 0.5 0.75 0.9)
+      ;;
+    *)
+      echo "Unknown GRID: $GRID" >&2; exit 1 ;;
+  esac
+fi
 
 # Three needles, all common-English-word so the answer survives Q4 jitter.
 NEEDLE_0="The chief financial officer of Northwind Logistics is Sarah Chen, hired in 2023."
