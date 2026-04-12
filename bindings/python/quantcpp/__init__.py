@@ -155,14 +155,36 @@ def _download_with_progress(url: str, dest: Path, desc: str) -> None:
     tmp.rename(dest)
 
 
+_MODEL_ALIASES = {
+    "smollm2":         "SmolLM2-1.7B",
+    "smollm2:1.7b":    "SmolLM2-1.7B",
+    "smollm2:135m":    "SmolLM2-135M",
+    "qwen3.5":         "Qwen3.5-0.8B",
+    "qwen3.5:0.8b":    "Qwen3.5-0.8B",
+    "llama3.2":        "Llama-3.2-1B",
+    "llama3.2:1b":     "Llama-3.2-1B",
+    "phi3.5":          "Phi-3.5-mini",
+    "phi3.5:mini":     "Phi-3.5-mini",
+    "phi-3.5":         "Phi-3.5-mini",
+    "phi-3.5-mini":    "Phi-3.5-mini",
+}
+
+
+def _resolve_model_name(name: str) -> str:
+    """Resolve alias or case-insensitive name to canonical registry key."""
+    if name in _MODEL_REGISTRY:
+        return name
+    return _MODEL_ALIASES.get(name.lower(), name)
+
+
 def download(name: str) -> str:
     """Download a model from HuggingFace Hub and return its local path.
 
     Parameters
     ----------
     name : str
-        Model name from the registry. Currently available:
-        ``"SmolLM2-135M"`` (~135 MB, good for testing).
+        Model name or alias. Examples: ``"Phi-3.5-mini"``, ``"phi3.5:mini"``,
+        ``"smollm2"``, ``"llama3.2:1b"``.
 
     Returns
     -------
@@ -171,9 +193,10 @@ def download(name: str) -> str:
 
     Examples
     --------
-    >>> path = quantcpp.download("SmolLM2-135M")
+    >>> path = quantcpp.download("phi3.5:mini")
     >>> m = quantcpp.Model(path)
     """
+    name = _resolve_model_name(name)
     if name not in _MODEL_REGISTRY:
         avail = ", ".join(sorted(_MODEL_REGISTRY))
         raise ValueError(

@@ -250,6 +250,15 @@ def cmd_serve(args):
         print("  Or install via your package manager.", file=sys.stderr)
         return 2
 
+    # Check if port is available before launching server
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        if sock.connect_ex(("127.0.0.1", args.port)) == 0:
+            print(f"error: port {args.port} is already in use.", file=sys.stderr)
+            print(f"  Try a different port: quantcpp serve {args.model} --port {args.port + 1}",
+                  file=sys.stderr)
+            return 1
+
     cmd = [binary, model_path, "-p", str(args.port), "-j", str(args.threads)]
     print(f"quantcpp serve {os.path.basename(model_path)} on :{args.port}", file=sys.stderr)
     print("", file=sys.stderr)
