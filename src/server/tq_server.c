@@ -19,8 +19,8 @@
 #include <stdarg.h>
 #include <stdbool.h>
 
-/* Forward decl: defined in src/engine/tq_generate.c.
- * Not yet exposed in turboquant.h since it's a chat-mode helper. */
+/* Forward decls: defined in src/engine/tq_generate.c.
+ * Not yet exposed in turboquant.h since they're chat-mode helpers. */
 extern int tq_generate_continue(tq_model_t* model,
                                  tq_tokenizer_t* tokenizer,
                                  tq_state_t* state,
@@ -30,6 +30,18 @@ extern int tq_generate_continue(tq_model_t* model,
                                  int*  n_cached_io,
                                  int*  cached_capacity_io,
                                  char* output, int output_size);
+
+/* Text-prefix matching variant — solves BPE re-tokenization mismatch. */
+extern int tq_generate_chat_text(tq_model_t* model,
+                                  tq_tokenizer_t* tokenizer,
+                                  tq_state_t* state,
+                                  const char* prompt,
+                                  tq_gen_config_t* config,
+                                  char** cached_text_io,
+                                  int** cached_tokens_io,
+                                  int*  n_cached_io,
+                                  int*  cached_capacity_io,
+                                  char* output, int output_size);
 #if defined(_MSC_VER)
 #include <intrin.h>
 typedef volatile long atomic_int;
@@ -95,6 +107,7 @@ typedef struct {
     int*        cached_tokens;
     int         n_cached;
     int         cached_capacity;
+    char*       cached_text;          /* prompt + generated, for text-prefix matching */
     long        last_used;            /* monotonic counter for LRU */
 } kv_session_t;
 
@@ -144,6 +157,7 @@ static kv_session_t* get_or_create_session(tq_server_t* server,
     /* Free old session contents (if any) */
     if (s->kv_state) tq_free_state(s->kv_state);
     if (s->cached_tokens) free(s->cached_tokens);
+    if (s->cached_text) free(s->cached_text);
 
     memset(s, 0, sizeof(*s));
     strncpy(s->id, sid, SESSION_ID_MAX - 1);
@@ -237,15 +251,22 @@ static const char* json_extract_string(const char* p, char* buf, int buf_size) {
 /* Find a key in JSON and return pointer to value (past the colon).
  * Simple scan — works for flat or lightly nested objects. */
 static const char* json_find_key(const char* json, const char* key) {
+    /* Find a "key": pattern. Naive scan: locate every "key" occurrence
+     * and verify the next non-whitespace char is ':'. This skips false
+     * matches where "key" appears as a *value* (e.g., {"role":"user"}
+     * collides with json_find_key("user") if we don't check the colon). */
     char pattern[256];
     snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-    const char* p = strstr(json, pattern);
-    if (!p) return NULL;
-    p += strlen(pattern);
-    p = json_skip_ws(p);
-    if (*p != ':') return NULL;
-    p++;
-    return json_skip_ws(p);
+    size_t plen = strlen(pattern);
+    const char* p = json;
+    while ((p = strstr(p, pattern)) != NULL) {
+        const char* after = json_skip_ws(p + plen);
+        if (*after == ':') {
+            return json_skip_ws(after + 1);
+        }
+        p += plen; /* skip past this false match and keep searching */
+    }
+    return NULL;
 }
 
 /* Extract a number (int or float) from current position */
@@ -758,11 +779,12 @@ static void handle_chat_completions(tq_server_t* server, int fd, const char* bod
         kv_session_t* sess = get_or_create_session(server, req.session_id,
                                                     gen_cfg.kv_type,
                                                     gen_cfg.value_quant_bits);
-        tq_generate_continue(server->config.model, server->config.tokenizer,
-                              sess->kv_state, req.prompt, &gen_cfg,
-                              &sess->cached_tokens, &sess->n_cached,
-                              &sess->cached_capacity,
-                              output, sizeof(output));
+        tq_generate_chat_text(server->config.model, server->config.tokenizer,
+                               sess->kv_state, req.prompt, &gen_cfg,
+                               &sess->cached_text,
+                               &sess->cached_tokens, &sess->n_cached,
+                               &sess->cached_capacity,
+                               output, sizeof(output));
 
         /* Send final chunk with finish_reason */
         char final_chunk[SSE_CHUNK_SIZE];
@@ -795,11 +817,12 @@ static void handle_chat_completions(tq_server_t* server, int fd, const char* bod
         kv_session_t* sess = get_or_create_session(server, req.session_id,
                                                     gen_cfg.kv_type,
                                                     gen_cfg.value_quant_bits);
-        tq_generate_continue(server->config.model, server->config.tokenizer,
-                              sess->kv_state, req.prompt, &gen_cfg,
-                              &sess->cached_tokens, &sess->n_cached,
-                              &sess->cached_capacity,
-                              output, sizeof(output));
+        tq_generate_chat_text(server->config.model, server->config.tokenizer,
+                               sess->kv_state, req.prompt, &gen_cfg,
+                               &sess->cached_text,
+                               &sess->cached_tokens, &sess->n_cached,
+                               &sess->cached_capacity,
+                               output, sizeof(output));
 
         const char* content = collect.buf ? collect.buf : "";
 
@@ -1260,6 +1283,7 @@ void tq_server_free(tq_server_t* server) {
     for (int i = 0; i < MAX_SESSIONS; i++) {
         if (server->sessions[i].kv_state) tq_free_state(server->sessions[i].kv_state);
         if (server->sessions[i].cached_tokens) free(server->sessions[i].cached_tokens);
+        if (server->sessions[i].cached_text) free(server->sessions[i].cached_text);
     }
     if (g_server == server) g_server = NULL;
     free(server);
