@@ -24,11 +24,12 @@
 목표: 같은 하드웨어에서 10+ tok/s (DFlash 기준 Phi-3.5는 6.5 tok/s 가능)
 ```
 
-### 병목 후보
-1. tokenizer 재로딩 (매 요청마다 `tq_load_tokenizer_from_gguf` 호출?)
-2. KV state 재할당
-3. thread pool 미활용 (매 요청마다 pthread 생성?)
-4. 불필요한 메모리 복사
+### 병목 진단 + 수정 결과
+1. ✅ **tokenizer 재로딩** — 매 요청마다 32K 토큰 파싱 → context 재사용으로 제거 (commit 6e39e64)
+2. ⚠️ **KV state 이중 재할당** — server + quant_generate 둘 다 재생성 → server측만 수정, 내부 tq_generate는 별도 PR
+3. 해당없음 (thread pool 이미 재사용)
+
+**결과: ~2.0 tok/s → ~4.5 tok/s (warm, 2.3× 개선)**
 
 ## P1: KV 압축 실증
 
