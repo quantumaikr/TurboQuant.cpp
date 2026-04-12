@@ -11597,11 +11597,23 @@ tq_model_t* tq_load_gguf(const char* path) {
         /* Gemma 4 (STEP35) detection: architecture string is "gemma4" */
         if (strstr(gguf->arch, "gemma4") != NULL) {
             c->is_gemma4 = 1;
-            /* Gemma 4: full attention layers use rope.dimension_count directly.
-             * Do NOT halve — split-source (tq_model.c) correctly keeps full=512.
-             * The /2 was a misport that caused garbage output. */
+            /* Gemma 4 proportional RoPE for full attention layers:
+             * HuggingFace config has partial_rotary_factor=0.25 for full layers.
+             * GGUF rope.dimension_count=512 is the full head_dim, NOT the RoPE dim.
+             * Actual RoPE dims for full layers = full_head_dim * 0.25 = 128.
+             *
+             * Sliding layers: rope.dimension_count_swa=256 = full head_dim(256) → all rotated.
+             *
+             * We adjust rope_n_dims_full to reflect the partial rotation. */
+            if (c->rope_n_dims_full > 0 && c->full_head_dim > 0) {
+                /* partial_rotary_factor = 0.25 for Gemma 4 E2B/E4B */
+                int partial_rope = c->full_head_dim / 4;  /* 512/4 = 128 */
+                fprintf(stderr, "tq_load_gguf: Gemma4 p-RoPE — full layer RoPE dims %d -> %d "
+                        "(partial_rotary_factor=0.25)\n", c->rope_n_dims_full, partial_rope);
+                c->rope_n_dims_full = partial_rope;
+            }
             fprintf(stderr, "tq_load_gguf: Gemma4 — RoPE dims swa=%d full=%d, "
-                    "SiLU FFN, rope_freqs for full layers only\n",
+                    "GeGLU FFN, rope_freqs for full layers only\n",
                     c->rope_n_dims, c->rope_n_dims_full);
         }
         fprintf(stderr, "tq_load_gguf: Gemma family detected (sliding_window=%d)\n", c->sliding_window);
@@ -15321,7 +15333,12 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
     /* Step 2: Transformer layers */
     int is_gemma3 = (c->model_type == 1);
 
-    for (int l = 0; l < c->n_layers; l++) {
+    /* Debug: limit number of layers for diagnosing per-layer issues */
+    int max_layers = c->n_layers;
+    { const char* ml = getenv("TQ_MAX_LAYERS");
+      if (ml) { int v = atoi(ml); if (v > 0 && v < max_layers) max_layers = v; } }
+
+    for (int l = 0; l < max_layers; l++) {
         tq_layer_weights_t* layer = &model->layers[l];
 
         /* Save input residual for layer_output_scale (Gemma 4).
@@ -15584,11 +15601,12 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
             tq_add(s->x, s->x, ple_proj_out, dim);
         }
 
-        /* Gemma 4: layer_output_scale scales the layer's CONTRIBUTIONS (attn + ffn).
-         * Essential for controlling gradient flow — model was trained with these scales. */
+        /* Gemma 4: layer_output_scale — simple multiplication of entire output.
+         * llama.cpp reference (gemma4-iswa.cpp): cur = ggml_mul(cur, out_scale)
+         * Previous implementation incorrectly separated residual contribution.
+         * The correct approach is a straight elementwise multiply. */
         if (layer->layer_output_scale != 0.0f) {
             float los = layer->layer_output_scale;
-            /* Debug: print pre-scale values */
             if (pos == 0 && getenv("TQ_DEBUG") && l < 3) {
                 float maxv = 0, minv = 0;
                 for (int i = 0; i < dim; i++) {
@@ -15598,7 +15616,7 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
                 fprintf(stderr, "[DEBUG] layer%d pre_scale min=%.3f max=%.3f (los=%.4f)\n", l, minv, maxv, los);
             }
             for (int i = 0; i < dim; i++) {
-                s->x[i] = layer_residual_buf[i] + los * (s->x[i] - layer_residual_buf[i]);
+                s->x[i] *= los;
             }
         }
 
