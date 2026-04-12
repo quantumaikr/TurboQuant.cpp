@@ -13317,12 +13317,16 @@ tq_state_t* tq_create_state_ex(const tq_model_config_t* config, tq_type kv_type,
         s->delta_dvec = (float*)calloc((size_t)dv, sizeof(float));
     }
 
-    /* Quantization workspace */
+    /* Quantization workspace — use MAX head_dim for hybrid attention (Gemma 4).
+     * Sliding layers have head_dim=256, full layers have head_dim=512.
+     * Quantized cache must accommodate the larger dimension. (issue #61) */
     size_t block_size = tq_type_block_size(kv_type);
     size_t type_size  = tq_type_type_size(kv_type);
     if (block_size == 0) block_size = TQ_BK;
     if (type_size == 0) type_size = sizeof(block_tq_uniform_4b);
-    size_t n_blocks_per_head = ((size_t)config->head_dim + block_size - 1) / block_size;
+    int max_head_dim = config->head_dim;
+    if (config->full_head_dim > max_head_dim) max_head_dim = config->full_head_dim;
+    size_t n_blocks_per_head = ((size_t)max_head_dim + block_size - 1) / block_size;
     /* quant_key_buf is used as a gather buffer for integer attention:
      * we collect quantized key blocks for one KV head across all seq positions.
      * Size needed: max_seq_len * blocks_per_head * type_size */
@@ -13337,7 +13341,10 @@ tq_state_t* tq_create_state_ex(const tq_model_config_t* config, tq_type kv_type,
      * Layout: [n_layers][max_seq_len][n_kv_heads][blocks_per_head * type_size]
      * Each key vector is quantized when stored, then reused for fast Q4xQ8 attention. */
     s->quant_head_stride = n_blocks_per_head * type_size;
-    size_t quant_pos_stride = s->quant_head_stride * (size_t)config->n_kv_heads;
+    /* Use max kv_heads for position stride (hybrid: sliding=8, full=2 but larger heads) */
+    int max_kv_heads = config->n_kv_heads;
+    if (config->full_n_kv_heads > max_kv_heads) max_kv_heads = config->full_n_kv_heads;
+    size_t quant_pos_stride = s->quant_head_stride * (size_t)max_kv_heads;
     s->quant_kv_stride = quant_pos_stride * (size_t)max_seq;
     if (kv_type < TQ_TYPE_COUNT) {
         s->quant_key_cache = calloc((size_t)n_layers * s->quant_kv_stride, 1);
@@ -14388,15 +14395,17 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
     /* Quantized KV cache: stride was allocated with sliding dims (c->n_kv_heads, c->head_dim).
      * For hybrid attention full layers with different head_dim, skip quant cache
      * (quant_head_stride doesn't match). Fall back to FP32 cache for those layers. */
+    /* Hybrid attention KV cache: allocated with max(sliding, full) dimensions.
+     * quant_head_stride uses max_head_dim, quant_pos_stride uses max_kv_heads.
+     * Both sliding and full layers can use the quantized cache. (issue #61) */
     int cache_n_kv_heads = c->n_kv_heads;
-    if (head_dim != c->head_dim) {
-        /* Full layer: head_dim mismatch with quant cache allocation.
-         * Disable both quantized and integer attention → use FP32 path. */
+    if (c->full_n_kv_heads > cache_n_kv_heads) cache_n_kv_heads = c->full_n_kv_heads;
+    if (head_dim != c->head_dim && c->full_head_dim == 0) {
+        /* Non-hybrid head_dim mismatch — disable quantized path */
         use_quant_kv = 0;
         use_int_attn = 0;
-        /* Ensure K is stored in FP32 cache (may have been skipped above) */
         memcpy(key_cache_layer + (size_t)pos * cache_kv_dim, s->k, kv_dim * sizeof(float));
-    } else if (use_int_attn && head_dim != c->head_dim) {
+    } else if (use_int_attn && head_dim != c->head_dim && c->full_head_dim == 0) {
         use_int_attn = 0;
         memcpy(key_cache_layer + (size_t)pos * cache_kv_dim, s->k, kv_dim * sizeof(float));
     }
@@ -16297,6 +16306,7 @@ static int chat_find_marker(const char* h, int hlen, const char* m) {
 static const char* const CHAT_END_MARKERS[] = {
     "<|im_end|>", "<|eot_id|>", "<end_of_turn>", "<|endoftext|>",
     "<|im_start|>", "<|start_header_id|>", "<|eom_id|>",
+    "</s>", "<|end|>",
     NULL,
 };
 

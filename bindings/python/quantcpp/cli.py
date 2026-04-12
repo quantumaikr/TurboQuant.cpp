@@ -153,8 +153,9 @@ def cmd_run(args):
     m = Model(model_path, max_tokens=args.max_tokens, temperature=args.temperature,
               n_threads=args.threads)
 
-    if args.prompt:
-        question = " ".join(args.prompt) if isinstance(args.prompt, list) else args.prompt
+    prompt_parts = args.prompt if args.prompt else None
+    if prompt_parts:
+        question = " ".join(prompt_parts) if isinstance(prompt_parts, list) else prompt_parts
         for tok in m.generate(question):
             print(tok, end="", flush=True)
         print()
@@ -357,6 +358,8 @@ def cmd_chat_default(args):
 def main():
     import argparse
 
+    from quantcpp import __version__
+
     parser = argparse.ArgumentParser(
         prog="quantcpp",
         description="Chat with a local LLM. No API key, no GPU, no server.",
@@ -386,6 +389,8 @@ backwards-compat (no subcommand):
   quantcpp --model llama3.2:1b      # smallest download
 """,
     )
+
+    parser.add_argument("--version", action="version", version=f"quantcpp {__version__}")
 
     sub = parser.add_subparsers(dest="command")
 
@@ -433,7 +438,32 @@ backwards-compat (no subcommand):
     parser.add_argument("--temperature", "-t", type=float, default=0.7)
     parser.add_argument("--threads", "-j", type=int, default=4)
 
-    args = parser.parse_args()
+    # Backwards-compat (issue #54): if the first positional arg is not a
+    # known subcommand, treat all positionals as a prompt. We must detect
+    # this BEFORE argparse sees the argv, because the subparser will reject
+    # unknown choices with an error.
+    known_commands = {"pull", "list", "run", "serve", "client"}
+    argv = sys.argv[1:]
+
+    first_pos = None
+    for a in argv:
+        if a.startswith("-"):
+            continue
+        first_pos = a
+        break
+
+    if first_pos and first_pos not in known_commands:
+        # Parse with a minimal parser that has no subcommands
+        compat = argparse.ArgumentParser(prog="quantcpp", add_help=False)
+        compat.add_argument("prompt", nargs="*", default=None)
+        compat.add_argument("--model", "-m", default=None)
+        compat.add_argument("--max-tokens", "-n", type=int, default=256)
+        compat.add_argument("--temperature", "-t", type=float, default=0.7)
+        compat.add_argument("--threads", "-j", type=int, default=4)
+        args = compat.parse_args(argv)
+        return cmd_chat_default(args)
+
+    args = parser.parse_args(argv)
 
     if args.command == "pull":
         return cmd_pull(args)

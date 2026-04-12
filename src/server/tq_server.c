@@ -775,8 +775,17 @@ static void handle_chat_completions(tq_server_t* server, int fd, const char* bod
     char completion_id[64];
     generate_id(completion_id, sizeof(completion_id));
 
-    /* Serialize inference (one request at a time) */
-    pthread_mutex_lock(&server->inference_mutex);
+    /* Serialize inference (one request at a time).
+     * Use trylock so concurrent requests get an immediate 429 instead of
+     * blocking silently and potentially timing out. (issue #63) */
+    if (pthread_mutex_trylock(&server->inference_mutex) != 0) {
+        send_json(fd, 429, "Too Many Requests",
+            "{\"error\":{\"message\":\"Server is busy processing another request. "
+            "Please retry in a moment.\","
+            "\"type\":\"server_error\",\"code\":\"busy\"}}");
+        free_chat_request(&req);
+        return;
+    }
 
     if (req.stream) {
         /* --- Streaming (SSE) --- */

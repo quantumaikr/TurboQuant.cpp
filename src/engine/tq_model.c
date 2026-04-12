@@ -2931,6 +2931,20 @@ tq_model_t* tq_load_gguf(const char* path) {
         c->attn_logit_softcap = 50.0f;
     }
 
+    /* LongRoPE config (Phi-3 etc.) */
+    c->rope_orig_ctx_len = (int)tq_gguf_get_u32(gguf, GGUF_KEY("rope.scaling.original_context_length"), 0);
+    c->rope_attn_factor = tq_gguf_get_f32(gguf, GGUF_KEY("rope.scaling.attn_factor"), 0.0f);
+    {
+        const tq_gguf_tensor_t* rfs = tq_gguf_find_tensor(gguf, "rope_factors_short.weight");
+        const tq_gguf_tensor_t* rfl = tq_gguf_find_tensor(gguf, "rope_factors_long.weight");
+        if (rfs && rfs->type == TQ_GGML_TYPE_F32) c->rope_factors_short = (const float*)rfs->data;
+        if (rfl && rfl->type == TQ_GGML_TYPE_F32) c->rope_factors_long  = (const float*)rfl->data;
+        if (rfs || rfl) {
+            fprintf(stderr, "tq_load_gguf: LongRoPE detected — orig_ctx=%d, attn_factor=%.4f\n",
+                    c->rope_orig_ctx_len, c->rope_attn_factor);
+        }
+    }
+
     /* Cap context for memory safety on small machines.
      * GGUF models often claim 262K context but we cap at 4096 by default.
      * Users can override with --ctx flag in quant. */
@@ -3223,6 +3237,23 @@ tq_model_t* tq_load_gguf(const char* path) {
          * We store the raw data pointer + type info using a small struct packed into
          * the existing FP32 weight pointer fields. For GGUF models, we use a special
          * dispatch: if gguf_ctx is non-NULL, the forward pass uses tq_matmul_gguf. */
+
+        /* Fused QKV detection (Phi-3 etc.): attn_qkv.weight contains Q, K, V concatenated */
+        snprintf(tname, sizeof(tname), "blk.%d.attn_qkv.weight", l);
+        const tq_gguf_tensor_t* wqkv_t = find_gguf_tensor(gguf, tname);
+        if (wqkv_t) {
+            layer->gguf_w_qkv = wqkv_t->data;
+            layer->gguf_w_qkv_type = wqkv_t->type;
+            c->has_fused_qkv = 1;
+
+            snprintf(tname, sizeof(tname), "blk.%d.attn_output.weight", l);
+            t = find_gguf_tensor(gguf, tname);
+            if (t) { layer->gguf_wo = t->data; layer->gguf_wo_type = t->type; }
+
+            attn_indices[n_attn_layers++] = l;
+            goto post_attn_load;  /* Skip standard attn_q/k/v loading */
+        }
+
         snprintf(tname, sizeof(tname), "blk.%d.attn_q.weight", l);
         const tq_gguf_tensor_t* wq_t = find_gguf_tensor(gguf, tname);
         int is_attn_layer = (wq_t != NULL);
@@ -3264,6 +3295,7 @@ tq_model_t* tq_load_gguf(const char* path) {
 
             attn_indices[n_attn_layers++] = l;
         }
+        post_attn_load: ; /* Both fused QKV and standard Q/K/V paths converge here */
 
         /* Check for DeltaNet / SSM weights (Qwen3.5 hybrid) */
         snprintf(tname, sizeof(tname), "blk.%d.ssm_a", l);
@@ -3524,7 +3556,18 @@ tq_model_t* tq_load_gguf(const char* path) {
             if (t) { layer->gguf_w_gate = t->data; layer->gguf_w_gate_type = t->type; }
             snprintf(tname, sizeof(tname), "blk.%d.ffn_up.weight", l);
             t = find_gguf_tensor(gguf, tname);
-            if (t) { layer->gguf_w_up = t->data; layer->gguf_w_up_type = t->type; }
+            if (t) {
+                /* Phi-3 fused gate||up: ffn_up contains both gate and up projections
+                 * concatenated along output dim (shape[1] == 2 * intermediate_dim) */
+                if (c->intermediate_dim > 0 && (int)t->shape[1] == 2 * c->intermediate_dim) {
+                    layer->gguf_w_up_gate = t->data;
+                    layer->gguf_w_up_gate_type = t->type;
+                    c->has_fused_up_gate = 1;
+                } else {
+                    layer->gguf_w_up = t->data;
+                    layer->gguf_w_up_type = t->type;
+                }
+            }
             snprintf(tname, sizeof(tname), "blk.%d.ffn_down.weight", l);
             t = find_gguf_tensor(gguf, tname);
             if (t) { layer->gguf_w_down = t->data; layer->gguf_w_down_type = t->type; }
@@ -4412,6 +4455,43 @@ void tq_free_model(tq_model_t* model) {
         }
     }
     free(model->moe_config);
+
+    /* Free dequantized norm/embedding buffers (GGUF path only).
+     * In the GGUF path, dequant_tensor_fp32() individually malloc's each
+     * norm weight. In the SafeTensor path, these point into _converted_data
+     * (freed above), so we must NOT free them again. (issue #60) */
+    if (model->gguf_ctx && model->layers) {
+        for (int l = 0; l < model->config.n_layers; l++) {
+            tq_layer_weights_t* layer = &model->layers[l];
+            free(layer->attn_norm);
+            free(layer->ffn_norm);
+            free(layer->q_norm);
+            free(layer->k_norm);
+            free(layer->post_attn_norm);
+            free(layer->post_ffn_norm);
+            free(layer->pre_ffn_norm);
+            free(layer->post_ffn_norm_1);
+            free(layer->pre_ffn_norm_2);
+            free(layer->post_ffn_norm_2);
+            free(layer->ple_norm);
+            free(layer->delta_a_log);
+            free(layer->delta_conv1d);
+            free(layer->delta_dt_bias);
+            free(layer->delta_in_proj_qkv);
+            free(layer->delta_in_proj_z);
+            free(layer->delta_norm);
+            free(layer->delta_in_proj_a);
+            free(layer->delta_in_proj_b);
+            free(layer->delta_out_proj);
+        }
+        free(model->token_embedding);
+        free(model->output_weight);
+        free(model->output_norm);
+        free(model->rope_freqs);
+        free(model->ple_proj);
+        free(model->ple_proj_norm);
+    }
+
     free(model->layers);
 
     /* Free GGUF context (handles munmap internally) */

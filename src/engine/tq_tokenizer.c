@@ -1186,6 +1186,7 @@ int tq_encode(const tq_tokenizer_t* tok, const char* text,
     if (add_bos) {
         /* Look up <bos> token in vocab; default to id 2 (Gemma convention) */
         int bos_id = str_lookup(tok, "<bos>");
+        if (bos_id < 0) { bos_id = str_lookup(tok, "<s>"); }
         if (bos_id < 0) { bos_id = str_lookup(tok, "<|im_start|>"); }
         if (bos_id >= 0) {
             tokens[n_tokens++] = bos_id;

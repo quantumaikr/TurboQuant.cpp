@@ -220,11 +220,14 @@ int tq_generate(tq_model_t* model, tq_tokenizer_t* tokenizer,
     if (tokenizer && prompt) {
         /* BOS token handling:
          * Gemma 3/4: BOS=2 (required)
+         * Phi-3: BOS via <s> (required — garbage without it)
          * LLaMA 3: BOS=128000 (<|begin_of_text|>) — but tokenizer usually adds it
          * Qwen3.5: no BOS needed */
         int add_bos = 0;
         if (model->config.model_type == 1) {
             add_bos = 1; /* Gemma: always prepend BOS=2 */
+        } else if (model->config.has_fused_qkv) {
+            add_bos = 1; /* Phi-3: requires <s> BOS */
         }
         n_prompt = tq_encode(tokenizer, prompt, prompt_tokens, 4096, add_bos);
     } else {
@@ -645,7 +648,7 @@ int tq_generate_continue(tq_model_t* model,
     if (!new_tokens) return -1;
     int n_new = 0;
     if (tokenizer && prompt) {
-        int add_bos = (model->config.model_type == 1) ? 1 : 0;
+        int add_bos = (model->config.model_type == 1 || model->config.has_fused_qkv) ? 1 : 0;
         n_new = tq_encode(tokenizer, prompt, new_tokens, max_prompt, add_bos);
     }
     if (n_new <= 0) {
@@ -905,6 +908,7 @@ static int chat_find_marker(const char* h, int hlen, const char* m) {
 static const char* const CHAT_END_MARKERS[] = {
     "<|im_end|>", "<|eot_id|>", "<end_of_turn>", "<|endoftext|>",
     "<|im_start|>", "<|start_header_id|>", "<|eom_id|>",
+    "</s>", "<|end|>",
     NULL,
 };
 

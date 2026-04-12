@@ -65,6 +65,17 @@ extern void tq_qjl_attention_avx2(const float* q, const void* kv,
                                    float* s, int seq, int hd);
 #endif
 
+#if defined(__ARM_FEATURE_SVE)
+/* SVE optimized implementations (stubs — delegate to reference for now) */
+extern void tq_uniform_4b_quantize_sve(const float* src, void* dst, int n);
+extern void tq_uniform_4b_dequantize_sve(const void* src, float* dst, int n);
+extern void tq_polar_quantize_sve(const float* src, void* dst, int n);
+extern void tq_polar_dequantize_sve(const void* src, float* dst, int n);
+extern void tq_qjl_quantize_sve(const float* src, void* dst, int n);
+extern void tq_qjl_attention_sve(const float* q, const void* kv,
+                                  float* s, int seq, int hd);
+#endif
+
 /* ================================================================
  * CPU feature detection
  * ================================================================ */
@@ -116,6 +127,23 @@ void tq_cpu_dispatch_init(void) {
 
     tq_dispatch_table[TQ_TYPE_QJL_1B].quantize  = tq_qjl_quantize_neon;
     tq_dispatch_table[TQ_TYPE_QJL_1B].attention = tq_qjl_attention_neon;
+#endif
+
+    /* --- ARM SVE dispatch (compile-time detection) --- */
+#if defined(__ARM_FEATURE_SVE)
+    /* SVE takes priority over NEON when available (wider vectors).
+     * Currently stubs that delegate to reference — swap with real
+     * SVE implementations as they are developed. */
+    tq_dispatch_table[TQ_TYPE_UNIFORM_4B].quantize   = tq_uniform_4b_quantize_sve;
+    tq_dispatch_table[TQ_TYPE_UNIFORM_4B].dequantize = tq_uniform_4b_dequantize_sve;
+
+    tq_dispatch_table[TQ_TYPE_POLAR_3B].quantize   = tq_polar_quantize_sve;
+    tq_dispatch_table[TQ_TYPE_POLAR_3B].dequantize = tq_polar_dequantize_sve;
+    tq_dispatch_table[TQ_TYPE_POLAR_4B].quantize   = tq_polar_quantize_sve;
+    tq_dispatch_table[TQ_TYPE_POLAR_4B].dequantize = tq_polar_dequantize_sve;
+
+    tq_dispatch_table[TQ_TYPE_QJL_1B].quantize  = tq_qjl_quantize_sve;
+    tq_dispatch_table[TQ_TYPE_QJL_1B].attention = tq_qjl_attention_sve;
 #endif
 
     /* --- x86 AVX2 dispatch (runtime detection) --- */
@@ -172,6 +200,19 @@ tq_attention_fn tq_get_attention_fn(tq_type type) {
 const char* tq_get_dispatch_backend(tq_type type) {
     if (!tq_dispatch_initialized) tq_cpu_dispatch_init();
     if (type < 0 || type >= TQ_TYPE_COUNT) return "unknown";
+
+#if defined(__ARM_FEATURE_SVE)
+    /* Check if using SVE versions */
+    if (type == TQ_TYPE_UNIFORM_4B &&
+        tq_dispatch_table[type].quantize == tq_uniform_4b_quantize_sve)
+        return "sve";
+    if ((type == TQ_TYPE_POLAR_3B || type == TQ_TYPE_POLAR_4B) &&
+        tq_dispatch_table[type].quantize == tq_polar_quantize_sve)
+        return "sve";
+    if (type == TQ_TYPE_QJL_1B &&
+        tq_dispatch_table[type].quantize == tq_qjl_quantize_sve)
+        return "sve";
+#endif
 
 #if defined(__ARM_NEON)
     /* Check if using NEON versions */
