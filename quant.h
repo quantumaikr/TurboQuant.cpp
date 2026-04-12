@@ -575,6 +575,23 @@ typedef struct {
      * fused QKV / FFN tensors. Drives state buffer sizing. */
     int has_fused_qkv;                 /* any layer has gguf_w_qkv */
     int has_fused_up_gate;             /* any layer has gguf_w_up_gate */
+
+    /* NeoX-style RoPE flag.
+     *
+     * When set, the RoPE rotation uses non-interleaved pair layout:
+     *   pairs are (q[i], q[i + half]) where half = head_dim/2
+     * instead of the standard interleaved layout:
+     *   pairs are (q[2i], q[2i+1])
+     *
+     * Required when n_heads * head_dim != hidden_dim (e.g., Qwen3-4B:
+     * 32×128=4096 ≠ 2560). The GGUF converter's weight permutation
+     * uses `n_head = head_count // head_count_kv` for K weights, which
+     * for GQA models produces cross-head interleaving instead of
+     * per-head interleaving. NeoX rotation avoids the permutation
+     * dependency entirely.
+     *
+     * Also used by Phi-3 (fused QKV, unpermuted). */
+    int use_neox_rope;                 /* 1 = NeoX-style, 0 = interleaved */
 } tq_model_config_t;
 
 /* ============================================================
@@ -11611,6 +11628,26 @@ tq_model_t* tq_load_gguf(const char* path) {
     fprintf(stderr, "tq_load_gguf: config — layers=%d, dim=%d, heads=%d/%d, head_dim=%d, vocab=%d\n",
             c->n_layers, c->hidden_dim, c->n_heads, c->n_kv_heads, c->head_dim, c->vocab_size);
 
+    /* Detect NeoX RoPE requirement.
+     *
+     * When n_heads * head_dim != hidden_dim (Qwen3: 32×128=4096 ≠ 2560),
+     * the GGUF converter's weight permutation for GQA K weights creates
+     * cross-head interleaving instead of per-head interleaving. Standard
+     * interleaved RoPE produces wrong rotations on these weights.
+     *
+     * NeoX-style rotation (q[i], q[i+half]) avoids the permutation
+     * dependency entirely — it works on the RAW weight layout regardless
+     * of how the converter permuted them.
+     *
+     * Also set for Phi-3 (fused QKV, never permuted by converter). */
+    if (c->n_heads > 0 && c->head_dim > 0 &&
+        c->n_heads * c->head_dim != c->hidden_dim) {
+        c->use_neox_rope = 1;
+        fprintf(stderr, "tq_load_gguf: NeoX RoPE enabled "
+                "(n_heads*head_dim=%d != hidden=%d)\n",
+                c->n_heads * c->head_dim, c->hidden_dim);
+    }
+
     if (c->n_layers == 0 || c->hidden_dim == 0) {
         fprintf(stderr, "tq_load_gguf: invalid config, aborting\n");
         free(model);
@@ -14460,6 +14497,40 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
                 float scale = c->rope_attn_factor;
                 int n_q = n_heads * head_dim;
                 for (int i = 0; i < n_q; i++) s->q[i] *= scale;
+            }
+        } else if (c->use_neox_rope) {
+            /* NeoX-style RoPE: pairs are (q[i], q[i+half]).
+             *
+             * Used for Qwen3 (n_heads*head_dim != hidden_dim) where the
+             * GGUF converter's GQA K-weight permutation creates cross-head
+             * interleaving. NeoX rotation avoids the permutation dependency.
+             * No per-frequency rescaling (unlike Phi-3 LongRoPE above). */
+            int half = head_dim / 2;
+            for (int h = 0; h < n_heads; h++) {
+                float* qh = s->q + h * head_dim;
+                for (int i = 0; i < half; i++) {
+                    float freq = 1.0f / powf(rope_base, 2.0f * i / (float)head_dim);
+                    float theta = pos * freq;
+                    float cos_t = cosf(theta);
+                    float sin_t = sinf(theta);
+                    float q0 = qh[i];
+                    float q1 = qh[i + half];
+                    qh[i]        = q0 * cos_t - q1 * sin_t;
+                    qh[i + half] = q0 * sin_t + q1 * cos_t;
+                }
+            }
+            for (int h = 0; h < n_kv_heads; h++) {
+                float* kh = s->k + h * head_dim;
+                for (int i = 0; i < half; i++) {
+                    float freq = 1.0f / powf(rope_base, 2.0f * i / (float)head_dim);
+                    float theta = pos * freq;
+                    float cos_t = cosf(theta);
+                    float sin_t = sinf(theta);
+                    float k0 = kh[i];
+                    float k1 = kh[i + half];
+                    kh[i]        = k0 * cos_t - k1 * sin_t;
+                    kh[i + half] = k0 * sin_t + k1 * cos_t;
+                }
             }
         } else {
             tq_rope(s->q, s->k, pos, head_dim, n_heads, n_kv_heads, rope_base);
