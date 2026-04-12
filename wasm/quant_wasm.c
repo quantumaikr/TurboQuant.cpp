@@ -99,6 +99,17 @@ int wasm_generate_async(const char* prompt, float temperature, int max_tokens) {
      * sees a near-instant response on every turn after the first. */
     int n = quant_chat(g_ctx, prompt, on_token_streaming, NULL);
     double elapsed = emscripten_get_now() - t0;
+    if (n == -2) {
+        /* Context overflow — auto-reset and inform the JS caller so it
+         * can show a "context full, starting new chat" message and
+         * optionally retry with a shorter history. */
+        js_on_status("Context full \xe2\x80\x94 chat reset. Send a shorter message.");
+        quant_chat(g_ctx, NULL, NULL, NULL);
+        g_output_pos = 0; g_output[0] = '\0'; g_stream_count = 0;
+        js_on_done(0, elapsed);
+        g_generating = 0;
+        return -2;
+    }
     js_on_done(n > 0 ? n : 0, elapsed);
     g_generating = 0;
     return 0;
@@ -107,7 +118,7 @@ int wasm_generate_async(const char* prompt, float temperature, int max_tokens) {
 EMSCRIPTEN_KEEPALIVE
 int wasm_generate(const char* prompt, float temperature, int max_tokens) {
     if (!g_model || !g_ctx || g_generating) return -1;
-    g_generating = 1; g_output_pos = 0; g_output[0] = '\0';
+    g_generating = 1; g_output_pos = 0; g_output[0] = '\0'; g_stream_count = 0;
 
     g_ctx->config.temperature = temperature;
     g_ctx->config.top_p = 0.9f;
@@ -116,6 +127,14 @@ int wasm_generate(const char* prompt, float temperature, int max_tokens) {
     double t0 = emscripten_get_now();
     int n = quant_chat(g_ctx, prompt, on_token_sync, NULL);
     double elapsed = emscripten_get_now() - t0;
+    if (n == -2) {
+        js_on_status("Context full \xe2\x80\x94 chat reset.");
+        quant_chat(g_ctx, NULL, NULL, NULL);
+        g_output_pos = 0; g_output[0] = '\0'; g_stream_count = 0;
+        js_on_done(0, elapsed);
+        g_generating = 0;
+        return -2;
+    }
     js_on_done(n > 0 ? n : 0, elapsed);
     g_generating = 0;
     return 0;
@@ -125,6 +144,11 @@ int wasm_generate(const char* prompt, float temperature, int max_tokens) {
 EMSCRIPTEN_KEEPALIVE
 void wasm_reset_chat(void) {
     if (g_ctx) quant_chat(g_ctx, NULL, NULL, NULL);
+    /* Also reset the streaming output buffer state — otherwise the next
+     * generation would append to stale text from the previous chat. */
+    g_output_pos = 0;
+    g_output[0] = '\0';
+    g_stream_count = 0;
 }
 
 EMSCRIPTEN_KEEPALIVE const char* wasm_model_info(void) {

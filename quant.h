@@ -15943,19 +15943,21 @@ int tq_generate_chat_text(tq_model_t* model,
             if (n_suffix < 0) n_suffix = 0;
         }
 
+        /* Context overflow: return -2 instead of falling back to a
+         * dangerous full reprefill. The state still has stale KV at
+         * positions [n_new..prefix_pos) that would corrupt later tokens.
+         * Caller should reset the chat and retry. */
         int reserve = config->max_tokens > 0 ? config->max_tokens : 256;
         if (prefix_pos + n_suffix + reserve + 32 > max_prompt) {
             free(suffix_toks);
             config->on_token = orig_cb; config->user_data = orig_ud;
-            *n_cached_io = 0;
-            if (cached_text_io && *cached_text_io) {
-                free(*cached_text_io); *cached_text_io = NULL;
+            if (accum.buf) free(accum.buf);
+            if (getenv("TQ_CHAT_DEBUG")) {
+                fprintf(stderr,
+                    "[chat-text] OVERFLOW prefix_pos=%d n_suffix=%d reserve=%d max=%d\n",
+                    prefix_pos, n_suffix, reserve, max_prompt);
             }
-            int n2 = tq_generate_continue(model, tokenizer, state, prompt, config,
-                                           cached_tokens_io, n_cached_io, cached_capacity_io,
-                                           output, output_size);
-            generated = n2;
-            goto update_cache;
+            return -2;
         }
 
         int needed = prefix_pos + n_suffix + reserve + 16;

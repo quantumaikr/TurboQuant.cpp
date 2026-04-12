@@ -779,12 +779,23 @@ static void handle_chat_completions(tq_server_t* server, int fd, const char* bod
         kv_session_t* sess = get_or_create_session(server, req.session_id,
                                                     gen_cfg.kv_type,
                                                     gen_cfg.value_quant_bits);
-        tq_generate_chat_text(server->config.model, server->config.tokenizer,
+        int gen_rc = tq_generate_chat_text(server->config.model, server->config.tokenizer,
                                sess->kv_state, req.prompt, &gen_cfg,
                                &sess->cached_text,
                                &sess->cached_tokens, &sess->n_cached,
                                &sess->cached_capacity,
                                output, sizeof(output));
+        if (gen_rc == -2) {
+            /* Context overflow — auto-reset session and surface error.
+             * Client should retry with a shorter conversation history. */
+            LOG_ERROR("Session %s: context overflow, auto-reset", sess->id);
+            tq_free_state(sess->kv_state);
+            sess->kv_state = tq_create_state_ex(
+                &server->config.model->config, gen_cfg.kv_type, gen_cfg.value_quant_bits);
+            if (sess->cached_tokens) { free(sess->cached_tokens); sess->cached_tokens = NULL; }
+            sess->n_cached = 0; sess->cached_capacity = 0;
+            if (sess->cached_text) { free(sess->cached_text); sess->cached_text = NULL; }
+        }
 
         /* Send final chunk with finish_reason */
         char final_chunk[SSE_CHUNK_SIZE];
@@ -817,12 +828,30 @@ static void handle_chat_completions(tq_server_t* server, int fd, const char* bod
         kv_session_t* sess = get_or_create_session(server, req.session_id,
                                                     gen_cfg.kv_type,
                                                     gen_cfg.value_quant_bits);
-        tq_generate_chat_text(server->config.model, server->config.tokenizer,
+        int gen_rc = tq_generate_chat_text(server->config.model, server->config.tokenizer,
                                sess->kv_state, req.prompt, &gen_cfg,
                                &sess->cached_text,
                                &sess->cached_tokens, &sess->n_cached,
                                &sess->cached_capacity,
                                output, sizeof(output));
+        if (gen_rc == -2) {
+            /* Context overflow — return HTTP 413 instead of garbage. */
+            LOG_ERROR("Session %s: context overflow, returning 413", sess->id);
+            tq_free_state(sess->kv_state);
+            sess->kv_state = tq_create_state_ex(
+                &server->config.model->config, gen_cfg.kv_type, gen_cfg.value_quant_bits);
+            if (sess->cached_tokens) { free(sess->cached_tokens); sess->cached_tokens = NULL; }
+            sess->n_cached = 0; sess->cached_capacity = 0;
+            if (sess->cached_text) { free(sess->cached_text); sess->cached_text = NULL; }
+            free(collect.buf);
+            pthread_mutex_unlock(&server->inference_mutex);
+            free_chat_request(&req);
+            send_json(fd, 413, "Payload Too Large",
+                "{\"error\":{\"message\":\"Conversation history exceeds context window. "
+                "Session has been reset; please retry with a shorter history.\","
+                "\"type\":\"context_overflow\",\"code\":\"context_full\"}}");
+            return;
+        }
 
         const char* content = collect.buf ? collect.buf : "";
 

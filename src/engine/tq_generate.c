@@ -603,12 +603,17 @@ int tq_generate(tq_model_t* model, tq_tokenizer_t* tokenizer,
 }
 
 /* ============================================================================
- * tq_generate_continue — chat-mode generation with KV cache reuse.
+ * tq_generate_continue — chat-mode generation with KV cache reuse (token LCP).
  *
  * Caller-managed state: state and cached_tokens persist across calls.
  * Each call computes the longest common prefix between cached_tokens and
  * the new prompt, prefills only the diverging suffix, and updates the
  * cache record. Turns chat from O(history^2) into O(new_tokens_per_turn).
+ *
+ * NOTE: This is a lower-level API. It does NOT track cached_text. If a
+ * sliding window triggers (n_cached_io is reset to 0), any out-of-band
+ * cached_text the caller maintains becomes stale. Higher-level callers
+ * should use tq_generate_chat_text instead, which handles this safely.
  * ============================================================================ */
 static int tq_lcp_int(const int* a, int na, const int* b, int nb) {
     int lim = na < nb ? na : nb;
@@ -918,22 +923,28 @@ int tq_generate_chat_text(tq_model_t* model,
             if (n_suffix < 0) n_suffix = 0;
         }
 
-        /* Sliding window if needed (drop from start of cached) */
+        /* Context overflow check.
+         * The previous "fall back to tq_generate_continue with full
+         * reprefill" approach was UNSAFE: state already had the previous
+         * KV at positions [0..prefix_pos), and tq_generate_continue would
+         * write new positions [0..n_new), leaving stale KV at positions
+         * [n_new..prefix_pos) that subsequent generation might read.
+         *
+         * Correct behavior: return -2 (overflow) and let the caller
+         * decide — most callers should reset the chat and retry with a
+         * shorter prompt. Server can return HTTP 413, Python can raise
+         * an exception, WASM can show an error to the user. */
         int reserve = config->max_tokens > 0 ? config->max_tokens : 256;
         if (prefix_pos + n_suffix + reserve + 32 > max_prompt) {
-            /* Force a full reprefill — simpler than partial cache shift */
             free(suffix_toks);
             config->on_token = orig_cb; config->user_data = orig_ud;
-            *n_cached_io = 0;
-            if (cached_text_io && *cached_text_io) {
-                free(*cached_text_io); *cached_text_io = NULL;
+            if (accum.buf) free(accum.buf);
+            if (getenv("TQ_CHAT_DEBUG")) {
+                fprintf(stderr,
+                    "[chat-text] OVERFLOW prefix_pos=%d n_suffix=%d reserve=%d max=%d\n",
+                    prefix_pos, n_suffix, reserve, max_prompt);
             }
-            int n2 = tq_generate_continue(model, tokenizer, state, prompt, config,
-                                           cached_tokens_io, n_cached_io, cached_capacity_io,
-                                           output, output_size);
-            /* fall-through path captures cached_text below */
-            generated = n2;
-            goto update_cache;
+            return -2;
         }
 
         /* Grow cache buffer */
