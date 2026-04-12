@@ -191,17 +191,25 @@ def _literal_verify(
     if not q_ok:
         return "CONTRADICTED", f"question not grounded ({q_reason}) — likely wrong chunk"
 
-    # Day 5: detect "I don't know" / "not provided" answers — these should
-    # never be CONFIDENT. The model is explicitly saying it couldn't find
-    # the answer, so send it back to RESEARCH for a different chunk.
+    # Day 5: detect "I don't know" / "not provided" refusal answers.
+    # These should never be CONFIDENT — the model is saying it couldn't
+    # find the answer, so send it back to RESEARCH for a different chunk.
+    #
+    # Production hardening: only detect refusal when the phrase appears
+    # in the FIRST 120 chars of the answer (not embedded in a valid
+    # quoted sentence like "The study does not provide evidence for...").
+    # Also require the answer to be SHORT (< 200 chars) — long answers
+    # that happen to contain a refusal phrase are likely real content.
     answer_lower = answer.lower()
+    answer_head = answer_lower[:120]
     refusal_phrases = [
-        "does not provide", "not provide", "no information",
-        "not contain", "not mention", "cannot determine",
-        "unable to", "not specified", "not stated", "not available",
-        "i don't know", "i'm not sure", "unclear",
+        "does not provide", "no information", "not contain the answer",
+        "cannot determine", "unable to find", "unable to determine",
+        "not specified in", "not stated in", "not available in",
+        "i don't know", "i'm not sure", "no relevant information",
+        "the text does not", "the passage does not",
     ]
-    if any(p in answer_lower for p in refusal_phrases):
+    if len(answer) < 200 and any(p in answer_head for p in refusal_phrases):
         return "UNSURE", f"answer is a refusal ('{answer[:60]}...')"
 
     word_terms, number_terms = _extract_answer_key_terms(answer)

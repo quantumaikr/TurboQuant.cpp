@@ -228,6 +228,10 @@ def llm_call(
     if _server_url is None:
         start_server(model=model)
 
+    # Validate max_tokens
+    if max_tokens <= 0:
+        max_tokens = 64
+
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
@@ -260,12 +264,26 @@ def llm_call(
                          elapsed=elapsed, is_error=True)
     elapsed = time.time() - t0
 
+    # Robust JSON response parsing — handle malformed/incomplete responses
     text = ""
     n_tokens = 0
-    if "choices" in payload and payload["choices"]:
-        msg = payload["choices"][0].get("message", {})
-        text = msg.get("content", "").strip()
-    if "usage" in payload:
-        n_tokens = payload["usage"].get("completion_tokens", 0)
+    is_error = False
+    try:
+        choices = payload.get("choices")
+        if choices and isinstance(choices, list) and len(choices) > 0:
+            msg = choices[0].get("message") or choices[0].get("delta") or {}
+            text = (msg.get("content") or "").strip()
+        usage = payload.get("usage")
+        if usage and isinstance(usage, dict):
+            n_tokens = usage.get("completion_tokens", 0)
+    except (KeyError, TypeError, IndexError, AttributeError):
+        is_error = True
+        text = f"[ERROR: malformed response: {str(payload)[:200]}]"
 
-    return LLMResult(text=text, raw=json.dumps(payload), n_tokens=n_tokens, elapsed=elapsed)
+    if not text and not is_error:
+        # Server returned empty content — treat as soft error
+        is_error = True
+        text = "[ERROR: empty response from server]"
+
+    return LLMResult(text=text, raw=json.dumps(payload) if isinstance(payload, dict) else str(payload),
+                     n_tokens=n_tokens, elapsed=elapsed, is_error=is_error)

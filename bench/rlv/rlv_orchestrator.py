@@ -77,6 +77,16 @@ def answer_question(
 ) -> dict:
     """Run the full RLV pipeline. Returns a dict with the final answer
     and per-stage diagnostic info."""
+    # Input validation — fail fast with clear errors
+    if not doc_text or not isinstance(doc_text, str):
+        return {"question": question or "", "final_answer": "[ERROR: empty or invalid document]",
+                "confidence": "none", "research": {"verdict": "ERROR", "n_retries": 0, "attempts": []},
+                "timings": {}, "gist_n_chunks": 0}
+    if not question or not isinstance(question, str) or not question.strip():
+        return {"question": "", "final_answer": "[ERROR: empty or invalid question]",
+                "confidence": "none", "research": {"verdict": "ERROR", "n_retries": 0, "attempts": []},
+                "timings": {}, "gist_n_chunks": 0}
+
     t_start = time.time()
     timings = {}
 

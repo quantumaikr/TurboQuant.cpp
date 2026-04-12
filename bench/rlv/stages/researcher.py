@@ -65,6 +65,20 @@ def research(
             break
 
         new_lookup = lookup.lookup(question, new_region, doc_text, verbose=verbose)
+
+        # Skip verification if lookup returned an error (server crash/timeout)
+        if new_lookup.method == "error":
+            if verbose:
+                print(f"[researcher] lookup error on chunk {new_region.chunk_id}, skipping")
+            excluded.append(new_region.chunk_id)
+            attempts.append({
+                "chunk": new_region.chunk_id,
+                "answer": new_lookup.answer,
+                "verdict": "ERROR",
+                "reason": "lookup error",
+            })
+            continue
+
         new_verify = verifier.verify(
             question, new_lookup.answer, gist,
             region_text=new_lookup.region_text,

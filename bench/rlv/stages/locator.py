@@ -285,7 +285,9 @@ def _bm25_score_chunks(question: str, gist: Gist, excluded: List[int],
                      (len(w) >= 3 and len(term) >= 3 and
                       w[:min(4, len(w))] == term[:min(4, len(term))]))
             n = df.get(term, 0)
-            idf = math.log((N - n + 0.5) / (n + 0.5) + 1.0) if n < N else 0.0
+            # Standard BM25 IDF: log((N-n+0.5)/(n+0.5)+1). Terms appearing
+            # in ALL chunks (n==N) get idf=0 (no discriminating power).
+            idf = max(0.0, math.log((N - n + 0.5) / (n + 0.5) + 1.0)) if n < N else 0.0
             denom = tf + k1 * (1 - b + b * dl / max(avg_dl, 1))
             tf_norm = (tf * (k1 + 1)) / max(denom, 1e-9)
             score += idf * tf_norm
@@ -402,7 +404,11 @@ def locate(
         print(f"[locator] bm25   top3: {bm25_scores[:3]}")
 
     # --- Step 3: Reciprocal Rank Fusion (keyword + BM25) ---
-    rrf_k = 60
+    # RRF k parameter: controls how much the top ranks dominate.
+    # Standard k=60 works for <100 chunks. For very large documents
+    # (400+ chunks), increase k to preserve ranking discrimination.
+    n_chunks = len(kw_scores)
+    rrf_k = 60 if n_chunks < 100 else min(n_chunks, 200)
     rrf = {}
     for rank, (cid, _) in enumerate(kw_scores):
         rrf[cid] = rrf.get(cid, 0) + 1.0 / (rrf_k + rank)
