@@ -247,7 +247,55 @@ def _keyword_locate(
 
 
 # ----------------------------------------------------------------------------
-# LLM fallback (only fires when keyword scoring is ambiguous)
+# BM25 scoring (Strategy 1: TF-IDF weighted term matching)
+# ----------------------------------------------------------------------------
+import math
+
+def _bm25_score_chunks(question: str, gist: Gist, excluded: List[int],
+                        k1: float = 1.5, b: float = 0.75) -> List[Tuple[int, float]]:
+    """BM25 scoring: TF-IDF weighted keyword matching.
+    Unlike simple keyword overlap, BM25 penalizes common terms and
+    rewards rare terms — 'Mercury Fur' gets a huge boost because it
+    appears in very few chunks, while 'the' gets zero."""
+    q_terms = [w for w in _normalize(question).split()
+               if len(w) >= 3 and w not in STOPWORDS and w not in LOW_SIGNAL_TERMS]
+    if not q_terms:
+        return [(c.chunk_id, 0.0) for c in gist.chunks if c.chunk_id not in excluded]
+
+    chunks = [c for c in gist.chunks if c.chunk_id not in excluded]
+    N = len(chunks)
+    if N == 0:
+        return []
+
+    # Document frequency for each term
+    texts = [_normalize(c.full_text or c.head_text) for c in chunks]
+    avg_dl = sum(len(t.split()) for t in texts) / max(N, 1)
+
+    df = {}
+    for term in q_terms:
+        df[term] = sum(1 for t in texts if _word_in_text(term, t))
+
+    scores = []
+    for i, chunk in enumerate(chunks):
+        doc_words = texts[i].split()
+        dl = len(doc_words)
+        score = 0.0
+        for term in q_terms:
+            tf = sum(1 for w in doc_words if w == term or
+                     (len(w) >= 3 and len(term) >= 3 and
+                      w[:min(4, len(w))] == term[:min(4, len(term))]))
+            n = df.get(term, 0)
+            idf = math.log((N - n + 0.5) / (n + 0.5) + 1.0) if n < N else 0.0
+            tf_norm = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * dl / max(avg_dl, 1)))
+            score += idf * tf_norm
+        scores.append((chunk.chunk_id, score))
+
+    scores.sort(key=lambda x: x[1], reverse=True)
+    return scores
+
+
+# ----------------------------------------------------------------------------
+# LLM classification (Strategy 2: always-on, not just fallback)
 # ----------------------------------------------------------------------------
 _NUM_RE = re.compile(r"\b(\d+)\b")
 
@@ -271,10 +319,11 @@ def _llm_locate(
     gist: Gist,
     excluded: List[int],
     candidate_ids: List[int],
+    verbose: bool = False,
 ) -> int:
-    """Ask the LLM to choose among the top candidate chunks. Day 3:
-    candidates presented as 1-indexed CHOICE numbers (decoupled from
-    chunk_ids) so the parser doesn't pick up document-internal integers."""
+    """Ask the LLM to classify which chunk contains the answer.
+    Day 5: always-on LLM classification (not just fallback).
+    Shows first 2 sentences per chunk for better context."""
     available = [cid for cid in candidate_ids if cid not in excluded]
     if not available:
         return -1
@@ -282,14 +331,18 @@ def _llm_locate(
     lines = []
     for choice_num, cid in enumerate(available, start=1):
         chunk = gist.chunks[cid]
-        head = chunk.head_text.replace("\n", " ").strip()
-        head = re.sub(r"^section\s*\d+\s*[:.\-]\s*", "", head, flags=re.IGNORECASE)
-        if len(head) > 180:
-            head = head[:180] + "…"
-        lines.append(f"Choice {choice_num}: {head}")
+        text = (chunk.full_text or chunk.head_text).replace("\n", " ").strip()
+        # Show first 2 sentences (more context than just head)
+        sents = re.split(r'(?<=[.!?])\s+', text)
+        preview = " ".join(sents[:2])
+        if len(preview) > 250:
+            preview = preview[:250] + "..."
+        lines.append(f"[{choice_num}] {preview}")
     outline = "\n".join(lines)
     prompt = LOCATOR_LLM_PROMPT_TEMPLATE.format(outline=outline, question=question)
     result = _llm.llm_call(prompt, max_tokens=8)
+    if verbose:
+        print(f"[locator-llm] response: {result.text!r}")
     choice = _parse_locator_response(result.text, len(available) + 1)
     if choice < 1 or choice > len(available):
         return -1
@@ -327,51 +380,69 @@ def locate(
             char_start=chunk.char_start, char_end=chunk.char_end, score=0.0,
         )
 
-    best_id, best_score, all_scores = _keyword_locate(question, gist, excluded)
-    second_score = all_scores[1][1] if len(all_scores) > 1 else 0.0
-    margin = best_score - second_score
+    # --- Step 1: Keyword scoring ---
+    best_id, best_score, kw_scores = _keyword_locate(question, gist, excluded)
+
+    # --- Step 2: BM25 scoring ---
+    bm25_scores = _bm25_score_chunks(question, gist, excluded)
 
     if verbose:
-        print(f"[locator] keyword scores top3: {all_scores[:3]} (margin={margin:.2f})")
+        print(f"[locator] keyword top3: {kw_scores[:3]}")
+        print(f"[locator] bm25   top3: {bm25_scores[:3]}")
 
-    method = "keyword"
-    chosen = best_id
+    # --- Step 3: Reciprocal Rank Fusion (keyword + BM25) ---
+    rrf_k = 60
+    rrf = {}
+    for rank, (cid, _) in enumerate(kw_scores):
+        rrf[cid] = rrf.get(cid, 0) + 1.0 / (rrf_k + rank)
+    for rank, (cid, _) in enumerate(bm25_scores):
+        rrf[cid] = rrf.get(cid, 0) + 1.0 / (rrf_k + rank)
+    rrf_ranked = sorted(rrf.items(), key=lambda x: x[1], reverse=True)
 
-    if best_score >= 2.0 and margin >= 1.0:
-        confidence = "high"
-    elif best_score >= 1.0 and margin >= 0.5:
-        confidence = "medium"
-    else:
-        scored = [(cid, s) for cid, s in all_scores if s > 0]
-        candidate_ids = [cid for cid, _ in scored[:3]]
-        if len(candidate_ids) < 2:
-            confidence = "low"
-            chunk = gist.chunks[chosen]
-            return RegionPointer(
-                chunk_id=chosen, confidence=confidence,
-                candidates=[cid for cid, _ in all_scores[:3]],
-                char_start=chunk.char_start, char_end=chunk.char_end,
-                score=best_score, method="keyword",
-            )
-        if verbose:
-            print(f"[locator] keyword ambiguous (best={best_score:.2f}, "
-                  f"margin={margin:.2f}), invoking LLM fallback over {candidate_ids}")
-        llm_choice = _llm_locate(question, gist, excluded, candidate_ids)
-        if llm_choice >= 0 and llm_choice not in excluded:
+    if verbose:
+        print(f"[locator] rrf    top3: {rrf_ranked[:3]}")
+
+    # --- Step 4: LLM classification on top candidates ---
+    # Always run LLM on the top 5 RRF candidates (not just when ambiguous)
+    top_candidates = [cid for cid, _ in rrf_ranked[:5]]
+    llm_choice = _llm_locate(question, gist, excluded, top_candidates, verbose=verbose)
+
+    rrf_top1 = rrf_ranked[0][0]
+    rrf_top1_score = rrf_ranked[0][1]
+    rrf_top2_score = rrf_ranked[1][1] if len(rrf_ranked) > 1 else 0.0
+    rrf_margin = (rrf_top1_score - rrf_top2_score) / max(rrf_top1_score, 0.001)
+
+    if llm_choice >= 0 and llm_choice not in excluded:
+        if llm_choice == rrf_top1:
+            # LLM and RRF agree — high confidence
             chosen = llm_choice
-            method = "keyword+llm"
+            method = "rrf+llm"
+            confidence = "high"
+        elif rrf_margin < 0.15:
+            # RRF is close — trust LLM to break the tie
+            chosen = llm_choice
+            method = "rrf+llm-override"
             confidence = "medium"
         else:
-            method = "keyword"
-            confidence = "low"
+            # RRF has a clear winner — trust RRF over LLM
+            chosen = rrf_top1
+            method = "rrf(llm-overruled)"
+            confidence = "high"
+    else:
+        chosen = rrf_top1
+        method = "rrf"
+        confidence = "medium" if rrf_margin > 0.1 else "low"
+
+    if verbose:
+        print(f"[locator] chosen: chunk {chosen} via {method} (confidence={confidence})")
 
     chunk = gist.chunks[chosen]
     return RegionPointer(
         chunk_id=chosen,
         confidence=confidence,
-        candidates=[cid for cid, _ in all_scores[:3]],
+        candidates=[cid for cid, _ in rrf_ranked[:3]],
         char_start=chunk.char_start,
         char_end=chunk.char_end,
-        score=best_score,
+        score=rrf.get(chosen, 0.0),
         method=method,
     )
