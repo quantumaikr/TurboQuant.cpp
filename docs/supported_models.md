@@ -112,6 +112,45 @@ Phi-3.5-mini at the recommended Q4_K_M quantization clocks in at
 fastest of any model in the registry — the best speed/quality combo
 quant.cpp ships.
 
+## Choosing a 3B-4B model: Phi-4-mini vs Qwen3.5-4B vs Gemma-4-E2B
+
+For users who want more quality than SmolLM2-1.7B, here are the three
+main contenders in the 3B-4B class and when to pick each:
+
+| | Phi-3.5-mini | Phi-4-mini | Qwen3.5-4B | Gemma 4 E2B |
+|---|---|---|---|---|
+| **Params** | 3.8B | 3.8B | 4B | ~2.3B eff |
+| **Vocab** | **32K** | 200K | 248K | 262K |
+| **Q4 size** | 2.4 GB | 2.5 GB | 2.6 GB | 3.2 GB |
+| **Speed** | **Fastest** | Moderate | Moderate | Moderate |
+| **Quality** | Good | Better (math +14) | **Best overall** | Good |
+| **Korean/CJK** | Basic | Improved | **Excellent** | Good |
+| **Context** | 128K | 128K | **262K** | 128K |
+| **Multimodal** | No | No | No | **Yes** |
+| **quant.cpp** | **Supported** | Likely works | Partial | Partial |
+
+### Pick by priority
+
+- **"I want fastest response"** → **Phi-3.5-mini** — 32K vocab = smallest lm_head, ~8 tok/s on M3
+- **"I want best text quality"** → **Qwen3.5-4B** — highest benchmarks, 262K context, DeltaNet hybrid saves 75% KV memory (partial support, improving)
+- **"I want strong math and code"** → **Phi-4-mini** — HumanEval 74.4, MATH 64.0 (needs testing in quant.cpp)
+- **"I need images/audio/video"** → **Gemma 4 E2B** — only multimodal option at this size (partial support)
+- **"I need Korean/Chinese/Japanese"** → **Qwen3.5-4B** — purpose-built CJK tokenizer
+
+### The vocab trade-off
+
+| Vocab | Relative lm_head cost | Example |
+|------:|:---------------------:|---------|
+| 32K | 1x (baseline) | Phi-3.5-mini |
+| 49K | 1.5x | SmolLM2-1.7B |
+| 200K | 6x | Phi-4-mini |
+| 248K | 7.7x | Qwen3.5-4B |
+| 262K | 8.2x | Gemma 4 E2B |
+
+Smaller vocab = faster generation. A 3.8B model with 32K vocab can be
+faster than a 1B model with 128K vocab — tested and confirmed on
+Apple M3.
+
 ## Reporting an unsupported model
 
 If you tried a model that's not in the matrix above, please open an
