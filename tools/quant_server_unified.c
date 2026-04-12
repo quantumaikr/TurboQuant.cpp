@@ -368,18 +368,14 @@ static void handle_request(server_t* srv, int fd) {
 
         pthread_mutex_lock(&srv->mutex);
 
-        /* Update config for this request */
-        quant_free_ctx(srv->ctx);
-        quant_config cfg = {
-            .temperature = temperature,
-            .top_p = 0.9f,
-            .max_tokens = max_tokens,
-            .n_threads = srv->n_threads,
-            .kv_compress = 0,
-            .context_length = 0,
-            .k_highres_window = 0,
-        };
-        srv->ctx = quant_new(srv->model, &cfg);
+        /* Reuse context across requests — only update per-request config.
+         * The old code called quant_free_ctx + quant_new per request,
+         * which re-parsed the tokenizer (32K tokens from GGUF!) and
+         * double-allocated state buffers. quant_generate() internally
+         * resets the KV state anyway, so we only need to update
+         * temperature and max_tokens on the existing context. */
+        srv->ctx->config.temperature = temperature;
+        srv->ctx->config.max_tokens = max_tokens;
 
         if (stream) {
             /* SSE streaming */
