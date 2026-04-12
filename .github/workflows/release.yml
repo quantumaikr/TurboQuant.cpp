@@ -32,6 +32,7 @@ jobs:
           mkdir -p quant.cpp-macos-arm64
           cp build/quant quant.cpp-macos-arm64/
           cp build/quant-server quant.cpp-macos-arm64/
+          cp build/quant-server-unified quant.cpp-macos-arm64/ 2>/dev/null || true
           cp LICENSE quant.cpp-macos-arm64/ 2>/dev/null || true
           cp README.md quant.cpp-macos-arm64/ 2>/dev/null || true
           tar czf quant.cpp-macos-arm64.tar.gz quant.cpp-macos-arm64/
@@ -59,6 +60,7 @@ jobs:
           mkdir -p quant.cpp-linux-x86_64
           cp build/quant quant.cpp-linux-x86_64/
           cp build/quant-server quant.cpp-linux-x86_64/
+          cp build/quant-server-unified quant.cpp-linux-x86_64/ 2>/dev/null || true
           cp LICENSE quant.cpp-linux-x86_64/ 2>/dev/null || true
           cp README.md quant.cpp-linux-x86_64/ 2>/dev/null || true
           tar czf quant.cpp-linux-x86_64.tar.gz quant.cpp-linux-x86_64/

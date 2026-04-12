@@ -6,6 +6,50 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [v0.13.0] — 2026-04-12
+
+### Highlights
+
+**Phi-3 / Phi-3.5 architecture fully supported** — the highest-value model quant.cpp was missing. Phi-3.5-mini (3.8B params, vocab 32K) is now the recommended default, delivering the best speed/quality combo:
+
+```bash
+pip install quantcpp
+quantcpp                  # downloads Phi-3.5-mini Q8_0 (~3.8 GB), starts chat
+```
+
+### Added
+- **Phi-3 / Phi-3.5 architecture support** — fused QKV projection, fused gate+up FFN, LongRoPE with NeoX-style rotation. Validated end-to-end on Phi-3.5-mini-instruct-Q4_K_M and Q8_0.
+- **Phi-3.5-mini as default model** — replaces SmolLM2-1.7B as the recommended model. Q8_0 variant is 2x faster than Q4_K_M on Apple Silicon NEON (3.0 vs 1.5 tok/s).
+- **ChatML template marker filter** — 32-byte lookahead filter in `chat_accum_callback` catches BPE-split markers (`<|im_start|>`, `<|im_end|>`, `<end_of_turn>` etc.) across token boundaries. Prevents template tokens from leaking into chat output.
+- **Unsupported architecture hard-fail** — loading a model with fused QKV that quant.cpp can't handle (e.g., before Phi-3 support) now fails fast with a clear error message instead of silently producing garbage tokens.
+- **quant-server-unified** — new server binary built directly on `quant.h` (single-header amalgamation). Eliminates divergence between `quant.h` and `libturboquant` split sources. CLI `quantcpp serve` now prefers this binary.
+- **SmolLM2-1.7B** and **Phi-3.5-mini** added to `_MODEL_REGISTRY` with CLI aliases (`smollm2`, `phi3.5`, `phi-3.5-mini` etc.).
+- **`ChatContextOverflow` exception** — Python `Model.chat()` now raises a typed exception on context overflow instead of silently returning empty output.
+- **`docs/supported_models.md`** — architecture compatibility matrix, vocab-size speed guide, model selection recommendations.
+- **`tools/gguf_inspect.c`** — GGUF tensor/metadata inspector for architecture debugging.
+
+### Fixed
+- **16 chat-cache bugs eliminated** (PRs #52, #53) — two audit passes found hidden bugs in KV cache prefix matching, text accumulation, server session management, WASM state handling.
+- **`tq_generate_continue` overflow** — sliding-window truncation silently desynced `cached_text` from KV positions → garbage on long histories. Now returns `-2` on overflow.
+- **`chat_accum_callback` realloc failure** — silently dropped tokens AND skipped user callback. Now always passes tokens through; marks accumulator tainted.
+- **Server error handling** — `gen_rc == -1` produced HTTP 200 with empty content; now returns HTTP 500 with error JSON. Streaming sends `finish_reason: "error"`.
+- **Server session kv_type mismatch** — reusing a session ID with different `kv_type`/`value_quant_bits` corrupted KV blocks. Now detects and rebuilds.
+- **WASM `wasm_load_model`** — didn't reset `g_generating` flag → stuck busy after interrupted run.
+- **`rep_penalty` in fast-path** — silently ignored in `tq_generate_chat_text`'s fast path (slow path applied it). Now consistent.
+- **BOS token for Phi-3/Llama** — `<s>` added to BOS lookup chain. Phi-3 produces garbage without BOS.
+- **Python CLI overflow handling** — `cmd_run` caught `ChatContextOverflow`, drops oldest turn, retries.
+
+### Changed
+- Default model: `Llama-3.2-1B` → `SmolLM2-1.7B` → **`Phi-3.5-mini` Q8_0**.
+- CLI examples and README quickstart updated to use Phi-3.5-mini.
+- Metal GPU dispatch disabled for fused-tensor models (CPU is faster for sub-4B).
+
+### Performance
+- **Phi-3.5-mini Q8_0**: 3.0 tok/s on Apple M3 (2x faster than Q4_K_M).
+- **Chat KV cache reuse**: turn N+1 prefill is O(new tokens), not O(history). ~50% latency reduction on multi-turn chat.
+
+---
+
 ## [v0.3.0] — 2026-04-01
 
 ### Highlights

@@ -27,7 +27,7 @@ try:
     from importlib.metadata import version as _pkg_version
     __version__ = _pkg_version("quantcpp")
 except Exception:
-    __version__ = "0.12.1"  # fallback for editable / source-tree imports
+    __version__ = "0.13.0"  # fallback for editable / source-tree imports
 
 import os
 import sys
