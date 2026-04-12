@@ -834,34 +834,163 @@ int tq_generate_continue(tq_model_t* model,
  * exactly like tq_generate_continue.
  * ============================================================================ */
 
+/* ChatML / template-marker filter ----------------------------------------
+ *
+ * The model can generate template tokens like `<|im_start|>`, `<|im_end|>`,
+ * `<end_of_turn>`, etc. as REGULAR text bytes (not special tokens). When
+ * that happens the BPE tokenizer fragments them across multiple tokens,
+ * and a per-token strstr check (like the existing `should_stop` logic)
+ * never matches. The user sees the marker leak into their stream.
+ *
+ * This filter holds the most recent CHAT_LOOKAHEAD bytes of generated
+ * text in `pending` and only flushes bytes that are guaranteed to NOT
+ * be the start of a marker. When a full marker is matched:
+ *   - `<|im_start|>` at the very beginning of the response → header
+ *     skip mode (drop until next '\n').
+ *   - any END marker → emit prefix, drop the rest, set stop_requested.
+ *
+ * Mirrored byte-for-byte with the version in quant.h. ---------------------- */
+#define CHAT_PENDING_CAP 128
+#define CHAT_LOOKAHEAD   32
+
 typedef struct {
     char*  buf;
     size_t len;
     size_t cap;
-    int    tainted;   /* 1 if accumulation ever failed → buf is incomplete */
+    int    tainted;
+    char   pending[CHAT_PENDING_CAP];
+    int    pending_len;
+    int    in_header;
+    int    stop_requested;
     void (*user_cb)(const char*, void*);
     void*  user_data;
 } chat_accum_t;
 
-static void chat_accum_callback(const char* tok, void* u) {
-    chat_accum_t* ctx = (chat_accum_t*)u;
-    if (!tok) return;
-    /* Always pass through to the user's callback first — losing tokens
-     * from the user's stream because of an INTERNAL realloc failure is
-     * far worse than a stale cached_text on the next turn. */
-    if (ctx->user_cb) ctx->user_cb(tok, ctx->user_data);
+static void chat_accum_emit(chat_accum_t* ctx, const char* p, int n) {
+    if (n <= 0) return;
+    char tmp[CHAT_PENDING_CAP + 1];
+    if (n > CHAT_PENDING_CAP) n = CHAT_PENDING_CAP;
+    memcpy(tmp, p, (size_t)n);
+    tmp[n] = '\0';
+    if (ctx->user_cb) ctx->user_cb(tmp, ctx->user_data);
     if (ctx->tainted) return;
-    size_t tlen = strlen(tok);
-    if (ctx->len + tlen + 1 > ctx->cap) {
-        size_t new_cap = (ctx->cap + tlen + 64) * 2;
+    if (ctx->len + (size_t)n + 1 > ctx->cap) {
+        size_t new_cap = (ctx->cap + (size_t)n + 64) * 2;
         char* nb = (char*)realloc(ctx->buf, new_cap);
         if (!nb) { ctx->tainted = 1; return; }
-        ctx->buf = nb;
-        ctx->cap = new_cap;
+        ctx->buf = nb; ctx->cap = new_cap;
     }
-    memcpy(ctx->buf + ctx->len, tok, tlen);
-    ctx->len += tlen;
+    memcpy(ctx->buf + ctx->len, tmp, (size_t)n);
+    ctx->len += (size_t)n;
     ctx->buf[ctx->len] = '\0';
+}
+
+static void chat_accum_drop(chat_accum_t* ctx, int n) {
+    if (n <= 0) return;
+    if (n > ctx->pending_len) n = ctx->pending_len;
+    memmove(ctx->pending, ctx->pending + n,
+            (size_t)(ctx->pending_len - n));
+    ctx->pending_len -= n;
+}
+
+static int chat_find_marker(const char* h, int hlen, const char* m) {
+    int mlen = (int)strlen(m);
+    if (hlen < mlen) return -1;
+    for (int p = 0; p + mlen <= hlen; p++) {
+        if (h[p] == m[0] && memcmp(h + p, m, (size_t)mlen) == 0) return p;
+    }
+    return -1;
+}
+
+static const char* const CHAT_END_MARKERS[] = {
+    "<|im_end|>", "<|eot_id|>", "<end_of_turn>", "<|endoftext|>",
+    "<|im_start|>", "<|start_header_id|>", "<|eom_id|>",
+    NULL,
+};
+
+static void chat_accum_callback(const char* tok, void* u) {
+    chat_accum_t* ctx = (chat_accum_t*)u;
+    if (!tok || ctx->stop_requested) return;
+    int tlen = (int)strlen(tok);
+    if (tlen == 0) return;
+
+    if (ctx->pending_len + tlen > CHAT_PENDING_CAP) {
+        int emit = ctx->pending_len - CHAT_LOOKAHEAD;
+        if (emit > 0) {
+            if (!ctx->in_header) chat_accum_emit(ctx, ctx->pending, emit);
+            chat_accum_drop(ctx, emit);
+        }
+    }
+    if (tlen > CHAT_PENDING_CAP) {
+        if (!ctx->in_header) {
+            chat_accum_emit(ctx, ctx->pending, ctx->pending_len);
+            chat_accum_emit(ctx, tok, tlen);
+        }
+        ctx->pending_len = 0;
+        return;
+    }
+    memcpy(ctx->pending + ctx->pending_len, tok, (size_t)tlen);
+    ctx->pending_len += tlen;
+
+    int progress = 1;
+    while (progress) {
+        progress = 0;
+        if (ctx->in_header) {
+            int nl = -1;
+            for (int i = 0; i < ctx->pending_len; i++) {
+                if (ctx->pending[i] == '\n') { nl = i; break; }
+            }
+            if (nl >= 0) {
+                chat_accum_drop(ctx, nl + 1);
+                ctx->in_header = 0;
+                progress = 1;
+            } else {
+                ctx->pending_len = 0;
+                return;
+            }
+        }
+        int em_pos = -1;
+        const char* em_str = NULL;
+        for (int i = 0; CHAT_END_MARKERS[i]; i++) {
+            int p = chat_find_marker(ctx->pending, ctx->pending_len,
+                                       CHAT_END_MARKERS[i]);
+            if (p >= 0 && (em_pos < 0 || p < em_pos)) {
+                em_pos = p; em_str = CHAT_END_MARKERS[i];
+            }
+        }
+        if (em_pos >= 0) {
+            if (em_pos == 0 && ctx->len == 0 && em_str &&
+                strcmp(em_str, "<|im_start|>") == 0) {
+                chat_accum_drop(ctx, 12);
+                ctx->in_header = 1;
+                progress = 1;
+                continue;
+            }
+            if (em_pos > 0) {
+                chat_accum_emit(ctx, ctx->pending, em_pos);
+            }
+            ctx->pending_len = 0;
+            ctx->stop_requested = 1;
+            return;
+        }
+    }
+
+    if (!ctx->in_header && ctx->pending_len > CHAT_LOOKAHEAD) {
+        int emit = ctx->pending_len - CHAT_LOOKAHEAD;
+        chat_accum_emit(ctx, ctx->pending, emit);
+        chat_accum_drop(ctx, emit);
+    }
+}
+
+static void chat_accum_finish(chat_accum_t* ctx) {
+    if (ctx->in_header) {
+        ctx->pending_len = 0;
+        return;
+    }
+    if (ctx->pending_len > 0) {
+        chat_accum_emit(ctx, ctx->pending, ctx->pending_len);
+        ctx->pending_len = 0;
+    }
 }
 
 int tq_generate_chat_text(tq_model_t* model,
@@ -905,9 +1034,10 @@ int tq_generate_chat_text(tq_model_t* model,
 
     /* Wrap user callback to capture generated text into a buffer for the
      * next call's cached_text update. */
-    chat_accum_t accum = { .buf = NULL, .len = 0, .cap = 0, .tainted = 0,
-                            .user_cb = config->on_token,
-                            .user_data = config->user_data };
+    chat_accum_t accum;
+    memset(&accum, 0, sizeof(accum));
+    accum.user_cb = config->on_token;
+    accum.user_data = config->user_data;
     void (*orig_cb)(const char*, void*) = config->on_token;
     void*  orig_ud = config->user_data;
     config->on_token = chat_accum_callback;
@@ -1039,6 +1169,9 @@ int tq_generate_chat_text(tq_model_t* model,
 
             int piece_len = (int)strlen(piece ? piece : "");
             if (config->on_token && piece) config->on_token(piece, config->user_data);
+            /* The chat_accum filter may have detected an end marker
+             * spanning multiple tokens — break before forwarding more. */
+            if (accum.stop_requested) break;
             if (output && piece && output_pos + piece_len < output_size - 1) {
                 memcpy(output + output_pos, piece, piece_len);
                 output_pos += piece_len;
@@ -1087,6 +1220,11 @@ int tq_generate_chat_text(tq_model_t* model,
             cached_tokens_io, n_cached_io, cached_capacity_io,
             output, output_size);
     }
+
+    /* Drain the marker filter's lookahead buffer before reading
+     * accum.buf for the cached_text update. Without this, the last
+     * ~32 bytes of clean output would be silently lost. */
+    chat_accum_finish(&accum);
 
     /* Restore the original callback before returning to caller */
     config->on_token = orig_cb;
