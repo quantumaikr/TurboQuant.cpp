@@ -337,13 +337,16 @@ def cmd_client(args):
 
 
 def cmd_chat_default(args):
-    """Backwards-compatible default: auto-download SmolLM2-1.7B and chat.
+    """Backwards-compatible default: auto-download Phi-3.5-mini and chat.
 
-    Default switched from Llama-3.2-1B to SmolLM2-1.7B (2026-04-12) after
-    user feedback that Llama-3.2-1B's 128K vocab makes it ~5x slower at
-    interactive chat than SmolLM2-1.7B's 49K vocab on Apple Silicon.
+    Default progression:
+      Llama-3.2-1B → SmolLM2-1.7B (2026-04-12, vocab fix)
+                   → Phi-3.5-mini (2026-04-12, after Phi-3 arch support
+                     landed). Phi-3.5-mini has the smallest vocab in
+                     the registry (32K) AND 3.8B params, giving the
+                     best speed/quality combo we ship.
     """
-    args.model = args.model or "SmolLM2-1.7B"
+    args.model = args.model or "Phi-3.5-mini"
     args.threads = getattr(args, "threads", 4)
     args.max_tokens = getattr(args, "max_tokens", 256)
     args.temperature = getattr(args, "temperature", 0.7)
@@ -367,19 +370,20 @@ commands:
   client PROMPT         Send a request to a running serve (default: SSE streaming)
 
 examples:
-  quantcpp pull smollm2              # recommended: small vocab → fast
+  quantcpp pull phi-3.5-mini         # recommended default (32K vocab → fast)
   quantcpp list
-  quantcpp run smollm2
-  quantcpp run smollm2 "What is gravity?"
-  quantcpp serve smollm2 --port 8080
+  quantcpp run phi-3.5-mini
+  quantcpp run phi-3.5-mini "What is gravity?"
+  quantcpp serve phi-3.5-mini --port 8080
   quantcpp client "What is gravity?"                  # streams from :8080
   quantcpp client "Hi" --url http://localhost:8081
   quantcpp client "Hi" --no-stream                    # single JSON response
 
 backwards-compat (no subcommand):
-  quantcpp                          # default chat with SmolLM2-1.7B
+  quantcpp                          # default chat with Phi-3.5-mini
   quantcpp "What is gravity?"       # one-shot
-  quantcpp --model llama3.2:1b      # different model
+  quantcpp --model smollm2          # lightweight alternative
+  quantcpp --model llama3.2:1b      # smallest download
 """,
     )
 

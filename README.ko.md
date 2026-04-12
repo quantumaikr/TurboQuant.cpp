@@ -28,28 +28,30 @@
 ```bash
 pip install quantcpp
 
-quantcpp pull llama3.2:1b               # HuggingFace에서 다운로드
-quantcpp run llama3.2:1b                # 대화형 채팅
-quantcpp serve llama3.2:1b -p 8080      # OpenAI 호환 HTTP 서버 (SSE 스트리밍)
+quantcpp pull phi-3.5-mini              # HuggingFace에서 다운로드 (~2.4 GB)
+quantcpp run phi-3.5-mini               # 대화형 채팅
+quantcpp serve phi-3.5-mini -p 8080     # OpenAI 호환 HTTP 서버 (SSE 스트리밍)
 quantcpp client "안녕"                   # 스트리밍 클라이언트 → :8080 서버
 quantcpp list                           # 캐시된 모델 목록
 ```
 
-짧은 별칭: `smollm2:135m`, `qwen3.5:0.8b`, `llama3.2:1b`. `run`/`serve` 첫 실행 시 자동 다운로드. `serve`는 OpenAI 호환 `POST /v1/chat/completions` 엔드포인트를 8080 포트에 제공합니다 — 클라이언트가 `"stream": true`를 보내면 SSE 토큰 단위 스트리밍, 생략하면 단일 JSON 응답. 내장 `quantcpp client`는 두 모드 모두 지원 (기본: 스트리밍, `--no-stream`: 단일 응답).
+추천 기본 모델: **Phi-3.5-mini** (3.8B params, vocab 32K). registry의 모든 모델 중 가장 작은 vocab(32K)이라 토큰당 `lm_head` matmul이 가장 빠릅니다 — 노트북에서 속도와 품질의 최적 조합입니다. 다른 별칭: `smollm2`, `smollm2:135m`, `llama3.2:1b`, `qwen3.5:0.8b`. `run`/`serve` 첫 실행 시 자동 다운로드.
+
+`serve`는 OpenAI 호환 `POST /v1/chat/completions` 엔드포인트를 8080 포트에 제공합니다 — 클라이언트가 `"stream": true`를 보내면 SSE 토큰 단위 스트리밍, 생략하면 단일 JSON 응답. 내장 `quantcpp client`는 두 모드 모두 지원 (기본: 스트리밍, `--no-stream`: 단일 응답).
 
 **한 줄 질문:**
 ```bash
-quantcpp run llama3.2:1b "중력이란 무엇인가요?"
+quantcpp run phi-3.5-mini "중력이란 무엇인가요?"
 ```
 
 **Python API (3줄):**
 ```python
 from quantcpp import Model
-m = Model.from_pretrained("Llama-3.2-1B")
+m = Model.from_pretrained("Phi-3.5-mini")
 print(m.ask("중력이란 무엇인가요?"))
 ```
 
-API 키 없음. GPU 없음. 설정 없음. 모델은 `~/.cache/quantcpp/`에 캐시됩니다. [브라우저에서 바로 체험 →](https://quantumaikr.github.io/quant.cpp/) · [**작동 원리 가이드 →**](https://quantumaikr.github.io/quant.cpp/guide/)
+API 키 없음. GPU 없음. 설정 없음. 모델은 `~/.cache/quantcpp/`에 캐시됩니다. 지원되는 architecture와 모델 선택 가이드는 [`docs/supported_models.md`](docs/supported_models.md)를 참고하세요. [브라우저에서 바로 체험 →](https://quantumaikr.github.io/quant.cpp/) · [**작동 원리 가이드 →**](https://quantumaikr.github.io/quant.cpp/guide/)
 
 ---
 

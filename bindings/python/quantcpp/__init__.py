@@ -4,14 +4,20 @@ quantcpp -- Compress AI's memory 3x. It gets faster.
 Quick start:
 
     from quantcpp import Model
-    m = Model.from_pretrained("SmolLM2-1.7B")
+    m = Model.from_pretrained("Phi-3.5-mini")
     print(m.ask("What is gravity?"))
 
 Model selection guide:
-    SmolLM2-1.7B  (1.7 GB, vocab 49K)  — recommended. ~12 tok/s on Apple M3.
-    Llama-3.2-1B  (750 MB, vocab 128K) — smaller download but slower
+    Phi-3.5-mini   (2.4 GB, vocab 32K)  — DEFAULT. 3.8B params with the
+                                          smallest lm_head in the registry,
+                                          producing the best speed/quality
+                                          combo. Coherent multi-paragraph
+                                          output even at Q4_K_M.
+    SmolLM2-1.7B   (1.7 GB, vocab 49K)  — lightweight all-rounder. ~12 tok/s
+                                          on Apple M3, smaller download.
+    Llama-3.2-1B   (750 MB, vocab 128K) — smallest download but slower
                                           due to large vocab (~2 tok/s on M3).
-    SmolLM2-135M  (138 MB, vocab 49K)  — demo only, low quality output.
+    SmolLM2-135M   (138 MB, vocab 49K)  — demo only, low quality output.
 
 Larger vocab = slower lm_head matmul → smaller params with smaller vocab
 often beats larger params with larger vocab. See docs/supported_models.md
@@ -65,6 +71,41 @@ _CACHE_DIR = Path(os.environ.get("QUANTCPP_CACHE",
 # Verify both fields against the actual HuggingFace listing before
 # adding new entries — there is no integrity check at runtime.
 _MODEL_REGISTRY = {
+    # ── DEFAULT ──
+    # Phi-3.5-mini-instruct (3.8B params, vocab 32K). Set as default on
+    # 2026-04-12 after end-to-end Phi-3 architecture support landed
+    # (fused QKV / fused gate+up FFN / LongRoPE). The 32K vocab is the
+    # smallest of the registry, which makes the lm_head matmul the
+    # fastest per-token. Combined with 3.8B params it produces the
+    # best quality-per-token of any model we ship.
+    "Phi-3.5-mini": (
+        "bartowski/Phi-3.5-mini-instruct-GGUF",
+        "Phi-3.5-mini-instruct-Q4_K_M.gguf",
+        2400,
+    ),
+    # Lightweight all-rounder for users who want a smaller download
+    # than Phi-3.5-mini. vocab 49K keeps the lm_head matmul small, so
+    # on a mid-range M-series chip we measure ~12 tok/s — comfortable
+    # for interactive chat. Same llama arch family as SmolLM2-135M.
+    "SmolLM2-1.7B": (
+        "bartowski/SmolLM2-1.7B-Instruct-GGUF",
+        "SmolLM2-1.7B-Instruct-Q8_0.gguf",
+        1700,
+    ),
+    # Smallest download in the "actually usable" tier. Slower at
+    # inference time because of the 128K Llama-3 vocab (~5x slower
+    # lm_head matmul on M3). Kept in the registry for users who
+    # specifically want a Llama model.
+    "Llama-3.2-1B": (
+        "hugging-quants/Llama-3.2-1B-Instruct-Q4_K_M-GGUF",
+        "llama-3.2-1b-instruct-q4_k_m.gguf",
+        750,
+    ),
+    "Qwen3.5-0.8B": (
+        "unsloth/Qwen3.5-0.8B-GGUF",
+        "Qwen3.5-0.8B-Q4_K_M.gguf",
+        508,
+    ),
     # 138 MB demo model. Tokenizer + arch are llama-compatible but the
     # model is too small to produce coherent output for general chat.
     # Listed only so users can verify the install/load path quickly.
@@ -72,40 +113,6 @@ _MODEL_REGISTRY = {
         "Felladrin/gguf-Q8_0-SmolLM2-135M-Instruct",
         "smollm2-135m-instruct-q8_0.gguf",
         135,
-    ),
-    # Recommended default for first-time users on Apple Silicon / typical
-    # laptops. vocab 49K keeps the lm_head matmul small, so even on a
-    # mid-range M-series chip we measure ~12 tok/s — comfortable for
-    # interactive chat. Same llama arch family as SmolLM2-135M, so it
-    # exercises the most-tested code path.
-    "SmolLM2-1.7B": (
-        "bartowski/SmolLM2-1.7B-Instruct-GGUF",
-        "SmolLM2-1.7B-Instruct-Q8_0.gguf",
-        1700,
-    ),
-    "Qwen3.5-0.8B": (
-        "unsloth/Qwen3.5-0.8B-GGUF",
-        "Qwen3.5-0.8B-Q4_K_M.gguf",
-        508,
-    ),
-    # Smaller download than SmolLM2-1.7B but slower at inference time
-    # because of the 128K Llama-3 vocab (~5x slower lm_head matmul on M3).
-    # Kept in the registry for users who specifically want a Llama model.
-    "Llama-3.2-1B": (
-        "hugging-quants/Llama-3.2-1B-Instruct-Q4_K_M-GGUF",
-        "llama-3.2-1b-instruct-q4_k_m.gguf",
-        750,
-    ),
-    # Phi-3.5-mini-instruct (3.8B params, vocab 32K).
-    # Added 2026-04-12 after end-to-end Phi-3 architecture support
-    # landed (fused QKV / fused gate+up FFN / LongRoPE). The 32K vocab
-    # is the smallest of the registry, which makes the lm_head matmul
-    # the fastest per-token. Combined with 3.8B params it's the best
-    # quality-per-token model we ship.
-    "Phi-3.5-mini": (
-        "bartowski/Phi-3.5-mini-instruct-GGUF",
-        "Phi-3.5-mini-instruct-Q4_K_M.gguf",
-        2400,
     ),
 }
 
@@ -208,9 +215,9 @@ class Model:
 
     Examples
     --------
-    >>> m = Model.from_pretrained("SmolLM2-1.7B")
+    >>> m = Model.from_pretrained("Phi-3.5-mini")
     >>> m.ask("What is gravity?")
-    'Gravity is a force that attracts ...'
+    'Gravity is a fundamental force that attracts ...'
 
     >>> with Model("model.gguf") as m:
     ...     for tok in m.generate("Once upon a time"):
