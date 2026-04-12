@@ -11940,6 +11940,39 @@ tq_model_t* tq_load_gguf(const char* path) {
                 n_attn_layers, c->n_layers);
     }
 
+    /* Hard-fail when neither standard self_attn (`blk.N.attn_q.weight`) nor
+     * DeltaNet (`blk.N.ssm_a`) was detected on any layer. The GGUF loaded
+     * fine but every layer is missing its attention block — typically
+     * because the architecture uses fused QKV (Phi-3 `attn_qkv`) or some
+     * other naming convention we don't recognize yet.
+     *
+     * Without this check the load returns successfully, the forward pass
+     * runs against zero-initialized attention weights, and the user gets
+     * pages of garbage tokens with no clear error to debug. The previous
+     * behavior was reported by an external user (2026-04-12 feedback) as
+     * the worst part of the first-time experience: "loaded 32 layers
+     * (0 self_attn)" looked like a success log.
+     *
+     * Listed architectures that hit this path:
+     *   - phi3 / phi3.5 (uses fused `blk.N.attn_qkv.weight`)
+     *   - any future fused-QKV architecture we haven't ported yet
+     *
+     * Hybrid models with at least ONE self_attn layer (e.g., Qwen3.5
+     * DeltaNet) are NOT affected — they hit the branch above and proceed. */
+    if (n_attn_layers == 0 && c->delta_n_heads == 0) {
+        fprintf(stderr,
+            "tq_load_gguf: ERROR — model architecture '%s' is not supported.\n"
+            "  Detected 0 self_attn layers and no DeltaNet weights.\n"
+            "  This usually means the model uses fused QKV projection\n"
+            "  (e.g., Phi-3 `attn_qkv`) which quant.cpp does not yet handle.\n"
+            "  See docs/supported_models.md for the architecture support matrix.\n",
+            gguf->arch[0] ? gguf->arch : "unknown");
+        /* tq_free_model owns gguf_ctx (set above at line 11463) and will
+         * close it as part of the teardown — do not double-close. */
+        tq_free_model(model);
+        return NULL;
+    }
+
     /* Set up layer_is_sliding for Gemma hybrid attention.
      * Detect from K tensor shape: sliding and full layers have different K output dims.
      * The MAJORITY of layers are sliding (e.g., 25/30 or 28/35). */
@@ -15874,34 +15907,195 @@ int tq_generate_continue(tq_model_t* model,
  * Pass cached_text_io == NULL to disable text-prefix tracking.
  * ============================================================================ */
 
+/* ChatML / template-marker filter ----------------------------------------
+ *
+ * The model can generate template tokens like `<|im_start|>`, `<|im_end|>`,
+ * `<end_of_turn>`, etc. as REGULAR text bytes (not special tokens). When
+ * that happens the BPE tokenizer fragments them across multiple tokens,
+ * and a per-token strstr check (like the existing `should_stop` logic)
+ * never matches. The user sees the marker leak into their stream.
+ *
+ * This filter holds the most recent CHAT_LOOKAHEAD bytes of generated
+ * text in `pending` and only flushes bytes that are guaranteed to NOT
+ * be the start of a marker. When a full marker is matched:
+ *   - `<|im_start|>` at the very beginning of the response → header
+ *     skip mode (drop until next '\n'). The model is regurgitating the
+ *     `<|im_start|>assistant\n` prefix that the prompt template already
+ *     contains; we silently strip it.
+ *   - any END marker → emit the prefix, drop the marker and everything
+ *     after, set `stop_requested` so the generation loop can break.
+ *
+ * Cost: each token is delayed by ~CHAT_LOOKAHEAD bytes worth of stream.
+ * For typical English (3-4 chars/token), that's ~8-10 tokens of latency
+ * before the first token shows up. After that, streaming is steady-state
+ * with the same latency window.
+ * ----------------------------------------------------------------------- */
+#define CHAT_PENDING_CAP 128
+#define CHAT_LOOKAHEAD   32
+
 typedef struct {
     char*  buf;
     size_t len;
     size_t cap;
-    int    tainted;   /* 1 if accumulation ever failed → buf is incomplete */
+    int    tainted;          /* 1 if accumulation ever failed → buf incomplete */
+    /* Lookahead filter state */
+    char   pending[CHAT_PENDING_CAP];
+    int    pending_len;
+    int    in_header;        /* skipping <|im_start|>...\n */
+    int    stop_requested;   /* end marker hit → caller should break */
     void (*user_cb)(const char*, void*);
     void*  user_data;
 } chat_accum_t;
 
-static void chat_accum_callback(const char* tok, void* u) {
-    chat_accum_t* ctx = (chat_accum_t*)u;
-    if (!tok) return;
-    /* Always pass through to the user's callback first — losing tokens
-     * from the user's stream because of an INTERNAL realloc failure is
-     * far worse than a stale cached_text on the next turn. */
-    if (ctx->user_cb) ctx->user_cb(tok, ctx->user_data);
+/* Emit n bytes from `p` to BOTH the user callback and accum.buf.
+ * Used after the marker filter has decided the bytes are safe. */
+static void chat_accum_emit(chat_accum_t* ctx, const char* p, int n) {
+    if (n <= 0) return;
+    /* User callback gets a NUL-terminated copy. */
+    char tmp[CHAT_PENDING_CAP + 1];
+    if (n > CHAT_PENDING_CAP) n = CHAT_PENDING_CAP;
+    memcpy(tmp, p, (size_t)n);
+    tmp[n] = '\0';
+    if (ctx->user_cb) ctx->user_cb(tmp, ctx->user_data);
     if (ctx->tainted) return;
-    size_t tlen = strlen(tok);
-    if (ctx->len + tlen + 1 > ctx->cap) {
-        size_t new_cap = (ctx->cap + tlen + 64) * 2;
+    if (ctx->len + (size_t)n + 1 > ctx->cap) {
+        size_t new_cap = (ctx->cap + (size_t)n + 64) * 2;
         char* nb = (char*)realloc(ctx->buf, new_cap);
         if (!nb) { ctx->tainted = 1; return; }
-        ctx->buf = nb;
-        ctx->cap = new_cap;
+        ctx->buf = nb; ctx->cap = new_cap;
     }
-    memcpy(ctx->buf + ctx->len, tok, tlen);
-    ctx->len += tlen;
+    memcpy(ctx->buf + ctx->len, tmp, (size_t)n);
+    ctx->len += (size_t)n;
     ctx->buf[ctx->len] = '\0';
+}
+
+/* Drop n bytes from the front of pending. */
+static void chat_accum_drop(chat_accum_t* ctx, int n) {
+    if (n <= 0) return;
+    if (n > ctx->pending_len) n = ctx->pending_len;
+    memmove(ctx->pending, ctx->pending + n,
+            (size_t)(ctx->pending_len - n));
+    ctx->pending_len -= n;
+}
+
+/* Find first occurrence of marker `m` in haystack[0..hlen). -1 if none. */
+static int chat_find_marker(const char* h, int hlen, const char* m) {
+    int mlen = (int)strlen(m);
+    if (hlen < mlen) return -1;
+    for (int p = 0; p + mlen <= hlen; p++) {
+        if (h[p] == m[0] && memcmp(h + p, m, (size_t)mlen) == 0) return p;
+    }
+    return -1;
+}
+
+/* Markers that signal "stop generating now". <|im_start|> is included
+ * because if the model emits it MID-response (after generating real
+ * content), it's hallucinating a new chat turn and we should stop. */
+static const char* const CHAT_END_MARKERS[] = {
+    "<|im_end|>", "<|eot_id|>", "<end_of_turn>", "<|endoftext|>",
+    "<|im_start|>", "<|start_header_id|>", "<|eom_id|>",
+    NULL,
+};
+
+static void chat_accum_callback(const char* tok, void* u) {
+    chat_accum_t* ctx = (chat_accum_t*)u;
+    if (!tok || ctx->stop_requested) return;
+    int tlen = (int)strlen(tok);
+    if (tlen == 0) return;
+
+    /* Make room. If pending would overflow, flush the safe prefix
+     * (everything but the last LOOKAHEAD bytes) first. */
+    if (ctx->pending_len + tlen > CHAT_PENDING_CAP) {
+        int emit = ctx->pending_len - CHAT_LOOKAHEAD;
+        if (emit > 0) {
+            if (!ctx->in_header) chat_accum_emit(ctx, ctx->pending, emit);
+            chat_accum_drop(ctx, emit);
+        }
+    }
+    /* Pathological: token bigger than the whole pending buffer.
+     * Emit pending + token raw and bail (no marker scan). */
+    if (tlen > CHAT_PENDING_CAP) {
+        if (!ctx->in_header) {
+            chat_accum_emit(ctx, ctx->pending, ctx->pending_len);
+            chat_accum_emit(ctx, tok, tlen);
+        }
+        ctx->pending_len = 0;
+        return;
+    }
+    memcpy(ctx->pending + ctx->pending_len, tok, (size_t)tlen);
+    ctx->pending_len += tlen;
+
+    /* State machine: drain pending as far as possible. */
+    int progress = 1;
+    while (progress) {
+        progress = 0;
+        if (ctx->in_header) {
+            int nl = -1;
+            for (int i = 0; i < ctx->pending_len; i++) {
+                if (ctx->pending[i] == '\n') { nl = i; break; }
+            }
+            if (nl >= 0) {
+                chat_accum_drop(ctx, nl + 1);
+                ctx->in_header = 0;
+                progress = 1;
+            } else {
+                /* No newline yet — drop everything (it's all in header) */
+                ctx->pending_len = 0;
+                return;
+            }
+        }
+        /* Scan for the EARLIEST end marker in pending. */
+        int em_pos = -1;
+        const char* em_str = NULL;
+        for (int i = 0; CHAT_END_MARKERS[i]; i++) {
+            int p = chat_find_marker(ctx->pending, ctx->pending_len,
+                                       CHAT_END_MARKERS[i]);
+            if (p >= 0 && (em_pos < 0 || p < em_pos)) {
+                em_pos = p; em_str = CHAT_END_MARKERS[i];
+            }
+        }
+        if (em_pos >= 0) {
+            /* Special case: <|im_start|> at the very start of the
+             * response → strip the header (don't stop). The model is
+             * echoing the chat-template prefix. */
+            if (em_pos == 0 && ctx->len == 0 && em_str &&
+                strcmp(em_str, "<|im_start|>") == 0) {
+                chat_accum_drop(ctx, 12); /* len("<|im_start|>") */
+                ctx->in_header = 1;
+                progress = 1;
+                continue;
+            }
+            /* Otherwise: emit clean prefix, discard rest, request stop. */
+            if (em_pos > 0) {
+                chat_accum_emit(ctx, ctx->pending, em_pos);
+            }
+            ctx->pending_len = 0;
+            ctx->stop_requested = 1;
+            return;
+        }
+    }
+
+    /* Safe portion: keep the trailing LOOKAHEAD bytes (any in-flight
+     * marker is at most this long), flush the rest. */
+    if (!ctx->in_header && ctx->pending_len > CHAT_LOOKAHEAD) {
+        int emit = ctx->pending_len - CHAT_LOOKAHEAD;
+        chat_accum_emit(ctx, ctx->pending, emit);
+        chat_accum_drop(ctx, emit);
+    }
+}
+
+/* Generation finished — flush any leftover pending bytes. Called once
+ * before reading accum.buf for the cached_text update. */
+static void chat_accum_finish(chat_accum_t* ctx) {
+    if (ctx->in_header) {
+        /* Stuck mid-header (no '\n' arrived) → drop the rest. */
+        ctx->pending_len = 0;
+        return;
+    }
+    if (ctx->pending_len > 0) {
+        chat_accum_emit(ctx, ctx->pending, ctx->pending_len);
+        ctx->pending_len = 0;
+    }
 }
 
 int tq_generate_chat_text(tq_model_t* model,
@@ -15929,9 +16123,10 @@ int tq_generate_chat_text(tq_model_t* model,
         }
     }
 
-    chat_accum_t accum = { .buf = NULL, .len = 0, .cap = 0, .tainted = 0,
-                            .user_cb = config->on_token,
-                            .user_data = config->user_data };
+    chat_accum_t accum;
+    memset(&accum, 0, sizeof(accum));
+    accum.user_cb = config->on_token;
+    accum.user_data = config->user_data;
     void (*orig_cb)(const char*, void*) = config->on_token;
     void*  orig_ud = config->user_data;
     config->on_token = chat_accum_callback;
@@ -16052,6 +16247,9 @@ int tq_generate_chat_text(tq_model_t* model,
 
             int piece_len = (int)strlen(piece ? piece : "");
             if (config->on_token && piece) config->on_token(piece, config->user_data);
+            /* The chat_accum filter may have detected an end marker
+             * spanning multiple tokens — break before forwarding more. */
+            if (accum.stop_requested) break;
             if (output && piece && output_pos + piece_len < output_size - 1) {
                 memcpy(output + output_pos, piece, piece_len);
                 output_pos += piece_len;
@@ -16099,6 +16297,11 @@ int tq_generate_chat_text(tq_model_t* model,
             cached_tokens_io, n_cached_io, cached_capacity_io,
             output, output_size);
     }
+
+    /* Drain the marker filter's lookahead buffer before reading
+     * accum.buf for the cached_text update. Without this, the last
+     * ~32 bytes of clean output would be silently lost. */
+    chat_accum_finish(&accum);
 
     config->on_token = orig_cb;
     config->user_data = orig_ud;

@@ -18,9 +18,13 @@ import os
 import json
 
 
-# Ollama-style short aliases → canonical _MODEL_REGISTRY keys
+# Ollama-style short aliases → canonical _MODEL_REGISTRY keys.
+# Plain "smollm2" without a size suffix points at the 1.7B model — that's
+# the recommended default. Users who explicitly want the 135M demo model
+# need to ask for it by full name.
 MODEL_ALIASES = {
-    "smollm2":      "SmolLM2-135M",
+    "smollm2":      "SmolLM2-1.7B",
+    "smollm2:1.7b": "SmolLM2-1.7B",
     "smollm2:135m": "SmolLM2-135M",
     "qwen3.5":      "Qwen3.5-0.8B",
     "qwen3.5:0.8b": "Qwen3.5-0.8B",
@@ -329,8 +333,13 @@ def cmd_client(args):
 
 
 def cmd_chat_default(args):
-    """Backwards-compatible default: auto-download Llama-3.2-1B and chat."""
-    args.model = args.model or "Llama-3.2-1B"
+    """Backwards-compatible default: auto-download SmolLM2-1.7B and chat.
+
+    Default switched from Llama-3.2-1B to SmolLM2-1.7B (2026-04-12) after
+    user feedback that Llama-3.2-1B's 128K vocab makes it ~5x slower at
+    interactive chat than SmolLM2-1.7B's 49K vocab on Apple Silicon.
+    """
+    args.model = args.model or "SmolLM2-1.7B"
     args.threads = getattr(args, "threads", 4)
     args.max_tokens = getattr(args, "max_tokens", 256)
     args.temperature = getattr(args, "temperature", 0.7)
@@ -354,19 +363,19 @@ commands:
   client PROMPT         Send a request to a running serve (default: SSE streaming)
 
 examples:
-  quantcpp pull llama3.2:1b
+  quantcpp pull smollm2              # recommended: small vocab → fast
   quantcpp list
-  quantcpp run llama3.2:1b
-  quantcpp run llama3.2:1b "What is gravity?"
-  quantcpp serve llama3.2:1b --port 8080
+  quantcpp run smollm2
+  quantcpp run smollm2 "What is gravity?"
+  quantcpp serve smollm2 --port 8080
   quantcpp client "What is gravity?"                  # streams from :8080
   quantcpp client "Hi" --url http://localhost:8081
   quantcpp client "Hi" --no-stream                    # single JSON response
 
 backwards-compat (no subcommand):
-  quantcpp                          # default chat with Llama-3.2-1B
+  quantcpp                          # default chat with SmolLM2-1.7B
   quantcpp "What is gravity?"       # one-shot
-  quantcpp --model SmolLM2-135M     # different model
+  quantcpp --model llama3.2:1b      # different model
 """,
     )
 
