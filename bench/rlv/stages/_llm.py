@@ -23,17 +23,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent.parent.parent
-# Day 4: Phi-3.5-mini (3.8B, vocab 32K) replaces Llama-3.2-3B-Q8.
-# Significantly better instruction-following + faster lm_head (smallest vocab).
-# NOTE: Metal backend broken for Phi-3.5 (fused QKV + attention head_dim=96
-# not handled by Metal kernels). Must use CPU-only build until Metal is fixed.
+# Day 4: Phi-3.5-mini via quant-server-unified (built on quant.h directly).
+# The old libturboquant-based server had a forward-pass sync divergence
+# that produced garbage for Phi-3.5/SmolLM2. The unified server compiles
+# quant.h as a single translation unit — no sync issues.
+# Phi-3.5: ~1.15 tok/s (CPU NEON), ~6.5 tok/s reported in PR #79.
 DEFAULT_MODEL = REPO / "models" / "Phi-3.5-mini-instruct-Q4_K_M.gguf"
-# Use fp32 KV cache since Phi-3.5 + turbo_kv_4b hasn't been validated yet
-DEFAULT_KV_TYPE = "fp32"
-# Day 4: Metal build with TQ_NO_METAL=1 for Phi-3.5 — Metal GPU init
-# corrupts Phi-3.5 inference. The binary is still the Metal build (faster
-# due to framework optimizations), but GPU compute is disabled at runtime.
-DEFAULT_SERVER_BINARY = REPO / "build_metal" / "quant-server"
+DEFAULT_SERVER_BINARY = REPO / "build_metal" / "quant-server-unified"
 DEFAULT_SERVER_HOST = "127.0.0.1"
 DEFAULT_SERVER_PORT = 8421  # arbitrary, avoid conflicts with 8080
 
@@ -109,8 +105,8 @@ def start_server(
     host: str = DEFAULT_SERVER_HOST,
     port: int = DEFAULT_SERVER_PORT,
     threads: int = 8,
-    kv_type: str = "fp32",
-    v_quant: str = "fp32",
+    kv_type: str = "turbo_kv_4b",
+    v_quant: str = "q4",
     startup_timeout: float = 120.0,
     verbose: bool = True,
 ) -> str:
@@ -126,24 +122,22 @@ def start_server(
     while _port_in_use(host, port):
         port += 1
 
-    cmd = [
-        str(binary), str(model),
-        "-p", str(port),
-        "-H", host,
-        "-j", str(threads),
-        "-k", kv_type,
-        "-v", v_quant,
-    ]
+    # Build command — unified server only supports -p and -j (no -k/-v/-H)
+    is_unified = "unified" in str(binary)
+    if is_unified:
+        cmd = [str(binary), str(model), "-p", str(port), "-j", str(threads)]
+    else:
+        cmd = [
+            str(binary), str(model),
+            "-p", str(port), "-H", host,
+            "-j", str(threads), "-k", kv_type, "-v", v_quant,
+        ]
     if verbose:
         print(f"[server] starting: {' '.join(cmd)}")
 
     env = os.environ.copy()
     env["LC_ALL"] = "C"
     env["LANG"] = "C"
-    # Day 4: disable Metal GPU for Phi-3.5 (Metal init corrupts inference).
-    # The model name check is a heuristic — any Phi-3 model needs this.
-    if "phi" in str(model).lower() or "Phi" in str(model):
-        env["TQ_NO_METAL"] = "1"
 
     _server_proc = subprocess.Popen(
         cmd,
