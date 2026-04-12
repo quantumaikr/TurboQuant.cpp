@@ -2931,6 +2931,23 @@ tq_model_t* tq_load_gguf(const char* path) {
         c->attn_logit_softcap = 50.0f;
     }
 
+    /* Phi-3 LongRoPE config + factor tables (synced from quant.h 2026-04-12). */
+    c->rope_orig_ctx_len = (int)tq_gguf_get_u32(gguf,
+        GGUF_KEY("rope.scaling.original_context_length"), 0);
+    c->rope_attn_factor = tq_gguf_get_f32(gguf,
+        GGUF_KEY("rope.scaling.attn_factor"), 0.0f);
+    {
+        const tq_gguf_tensor_t* rfs = tq_gguf_find_tensor(gguf, "rope_factors_short.weight");
+        const tq_gguf_tensor_t* rfl = tq_gguf_find_tensor(gguf, "rope_factors_long.weight");
+        if (rfs && rfs->type == TQ_GGML_TYPE_F32) c->rope_factors_short = (const float*)rfs->data;
+        if (rfl && rfl->type == TQ_GGML_TYPE_F32) c->rope_factors_long  = (const float*)rfl->data;
+        if (rfs || rfl) {
+            fprintf(stderr,
+                "tq_load_gguf: LongRoPE detected — orig_ctx=%d, attn_factor=%.4f\n",
+                c->rope_orig_ctx_len, c->rope_attn_factor);
+        }
+    }
+
     /* Cap context for memory safety on small machines.
      * GGUF models often claim 262K context but we cap at 4096 by default.
      * Users can override with --ctx flag in quant. */
@@ -3219,10 +3236,26 @@ tq_model_t* tq_load_gguf(const char* path) {
             }
         }
 
-        /* Attention weights — keep as GGUF quantized pointers for on-the-fly dequant.
-         * We store the raw data pointer + type info using a small struct packed into
-         * the existing FP32 weight pointer fields. For GGUF models, we use a special
-         * dispatch: if gguf_ctx is non-NULL, the forward pass uses tq_matmul_gguf. */
+        /* Phi-3 fused QKV detection (synced from quant.h 2026-04-12).
+         * Phi-3 ships `blk.N.attn_qkv.weight` with shape [hidden, 3*hidden]
+         * instead of three separate `attn_q/k/v.weight` tensors. */
+        snprintf(tname, sizeof(tname), "blk.%d.attn_qkv.weight", l);
+        const tq_gguf_tensor_t* wqkv_t = find_gguf_tensor(gguf, tname);
+        if (wqkv_t && !layer->delta_a_log) {
+            /* Only take the fused path when there are NO DeltaNet weights —
+             * otherwise the DeltaNet code below handles attn_qkv itself. */
+            layer->gguf_w_qkv = wqkv_t->data;
+            layer->gguf_w_qkv_type = wqkv_t->type;
+            c->has_fused_qkv = 1;
+            snprintf(tname, sizeof(tname), "blk.%d.attn_output.weight", l);
+            t = find_gguf_tensor(gguf, tname);
+            if (t) { layer->gguf_wo = t->data; layer->gguf_wo_type = t->type; }
+            attn_indices[n_attn_layers++] = l;
+            goto post_attn_load;
+        }
+
+        /* Standard llama-style attention weights — keep as GGUF quantized
+         * pointers for on-the-fly dequant. */
         snprintf(tname, sizeof(tname), "blk.%d.attn_q.weight", l);
         const tq_gguf_tensor_t* wq_t = find_gguf_tensor(gguf, tname);
         int is_attn_layer = (wq_t != NULL);
@@ -3265,6 +3298,7 @@ tq_model_t* tq_load_gguf(const char* path) {
             attn_indices[n_attn_layers++] = l;
         }
 
+post_attn_load:
         /* Check for DeltaNet / SSM weights (Qwen3.5 hybrid) */
         snprintf(tname, sizeof(tname), "blk.%d.ssm_a", l);
         t = find_gguf_tensor(gguf, tname);
@@ -3518,13 +3552,28 @@ tq_model_t* tq_load_gguf(const char* path) {
                 if (t) { layer->gguf_w_down = t->data; layer->gguf_w_down_type = t->type; }
             }
         } else {
-            /* Dense model: use GGUF on-the-fly dequant */
+            /* Dense model: use GGUF on-the-fly dequant.
+             * Phi-3 fused FFN: when `ffn_up` has shape [hidden, 2*ff] AND
+             * there is no separate `ffn_gate`, it's a fused gate||up tensor. */
             snprintf(tname, sizeof(tname), "blk.%d.ffn_gate.weight", l);
             t = find_gguf_tensor(gguf, tname);
             if (t) { layer->gguf_w_gate = t->data; layer->gguf_w_gate_type = t->type; }
+
             snprintf(tname, sizeof(tname), "blk.%d.ffn_up.weight", l);
             t = find_gguf_tensor(gguf, tname);
-            if (t) { layer->gguf_w_up = t->data; layer->gguf_w_up_type = t->type; }
+            if (t) {
+                if (!layer->gguf_w_gate && t->n_dims >= 2 &&
+                    c->intermediate_dim > 0 &&
+                    (int)t->shape[1] == 2 * c->intermediate_dim) {
+                    layer->gguf_w_up_gate = t->data;
+                    layer->gguf_w_up_gate_type = t->type;
+                    c->has_fused_up_gate = 1;
+                } else {
+                    layer->gguf_w_up = t->data;
+                    layer->gguf_w_up_type = t->type;
+                }
+            }
+
             snprintf(tname, sizeof(tname), "blk.%d.ffn_down.weight", l);
             t = find_gguf_tensor(gguf, tname);
             if (t) { layer->gguf_w_down = t->data; layer->gguf_w_down_type = t->type; }
@@ -3538,6 +3587,20 @@ tq_model_t* tq_load_gguf(const char* path) {
         memcpy(model->attn_layer_indices, attn_indices, (size_t)n_attn_layers * sizeof(int));
         fprintf(stderr, "tq_load_gguf: hybrid architecture — %d attn layers out of %d total\n",
                 n_attn_layers, c->n_layers);
+    }
+
+    /* Hard-fail when neither standard self_attn nor DeltaNet was detected.
+     * (Synced from quant.h — prevents silent garbage from unsupported archs.) */
+    if (n_attn_layers == 0 && c->delta_n_heads == 0) {
+        fprintf(stderr,
+            "tq_load_gguf: ERROR — model architecture '%s' is not supported.\n"
+            "  Detected 0 self_attn layers and no DeltaNet weights.\n"
+            "  This usually means the model uses fused QKV projection\n"
+            "  (e.g., Phi-3 `attn_qkv`) which this build does not yet handle.\n"
+            "  See docs/supported_models.md for the architecture support matrix.\n",
+            gguf->arch[0] ? gguf->arch : "unknown");
+        tq_free_model(model);
+        return NULL;
     }
 
     /* Set up layer_is_sliding for Gemma hybrid attention.
@@ -4072,9 +4135,20 @@ skip_q4_conversion: ;
      *   Adding +1 at runtime would double-apply and cause activation explosion.
      * The Gemma heuristic above (mean > 2.0 check) handles the Gemma case. */
 
-    /* Initialize persistent Metal GPU buffers for layer-level compute */
+    /* Initialize persistent Metal GPU buffers for layer-level compute.
+     *
+     * Skip Metal for Phi-3 fused-tensor models: the Metal matmul kernels
+     * assume standard separate-tensor layouts (Q4_K blocks per row,
+     * fixed output buffer sizes). Fused QKV and fused gate||up produce
+     * larger output vectors that the Metal kernel doesn't handle.
+     *
+     * This is the right trade-off because:
+     * 1. CPU NEON Q4×Q8 is already faster than Metal for sub-4B models
+     *    (measured: 95 tok/s CPU vs 38 tok/s GPU on SmolLM2).
+     * 2. Phi-3's 32K vocab means the lm_head matmul (where Metal helps
+     *    most due to large output dim) is small — CPU handles it fine. */
 #ifdef TQ_HAS_METAL
-    {
+    if (!c->has_fused_qkv && !c->has_fused_up_gate) {
         extern int tq_metal_gpu_init_buffers(int, int, int, int);
         extern int tq_metal_gpu_init_attn(int, int, int);
         int max_q_dim = c->n_heads * c->head_dim;
@@ -4086,9 +4160,14 @@ skip_q4_conversion: ;
             if (full_kv > max_kv_dim) max_kv_dim = full_kv;
         }
         tq_metal_gpu_init_buffers(c->hidden_dim, c->intermediate_dim, max_q_dim, max_kv_dim);
-
-        /* Initialize attention + KV cache GPU buffers for compute graph forward */
         tq_metal_gpu_init_attn(c->n_heads, c->max_seq_len, max_kv_dim);
+    } else {
+        /* Disable Metal matmul dispatch globally for this process.
+         * The Metal backend is still initialized (MoE kernels etc.) but
+         * tq_matmul_gguf will check this flag and skip GPU dispatch. */
+        extern void tq_metal_disable(void);
+        tq_metal_disable();
+        fprintf(stderr, "tq_load_gguf: Metal GPU dispatch disabled (fused-tensor model — CPU is faster)\n");
     }
 #endif
 

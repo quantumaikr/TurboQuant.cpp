@@ -63,6 +63,16 @@ typedef struct {
     float final_logit_softcap; /* logit soft-capping: logits = cap * tanh(logits/cap), 0=disabled */
     float attn_logit_softcap;  /* attention score soft-capping (Gemma): 0=disabled, typically 50.0 */
     int* per_layer_inter_dim;  /* [n_layers] per-layer intermediate_dim (NULL = use intermediate_dim) */
+
+    /* Phi-3 LongRoPE config */
+    int rope_orig_ctx_len;             /* original context length (e.g., 4096) */
+    float rope_attn_factor;            /* attention magnitude scaling */
+    const float* rope_factors_short;   /* [head_dim/2] for short context */
+    const float* rope_factors_long;    /* [head_dim/2] for long context */
+
+    /* Phi-3 fused-tensor flags — set during load */
+    int has_fused_qkv;                 /* any layer has gguf_w_qkv */
+    int has_fused_up_gate;             /* any layer has gguf_w_up_gate */
 } tq_model_config_t;
 
 /* ============================================================
@@ -177,6 +187,12 @@ typedef struct {
     const void* gguf_w_gate; int gguf_w_gate_type;
     const void* gguf_w_up;   int gguf_w_up_type;
     const void* gguf_w_down; int gguf_w_down_type;
+
+    /* Phi-3 fused projections (from quant.h, synced 2026-04-12).
+     * gguf_w_qkv:     [hidden, q_dim + k_dim + v_dim] concatenated QKV
+     * gguf_w_up_gate: [hidden, 2 * intermediate_dim] concatenated gate||up */
+    const void* gguf_w_qkv;     int gguf_w_qkv_type;
+    const void* gguf_w_up_gate; int gguf_w_up_gate_type;
 
     /* MoE expert weights (NULL for dense FFN layers) */
     void* moe;               /* tq_moe_layer_t* (from tq_gguf.h), NULL if dense */

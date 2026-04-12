@@ -622,9 +622,20 @@ const char* tq_metal_device_name(void) {
 }
 
 /**
+ * Disable Metal dispatch globally. Called by the model loader when a
+ * fused-tensor architecture (Phi-3) is detected — the Metal matmul
+ * kernels don't handle the non-standard output dimensions.
+ */
+static int tq_metal_disabled = 0;
+void tq_metal_disable(void) {
+    tq_metal_disabled = 1;
+}
+
+/**
  * Check if Metal backend is available and initialized.
  */
 int tq_metal_available(void) {
+    if (tq_metal_disabled) return 0;
     /* Lazy initialization: first call triggers Metal setup */
     static int init_done = 0;
     if (!init_done) {

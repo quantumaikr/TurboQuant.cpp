@@ -185,6 +185,15 @@ tq_state_t* tq_create_state_ex(const tq_model_config_t* config, tq_type kv_type,
     if (max_q_dim > max_dim) max_dim = max_q_dim;
     if (q_proj_dim > max_dim) max_dim = q_proj_dim;
     if (delta_qkv_dim > max_dim) max_dim = delta_qkv_dim;
+    /* Phi-3 fused QKV: one matmul writes [Q | K | V] into a temp buffer
+     * (s->xb2), so max_dim must cover the fused output size. */
+    int fused_qkv_dim = q_dim + 2 * (config->n_kv_heads * config->head_dim);
+    if (config->has_fused_qkv && fused_qkv_dim > max_dim) max_dim = fused_qkv_dim;
+
+    /* Phi-3 fused gate||up FFN: one matmul writes 2*inter floats into s->hb,
+     * so s->hb must be sized to 2*inter_dim. */
+    int inter_dim_alloc = inter_dim;
+    if (config->has_fused_up_gate) inter_dim_alloc = 2 * inter_dim;
 
     s->x      = (float*)calloc((size_t)dim, sizeof(float));
     s->xb     = (float*)calloc((size_t)max_dim, sizeof(float));
@@ -193,7 +202,7 @@ tq_state_t* tq_create_state_ex(const tq_model_config_t* config, tq_type kv_type,
     s->k      = (float*)calloc((size_t)max_kv_dim, sizeof(float));
     s->v      = (float*)calloc((size_t)max_kv_dim, sizeof(float));
     s->att    = (float*)calloc((size_t)n_heads * max_seq, sizeof(float));
-    s->hb     = (float*)calloc((size_t)inter_dim, sizeof(float));
+    s->hb     = (float*)calloc((size_t)inter_dim_alloc, sizeof(float));
     s->hb2    = (float*)calloc((size_t)inter_dim, sizeof(float));
     s->logits = (float*)calloc((size_t)config->vocab_size, sizeof(float));
 
@@ -957,6 +966,7 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
     int has_q2 = (layer->wq_q2 != NULL);
     int has_q4 = (layer->wq_q4 != NULL);
     int has_gguf = (layer->gguf_wq != NULL);
+    int has_fused_qkv_layer = (layer->gguf_w_qkv != NULL);
     if (has_q2 || has_q4) {
         tq_quantize_row_q8(s->xb, s->xb_q8, s->xb_q8s, dim);
     }
@@ -974,7 +984,19 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
      * layer-level batch scope in tq_forward(). */
 
     float* gate_q = NULL;
-    if (c->attn_output_gate) {
+    if (has_fused_qkv_layer) {
+        /* Phi-3 fused QKV: one matmul produces [Q | K | V] in a temp
+         * buffer, then memcpy splits into s->q / s->k / s->v. */
+        int q_out  = n_heads * head_dim;
+        int kv_out = kv_dim;
+        int total_out = q_out + 2 * kv_out;
+        tq_matmul_gguf(s->xb2, s->xb,
+                       layer->gguf_w_qkv, layer->gguf_w_qkv_type,
+                       total_out, dim);
+        memcpy(s->q, s->xb2,                       (size_t)q_out  * sizeof(float));
+        memcpy(s->k, s->xb2 + q_out,               (size_t)kv_out * sizeof(float));
+        memcpy(s->v, s->xb2 + q_out + kv_out,      (size_t)kv_out * sizeof(float));
+    } else if (c->attn_output_gate) {
         int qg_dim = n_heads * head_dim * 2;
         if (layer->wq_q2) {
             TQ_MATMUL_Q2_OR_1BIT(s->xb2, s->xb, layer->wq_q2, layer->wq_q2s, s->xb_q8, s->xb_q8s, qg_dim, dim, model->use_1bit_weights);
@@ -1015,7 +1037,9 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
             tq_matmul(s->q, s->xb, layer->wq, n_heads * head_dim, dim);
         }
     }
-    if (layer->wk_q2) {
+    if (has_fused_qkv_layer) {
+        /* Already populated s->q/s->k/s->v above — skip K projection */
+    } else if (layer->wk_q2) {
         TQ_MATMUL_Q2_OR_1BIT(s->k, s->xb, layer->wk_q2, layer->wk_q2s, s->xb_q8, s->xb_q8s, kv_dim, dim, model->use_1bit_weights);
     } else if (layer->wk_q4) {
         tq_matmul_q4q2_preq(s->k, layer->wk_q4, layer->wk_q4s, layer->wk_q2, layer->wk_q2s, s->xb_q8, s->xb_q8s, kv_dim, dim);
@@ -1026,9 +1050,12 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
     } else {
         tq_matmul(s->k, s->xb, layer->wk, kv_dim, dim);
     }
-    /* V projection: if V weights are absent (Gemma 4 K=V), copy K to V */
     int has_v_weights = (layer->wv_q2 || layer->wv_q4 || layer->wv_q8 ||
                          layer->gguf_wv || layer->wv);
+    if (has_fused_qkv_layer) {
+        /* skip — handled by the fused branch */
+    } else {
+    /* V projection: if V weights are absent (Gemma 4 K=V), copy K to V */
     if (!has_v_weights) {
         /* K=V: value is same as key (attention_k_eq_v) */
         memcpy(s->v, s->k, kv_dim * sizeof(float));
@@ -1042,6 +1069,7 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
         tq_matmul_gguf(s->v, s->xb, layer->gguf_wv, layer->gguf_wv_type, kv_dim, dim);
     } else {
         tq_matmul(s->v, s->xb, layer->wv, kv_dim, dim);
+    }
     }
 
     /* Flush batched Q+K+V GPU dispatches before CPU-side RoPE/attention */
@@ -1193,7 +1221,50 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
             model->layer_is_sliding && model->layer_is_sliding[l]) {
             rope_base = c->rope_local_base_freq;
         }
-        tq_rope(s->q, s->k, pos, head_dim, n_heads, n_kv_heads, rope_base);
+        /* Phi-3 LongRoPE: NeoX-style rotation with per-frequency rescaling */
+        if (c->rope_factors_short || c->rope_factors_long) {
+            const float* factors =
+                (pos >= c->rope_orig_ctx_len && c->rope_factors_long)
+                    ? c->rope_factors_long
+                    : (c->rope_factors_short ? c->rope_factors_short
+                                              : c->rope_factors_long);
+            int half = head_dim / 2;
+            for (int h = 0; h < n_heads; h++) {
+                float* qh = s->q + h * head_dim;
+                for (int i = 0; i < half; i++) {
+                    float base_freq = 1.0f / powf(rope_base, 2.0f * i / (float)head_dim);
+                    float freq = base_freq / factors[i];
+                    float theta = pos * freq;
+                    float cos_t = cosf(theta);
+                    float sin_t = sinf(theta);
+                    float q0 = qh[i];
+                    float q1 = qh[i + half];
+                    qh[i]        = q0 * cos_t - q1 * sin_t;
+                    qh[i + half] = q0 * sin_t + q1 * cos_t;
+                }
+            }
+            for (int h = 0; h < n_kv_heads; h++) {
+                float* kh = s->k + h * head_dim;
+                for (int i = 0; i < half; i++) {
+                    float base_freq = 1.0f / powf(rope_base, 2.0f * i / (float)head_dim);
+                    float freq = base_freq / factors[i];
+                    float theta = pos * freq;
+                    float cos_t = cosf(theta);
+                    float sin_t = sinf(theta);
+                    float k0 = kh[i];
+                    float k1 = kh[i + half];
+                    kh[i]        = k0 * cos_t - k1 * sin_t;
+                    kh[i + half] = k0 * sin_t + k1 * cos_t;
+                }
+            }
+            if (pos >= c->rope_orig_ctx_len && c->rope_attn_factor > 0.0f) {
+                float scale = c->rope_attn_factor;
+                int n_q = n_heads * head_dim;
+                for (int i = 0; i < n_q; i++) s->q[i] *= scale;
+            }
+        } else {
+            tq_rope(s->q, s->k, pos, head_dim, n_heads, n_kv_heads, rope_base);
+        }
     }
 
     /* Store K,V in cache.
@@ -2325,6 +2396,11 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
         if (layer->delta_a_log) {
             /* DeltaNet layer */
             deltanet_forward(model, s, l);
+        } else if (layer->gguf_w_qkv) {
+            /* Phi-3 fused QKV — gguf_wq/wk/wv are NULL because Q, K
+             * and V are concatenated into gguf_w_qkv. self_attn_forward
+             * handles the fused dispatch internally. */
+            self_attn_forward(model, s, l, pos);
         } else if ((layer->wq || layer->wq_q8 || layer->wq_q4 || layer->gguf_wq || layer->wq_q2) &&
                    (layer->wk || layer->wk_q8 || layer->wk_q4 || layer->gguf_wk || layer->wk_q2) &&
                    (layer->wv || layer->wv_q8 || layer->wv_q4 || layer->gguf_wv || layer->wv_q2 ||
@@ -2508,8 +2584,8 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
          * Qwen: layers are either MoE or dense, NOT both.
          * Gemma 3 non-MoE layers: run dense FFN. */
         if (!did_moe &&
-            (layer->w_gate || layer->w_gate_q8 || layer->w_gate_q4 || layer->w_gate_q2 || layer->gguf_w_gate) &&
-            (layer->w_up || layer->w_up_q8 || layer->w_up_q4 || layer->w_up_q2 || layer->gguf_w_up) &&
+            (layer->w_gate || layer->w_gate_q8 || layer->w_gate_q4 || layer->w_gate_q2 || layer->gguf_w_gate || layer->gguf_w_up_gate) &&
+            (layer->w_up || layer->w_up_q8 || layer->w_up_q4 || layer->w_up_q2 || layer->gguf_w_up || layer->gguf_w_up_gate) &&
             (layer->w_down || layer->w_down_q8 || layer->w_down_q4 || layer->w_down_q2 || layer->gguf_w_down)) {
 
             /* Pre-FFN norm: Gemma 4 dual-FFN uses pre_ffw_norm_2 for the dense FFN.
@@ -2557,6 +2633,13 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
                                    s->xb_q8, s->xb_q8s, inter, dim);
                 tq_matmul_q4_preq(s->hb2, layer->w_up_q4, layer->w_up_q4s,
                                    s->xb_q8, s->xb_q8s, inter, dim);
+            } else if (layer->gguf_w_up_gate) {
+                /* Phi-3 fused gate||up: one matmul produces [gate | up],
+                 * then we split into s->hb (gate) and s->hb2 (up). */
+                tq_matmul_gguf(s->hb, s->xb,
+                               layer->gguf_w_up_gate, layer->gguf_w_up_gate_type,
+                               2 * inter, dim);
+                memcpy(s->hb2, s->hb + inter, (size_t)inter * sizeof(float));
             } else if (layer->gguf_w_gate) {
                 /* Gate+up GPU dispatches batched by layer-level batch scope */
                 tq_matmul_gguf(s->hb, s->xb, layer->gguf_w_gate, layer->gguf_w_gate_type, inter, dim);
