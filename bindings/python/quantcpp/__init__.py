@@ -96,6 +96,17 @@ _MODEL_REGISTRY = {
         "llama-3.2-1b-instruct-q4_k_m.gguf",
         750,
     ),
+    # Phi-3.5-mini-instruct (3.8B params, vocab 32K).
+    # Added 2026-04-12 after end-to-end Phi-3 architecture support
+    # landed (fused QKV / fused gate+up FFN / LongRoPE). The 32K vocab
+    # is the smallest of the registry, which makes the lm_head matmul
+    # the fastest per-token. Combined with 3.8B params it's the best
+    # quality-per-token model we ship.
+    "Phi-3.5-mini": (
+        "bartowski/Phi-3.5-mini-instruct-GGUF",
+        "Phi-3.5-mini-instruct-Q4_K_M.gguf",
+        2400,
+    ),
 }
 
 def available_models():

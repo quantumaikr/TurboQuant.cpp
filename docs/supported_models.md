@@ -8,7 +8,8 @@ tracks what works, what loads-but-fails, and how to pick a model.
 
 | Use case | Model | Why |
 |---|---|---|
-| **First-time install** | `SmolLM2-1.7B` (Q8) | Fastest end-to-end on a laptop. Vocab 49K keeps the lm_head matmul small (~12 tok/s on Apple M3). |
+| **Best speed + quality** | `Phi-3.5-mini` (Q4_K_M) | 3.8B params with vocab 32K — the smallest lm_head in the registry. Coherent multi-paragraph output. |
+| **Lightweight all-rounder** | `SmolLM2-1.7B` (Q8) | Fastest small model on a laptop. Vocab 49K keeps the lm_head matmul small (~12 tok/s on Apple M3). |
 | Smaller download | `Llama-3.2-1B` (Q4_K_M) | 750 MB vs 1.7 GB, but ~5x slower at inference time due to 128K vocab. |
 | Quick smoke test | `SmolLM2-135M` (Q8) | 138 MB download to verify the install path. Output quality is poor — not for real use. |
 
@@ -32,12 +33,12 @@ print(m.ask("What is gravity?"))
 |---|:---:|:---:|:---:|:---:|---|
 | **llama** (SmolLM2, Llama-3.x, Mistral) | ✅ | ✅ | ✅ | ✅ | **Fully supported** |
 | llama with 128K vocab (Llama-3.2-1B) | ✅ | ✅ | ✅ | slow | Supported, vocab is the bottleneck |
+| **phi3** / **phi3.5** (fused QKV + LongRoPE) | ✅ | ✅ | ✅ | ✅ | **Fully supported** (since 2026-04-12) |
 | **gemma** (Gemma 2) | ✅ | ✅ | ✅ | ✅ | Supported |
 | **gemma3** | ✅ | ✅ | ✅ | ✅ | Supported with hybrid sliding-window attention |
 | **gemma4** (Gemma-4-E2B / E4B) | ✅ | ✅ | ⚠️ | ⚠️ | Partial — some Q4_K_M variants produce garbage; report with file SHA256 |
 | **qwen** / **qwen2** | ✅ | ✅ | ✅ | ✅ | Supported |
 | **qwen3.5** (DeltaNet hybrid) | ✅ | ✅ | partial | ⚠️ | Partial — pure-attention layers work, DeltaNet hybrid still being validated |
-| **phi3** / **phi3.5** (fused QKV) | ❌ | — | — | — | **Not supported** — uses `attn_qkv`, see "Why phi3 is hard" below |
 
 ✅ = works · ⚠️ = loads but inference is unreliable · ❌ = load fails fast with a clear error (since 2026-04-12)
 
@@ -78,31 +79,38 @@ benchmarks on Apple M3 (8-core CPU, 16 GB RAM):
 vocab size is a better predictor of interactive latency than parameter
 count. Pick the smallest vocab that produces output you're happy with.
 
-## Why phi3 is hard
+## How Phi-3 support works
 
-Phi-3 / Phi-3.5 uses a *fused* QKV projection: instead of three separate
-tensors `attn_q.weight`, `attn_k.weight`, `attn_v.weight`, it ships one
-`attn_qkv.weight` with all three projections concatenated along the
-output dimension.
+Phi-3 / Phi-3.5 uses fused weight tensors instead of llama-style separate ones:
 
-quant.cpp's GGUF loader currently looks for the three-tensor layout
-(`blk.N.attn_q.weight` etc.). When it loads a Phi-3 GGUF, none of those
-names match → 0 self_attn layers detected → forward pass runs against
-zero-initialized attention weights → garbage tokens.
+| Tensor | Shape | What's inside |
+|---|---|---|
+| `blk.N.attn_qkv.weight` | `[hidden, 3*hidden]` | Q ‖ K ‖ V along the output axis |
+| `blk.N.ffn_up.weight` | `[hidden, 2*ff]` | gate ‖ up along the output axis |
 
-Adding Phi-3 support requires either:
+The loader detects these by name, stores the raw quantized pointers in
+new fields (`gguf_w_qkv`, `gguf_w_up_gate`), and the forward path
+dispatches a single matmul into a temp buffer for each, then `memcpy`
+splits the result into the existing per-section state buffers.
 
-1. **Loader splits** `attn_qkv.weight` into the three views at load time
-   and writes them into the existing `wq`/`wk`/`wv` slots, OR
-2. **Forward path** learns to dispatch a fused QKV matmul when the
-   loader detects the fused tensor.
+Phi-3 also uses **LongRoPE** with two per-frequency-pair rescaling
+tables (`rope_factors_short`, `rope_factors_long`) and a separate
+attention magnitude factor (`rope.scaling.attn_factor`). These extend
+RoPE rotation from the original 4096-token training context out to
+131K. The forward path picks the short or long table based on
+position, applies the rescaled rotation in **NeoX-style** layout (pairs
+are `(q[i], q[i+half])`, not `(q[2i], q[2i+1])`), and multiplies Q by
+`attn_factor` only when `pos >= original_context_length`.
 
-Option (1) is simpler but doubles the working set during load. Option
-(2) is the right long-term answer. There's a tracking issue / spike in
-progress; until then Phi-3 is the highest-value missing architecture for
-quant.cpp's "speed + quality" target (Phi-3.5-mini has vocab 32K plus
-3.8B params — it would beat both SmolLM2-1.7B and Llama-3.2-1B at
-interactive use).
+Why NeoX-style for Phi-3 specifically: llama.cpp's GGUF converter
+pre-permutes separate `attn_q/k/v` tensors so the standard interleaved
+RoPE works for Llama-family models. The fused `attn_qkv` tensor is NOT
+permuted, so we have to apply rotation in its native NeoX form.
+
+Phi-3.5-mini at the recommended Q4_K_M quantization clocks in at
+**~32K vocab + 3.8B params**, which makes the lm_head matmul the
+fastest of any model in the registry — the best speed/quality combo
+quant.cpp ships.
 
 ## Reporting an unsupported model
 

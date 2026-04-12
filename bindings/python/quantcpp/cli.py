@@ -23,13 +23,17 @@ import json
 # the recommended default. Users who explicitly want the 135M demo model
 # need to ask for it by full name.
 MODEL_ALIASES = {
-    "smollm2":      "SmolLM2-1.7B",
-    "smollm2:1.7b": "SmolLM2-1.7B",
-    "smollm2:135m": "SmolLM2-135M",
-    "qwen3.5":      "Qwen3.5-0.8B",
-    "qwen3.5:0.8b": "Qwen3.5-0.8B",
-    "llama3.2":     "Llama-3.2-1B",
-    "llama3.2:1b":  "Llama-3.2-1B",
+    "smollm2":         "SmolLM2-1.7B",
+    "smollm2:1.7b":    "SmolLM2-1.7B",
+    "smollm2:135m":    "SmolLM2-135M",
+    "qwen3.5":         "Qwen3.5-0.8B",
+    "qwen3.5:0.8b":    "Qwen3.5-0.8B",
+    "llama3.2":        "Llama-3.2-1B",
+    "llama3.2:1b":     "Llama-3.2-1B",
+    "phi3.5":          "Phi-3.5-mini",
+    "phi3.5:mini":     "Phi-3.5-mini",
+    "phi-3.5":         "Phi-3.5-mini",
+    "phi-3.5-mini":    "Phi-3.5-mini",
 }
 
 
