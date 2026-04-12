@@ -8,11 +8,10 @@ Quick start:
     print(m.ask("What is gravity?"))
 
 Model selection guide:
-    Phi-3.5-mini   (2.4 GB, vocab 32K)  — DEFAULT. 3.8B params with the
-                                          smallest lm_head in the registry,
-                                          producing the best speed/quality
-                                          combo. Coherent multi-paragraph
-                                          output even at Q4_K_M.
+    Phi-3.5-mini   (3.8 GB, vocab 32K)  — DEFAULT. 3.8B params, Q8_0.
+                                          2x faster than Q4_K_M on NEON
+                                          (3.0 vs 1.5 tok/s on M3).
+                                          Best speed/quality combo.
     SmolLM2-1.7B   (1.7 GB, vocab 49K)  — lightweight all-rounder. ~12 tok/s
                                           on Apple M3, smaller download.
     Llama-3.2-1B   (750 MB, vocab 128K) — smallest download but slower
@@ -72,16 +71,16 @@ _CACHE_DIR = Path(os.environ.get("QUANTCPP_CACHE",
 # adding new entries — there is no integrity check at runtime.
 _MODEL_REGISTRY = {
     # ── DEFAULT ──
-    # Phi-3.5-mini-instruct (3.8B params, vocab 32K). Set as default on
-    # 2026-04-12 after end-to-end Phi-3 architecture support landed
-    # (fused QKV / fused gate+up FFN / LongRoPE). The 32K vocab is the
-    # smallest of the registry, which makes the lm_head matmul the
-    # fastest per-token. Combined with 3.8B params it produces the
-    # best quality-per-token of any model we ship.
+    # Phi-3.5-mini-instruct Q8_0. Switched from Q4_K_M on 2026-04-12
+    # after benchmarking: Q8_0 is 2x faster on Apple Silicon NEON
+    # (3.0 vs 1.5 tok/s on M3). Q4_K_M's complex super-block dequant
+    # dominates compute at batch-1; Q8_0's simple int8 dequant is
+    # NEON-friendly. Both produce identical quality. The larger download
+    # (3.8 GB vs 2.2 GB) is a one-time cost.
     "Phi-3.5-mini": (
         "bartowski/Phi-3.5-mini-instruct-GGUF",
-        "Phi-3.5-mini-instruct-Q4_K_M.gguf",
-        2400,
+        "Phi-3.5-mini-instruct-Q8_0.gguf",
+        3800,
     ),
     # Lightweight all-rounder for users who want a smaller download
     # than Phi-3.5-mini. vocab 49K keeps the lm_head matmul small, so

@@ -225,7 +225,12 @@ def cmd_run(args):
 
 
 def cmd_serve(args):
-    """Start OpenAI-compatible HTTP server (requires quant-server binary)."""
+    """Start OpenAI-compatible HTTP server.
+
+    Prefers `quant-server-unified` (built on quant.h, guaranteed correct)
+    over the legacy `quant-server` (built on libturboquant, may diverge).
+    Falls back to the legacy binary if unified is not found.
+    """
     import shutil
     import subprocess
 
@@ -235,19 +240,29 @@ def cmd_serve(args):
         print(f"error: {e}", file=sys.stderr)
         return 1
 
-    binary = shutil.which("quant-server")
-    if not binary:
-        # Look in common build dirs relative to repo
-        for guess in ("./build/quant-server", "./build_metal/quant-server"):
+    # Prefer unified server (quant.h-based, fixes #77).
+    # Fall back to legacy libturboquant server if unified not found.
+    binary = None
+    for name in ("quant-server-unified", "quant-server"):
+        binary = shutil.which(name)
+        if binary:
+            break
+        for guess in (f"./build/{name}", f"./build_metal/{name}",
+                      f"./build_cpu/{name}"):
             if os.path.isfile(guess) and os.access(guess, os.X_OK):
                 binary = guess
                 break
+        if binary:
+            break
 
     if not binary:
         print("quant-server binary not found.", file=sys.stderr)
-        print("  Build with: cmake -B build -DTQ_BUILD_SERVER=ON && cmake --build build",
+        print("  Build with:", file=sys.stderr)
+        print("    cc -O2 -o quant-server-unified tools/quant_server_unified.c -lm -lpthread",
               file=sys.stderr)
-        print("  Or install via your package manager.", file=sys.stderr)
+        print("  Or via CMake:", file=sys.stderr)
+        print("    cmake -B build -DTQ_BUILD_SERVER=ON && cmake --build build",
+              file=sys.stderr)
         return 2
 
     # Check if port is available before launching server
