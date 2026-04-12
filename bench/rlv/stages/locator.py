@@ -26,32 +26,8 @@ from typing import List, Tuple
 
 from . import _llm
 from .gist import Gist
-
-
-# Common English stopwords + interrogatives + low-information question fillers.
-STOPWORDS = {
-    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
-    "of", "in", "on", "at", "to", "for", "from", "by", "with", "as",
-    "and", "or", "but", "if", "then", "than", "that", "this", "these",
-    "those", "what", "which", "who", "whom", "whose", "where", "when",
-    "why", "how", "do", "does", "did", "done", "doing", "have", "has",
-    "had", "having", "i", "you", "he", "she", "it", "we", "they",
-    "me", "him", "her", "us", "them", "my", "your", "his", "its", "our",
-    "their", "about", "into", "through", "during", "before", "after",
-    "above", "below", "between", "out", "off", "over", "under",
-    "again", "further", "once", "here", "there", "all", "any", "both",
-    "each", "few", "more", "most", "other", "some", "such", "no", "nor",
-    "not", "only", "own", "same", "so", "too", "very", "can", "will",
-    "just", "would", "should", "could", "may", "might", "must",
-    "much", "many", "long", "ago", "later", "well", "thing",
-    "something", "anything", "nothing", "everything", "people",
-    "person", "anyone", "someone",
-}
-
-# Common business/document filler that adds noise to the score
-LOW_SIGNAL_TERMS = {
-    "company", "year", "section", "report", "annual", "fiscal",
-}
+from ._text import (normalize as _normalize, word_in_text as _word_in_text,
+                     term_in_text as _term_in_text, STOPWORDS, LOW_SIGNAL_TERMS)
 
 # Section title region weighting — words appearing in the first
 # SECTION_TITLE_CHARS of a chunk get this multiplier (matches in headers
@@ -97,11 +73,8 @@ class RegionPointer:
 
 # ----------------------------------------------------------------------------
 # Non-LLM keyword overlap (primary signal)
+# _normalize, _word_in_text, _term_in_text imported from _text.py (I2/I3 dedup)
 # ----------------------------------------------------------------------------
-def _normalize(s: str) -> str:
-    return re.sub(r"[^a-z0-9 ]+", " ", s.lower())
-
-
 def _question_keywords(question: str) -> List[Tuple[str, float]]:
     """Extract weighted (term, weight) tuples from a question."""
     terms: List[Tuple[str, float]] = []
@@ -129,51 +102,6 @@ def _question_keywords(question: str) -> List[Tuple[str, float]]:
         if len(w) >= 4 and w not in STOPWORDS and w not in LOW_SIGNAL_TERMS:
             add(w, 1.0)
     return terms
-
-
-def _word_in_text(word: str, text_norm: str) -> bool:
-    """Day 3 word-boundary-aware fuzzy match.
-
-    A `word` matches a region word `rw` if:
-      - exact: rw == word
-      - shared prefix: ≥4 chars (≥3 for short ≤6-char words), with the
-        shared prefix at least min(len(w), len(rw)) - 2.
-    Word-by-word matching avoids the substring trap (e.g., "event" in
-    "revenue" via "even").
-    """
-    if not word or len(word) < 3:
-        return False
-    w = word.lower()
-    min_prefix = 4 if len(w) > 6 else 3
-    for rw in text_norm.split():
-        if not rw:
-            continue
-        if rw == w:
-            return True
-        shared = 0
-        for a, b in zip(w, rw):
-            if a == b:
-                shared += 1
-            else:
-                break
-        if shared >= min_prefix and shared >= min(len(w), len(rw)) - 2:
-            return True
-    return False
-
-
-def _term_in_text(term: str, text_norm: str) -> bool:
-    """Multi-word term match: ≥50% of the words must fuzzy-match.
-    Whole-phrase substring is allowed as a fast path for multi-word terms."""
-    t = _normalize(term)
-    if not t:
-        return False
-    if " " in t and t in text_norm:
-        return True
-    words = [w for w in t.split() if len(w) >= 3]
-    if not words:
-        return False
-    matched = sum(1 for w in words if _word_in_text(w, text_norm))
-    return matched >= max(1, (len(words) + 1) // 2)
 
 
 _HEADING_RE = re.compile(r"^(?:section|chapter|part|appendix)\s*[ivxlcdm\d]+\s*[:.\-]", re.IGNORECASE)
@@ -213,7 +141,8 @@ def _score_chunk(weighted_terms: List[Tuple[str, float]], chunk) -> float:
     mid-paragraph, and an unconditional bonus boosts incidental words.
     """
     text = chunk.full_text or chunk.head_text
-    text_norm = _normalize(text)
+    # D6/D13: use pre-computed normalized text if available
+    text_norm = chunk.full_text_norm if chunk.full_text_norm else _normalize(text)
     has_heading = _looks_like_heading(text)
     title_norm = _normalize(text[:SECTION_TITLE_CHARS]) if (text and has_heading) else ""
     entities_norm = _normalize(" ".join(chunk.entities)) if chunk.entities else ""
@@ -270,7 +199,9 @@ def _bm25_score_chunks(question: str, gist: Gist, excluded: List[int],
         return []
 
     # Document frequency for each term
-    texts = [_normalize(c.full_text or c.head_text) for c in chunks]
+    # D13: use pre-computed normalized text where available
+    texts = [c.full_text_norm if c.full_text_norm else _normalize(c.full_text or c.head_text)
+             for c in chunks]
     avg_dl = sum(len(t.split()) for t in texts) / max(N, 1)
 
     df = {}

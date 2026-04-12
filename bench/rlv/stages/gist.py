@@ -53,11 +53,14 @@ class GistChunk:
     char_end: int
     head_text: str = ""           # first ~200 chars (used by LLM-fallback outline)
     full_text: str = ""           # complete chunk text (used by Day 3 non-LLM keyword scoring)
+    full_text_norm: str = ""      # D6/D13: pre-normalized text (avoids re-normalizing per score call)
     entities: List[str] = field(default_factory=list)
     summary: str = ""             # optional LLM-generated summary
 
     def to_dict(self):
-        return asdict(self)
+        d = asdict(self)
+        d.pop("full_text_norm", None)  # don't serialize internal cache
+        return d
 
 
 @dataclass
@@ -240,12 +243,15 @@ def build_gist(
             else:
                 summary = _parse_summary_response(s_result.text)
 
+        # D6/D13: pre-normalize text once during gist build
+        from ._text import normalize as _norm
         gc = GistChunk(
             chunk_id=i,
             char_start=start,
             char_end=end,
             head_text=head_text,
             full_text=full_text,
+            full_text_norm=_norm(full_text),
             entities=entities,
             summary=summary,
         )

@@ -118,6 +118,14 @@ def lookup(
     original text. The model never has to QUOTE — only SELECT.
     """
     region_text = doc_text[region.char_start:region.char_end]
+
+    # A9: guard empty region (e.g., fallback pointer with char_start=char_end=0)
+    if not region_text.strip():
+        return LookupResult(
+            answer="[no text in selected region]", region_text=region_text,
+            chunk_id=region.chunk_id, raw_llm_output="", method="error",
+        )
+
     sentences = _split_into_sentences(region_text)
 
     # Day 4 adaptive lookup: select-by-index for small chunks (≤8 sentences,

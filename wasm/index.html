@@ -174,14 +174,19 @@ input[type=file] { display: none; }
         <p class="subtitle">No install. No API key. No server.</p>
 
         <div class="model-cards" id="modelCards">
-            <div class="model-card recommended" id="card-smol" onclick="loadDemoModel('smollm2-135m')">
+            <div class="model-card recommended" id="card-phi3" onclick="loadDemoModel('phi-3.5-mini')">
+                <div class="name">Phi-3.5 mini</div>
+                <div class="meta" id="meta-phi3">~2.2 GB &middot; Best quality</div>
+                <span class="tag">Recommended</span>
+            </div>
+            <div class="model-card" id="card-smol" onclick="loadDemoModel('smollm2-135m')">
                 <div class="name">SmolLM2 135M</div>
-                <div class="meta" id="meta-smol">~135 MB &middot; Fast response</div>
+                <div class="meta" id="meta-smol">~135 MB &middot; Fast download</div>
                 <span class="tag">Fast</span>
             </div>
             <div class="model-card" id="card-llama" onclick="loadDemoModel('llama-3.2-1b')">
                 <div class="name">Llama 3.2 1B Instruct</div>
-                <div class="meta" id="meta-llama">~770 MB &middot; Better quality</div>
+                <div class="meta" id="meta-llama">~770 MB &middot; Llama family</div>
                 <span class="tag blue">Quality</span>
             </div>
         </div>
@@ -223,12 +228,20 @@ let modelLoaded = false, generating = false, stopRequested = false;
 let activeModelId = null;
 
 const MODELS = {
+    'phi-3.5-mini': {
+        url: 'https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf',
+        name: 'Phi-3.5 mini',
+        size: 2200,
+        cacheKey: 'phi-3.5-mini-q4km',
+        chatTemplate: (t) => `<|user|>\n${t}<|end|>\n<|assistant|>\n`,
+        cardId: 'card-phi3', metaId: 'meta-phi3',
+    },
     'smollm2-135m': {
         url: 'https://huggingface.co/Felladrin/gguf-Q8_0-SmolLM2-135M-Instruct/resolve/main/smollm2-135m-instruct-q8_0.gguf',
         name: 'SmolLM2 135M',
         size: 135,
         cacheKey: 'smollm2-135m-q8',
-        chatTemplate: (t) => t,  // SmolLM2 works best with plain text prompts
+        chatTemplate: (t) => t,
         cardId: 'card-smol', metaId: 'meta-smol',
     },
     'llama-3.2-1b': {

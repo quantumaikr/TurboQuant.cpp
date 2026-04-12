@@ -26,7 +26,8 @@ from dataclasses import dataclass
 from . import _llm
 from .gist import Gist
 from .lookup import LookupResult
-from .locator import _question_keywords, _term_in_text, _keyword_locate, _normalize as _loc_normalize
+from ._text import normalize as _normalize, word_in_text as _fuzzy_word_in_region, fuzzy_in_region as _fuzzy_in_region
+from .locator import _question_keywords, _term_in_text, _keyword_locate
 
 
 # Day 3: model-side preamble tokens that show up in answer text but
@@ -60,18 +61,11 @@ class VerifyResult:
 
 # ----------------------------------------------------------------------------
 # Literal (regex-based) citation check
+# _normalize, _fuzzy_word_in_region, _fuzzy_in_region imported from _text.py
 # ----------------------------------------------------------------------------
-def _normalize(s: str) -> str:
-    """Lowercase and strip non-alphanum-or-space. Used for fuzzy matching
-    against Q4 visual jitter."""
-    return re.sub(r"[^a-z0-9 ]+", " ", s.lower())
-
-
 def _extract_answer_key_terms(answer: str) -> tuple[list[str], list[str]]:
-    """Day 3: returns (word_terms, number_terms) so the matcher can apply
-    different rules — words use fuzzy matching for Q4 jitter, numbers
-    use exact match (2002 must NOT fuzzy-match 2023). Filters
-    ANSWER_NOISE_TOKENS so model preambles don't get extracted as facts."""
+    """Returns (word_terms, number_terms). Words use fuzzy matching for Q4
+    jitter, numbers use exact match. Filters ANSWER_NOISE_TOKENS."""
     multi_cap = re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b", answer)
     single_cap = re.findall(r"\b[A-Z][a-z]{3,}\b", answer)
     nums = re.findall(r"\b\d{2,5}\b", answer)
@@ -82,7 +76,6 @@ def _extract_answer_key_terms(answer: str) -> tuple[list[str], list[str]]:
         key = term.lower()
         if key in seen:
             continue
-        # Exact word match (not substring) — "text" must not filter "context"
         if key in ANSWER_NOISE_TOKENS:
             continue
         seen.add(key)
@@ -97,50 +90,6 @@ def _extract_answer_key_terms(answer: str) -> tuple[list[str], list[str]]:
         number_terms.append(n)
 
     return word_terms[:8], number_terms[:4]
-
-
-def _fuzzy_word_in_region(word: str, region_norm: str) -> bool:
-    """Day 3: word-boundary-aware fuzzy match. Iterates region words and
-    checks shared-prefix similarity. Avoids cross-word substring traps
-    like "event" matching "revenue" via "even"."""
-    if not word or len(word) < 3:
-        return False
-    w = word.lower()
-    min_prefix = 4 if len(w) > 6 else 3
-    for rw in region_norm.split():
-        if not rw:
-            continue
-        if rw == w:
-            return True
-        shared = 0
-        for a, b in zip(w, rw):
-            if a == b:
-                shared += 1
-            else:
-                break
-        if shared >= min_prefix and shared >= min(len(w), len(rw)) - 2:
-            return True
-    return False
-
-
-def _fuzzy_in_region(term: str, region_norm: str) -> bool:
-    """Return True if `term` (possibly multi-word) appears in the region,
-    tolerant of Q4 visual jitter on individual words.
-
-    For multi-word terms (e.g., "John Williams"), require that ≥50% of the
-    words match individually via _fuzzy_word_in_region. For single words,
-    require that one word matches.
-    """
-    term_norm = _normalize(term)
-    if not term_norm:
-        return False
-    if term_norm in region_norm:
-        return True
-    words = [w for w in term_norm.split() if len(w) >= 3]
-    if not words:
-        return False
-    matched = sum(1 for w in words if _fuzzy_word_in_region(w, region_norm))
-    return matched >= max(1, len(words) // 2 + (len(words) % 2))
 
 
 def _question_grounded_via_locator(
