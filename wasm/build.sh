@@ -26,7 +26,7 @@ emcc "$SCRIPT_DIR/quant_wasm.c" \
     -s ALLOW_MEMORY_GROWTH=1 \
     -s MAXIMUM_MEMORY=4GB \
     -s INITIAL_MEMORY=256MB \
-    -s EXPORTED_FUNCTIONS='["_main","_wasm_load_model","_wasm_generate","_wasm_generate_async","_wasm_model_info","_wasm_is_ready","_malloc","_free"]' \
+    -s EXPORTED_FUNCTIONS='["_main","_wasm_load_model","_wasm_generate","_wasm_generate_async","_wasm_reset_chat","_wasm_model_info","_wasm_is_ready","_malloc","_free"]' \
     -s EXPORTED_RUNTIME_METHODS='["UTF8ToString","allocateUTF8","FS","ccall","cwrap"]' \
     -s FORCE_FILESYSTEM=1 \
     -s MODULARIZE=0 \

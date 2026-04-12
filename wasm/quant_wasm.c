@@ -86,16 +86,18 @@ int wasm_generate_async(const char* prompt, float temperature, int max_tokens) {
     if (!g_model || !g_ctx || g_generating) return -1;
     g_generating = 1; g_output_pos = 0; g_output[0] = '\0'; g_stream_count = 0;
 
-    quant_config cfg = {
-        .temperature = temperature, .top_p = 0.9f,
-        .max_tokens = max_tokens > 0 ? max_tokens : 256,
-        .n_threads = g_wasm_threads, .kv_compress = 1,
-    };
-    if (g_ctx) quant_free_ctx(g_ctx);
-    g_ctx = quant_new(g_model, &cfg);
+    /* Update generation params on the existing context (don't recreate —
+     * that would wipe the chat KV cache built up by previous turns).
+     * kv_compress is set at quant_new() time and is immutable on the ctx. */
+    g_ctx->config.temperature = temperature;
+    g_ctx->config.top_p = 0.9f;
+    g_ctx->config.max_tokens = max_tokens > 0 ? max_tokens : 256;
 
     double t0 = emscripten_get_now();
-    int n = quant_generate(g_ctx, prompt, on_token_streaming, NULL);
+    /* quant_chat reuses the KV cache across calls — turn N's prefill is
+     * O(new tokens since last call), not O(full history). The browser
+     * sees a near-instant response on every turn after the first. */
+    int n = quant_chat(g_ctx, prompt, on_token_streaming, NULL);
     double elapsed = emscripten_get_now() - t0;
     js_on_done(n > 0 ? n : 0, elapsed);
     g_generating = 0;
@@ -107,20 +109,22 @@ int wasm_generate(const char* prompt, float temperature, int max_tokens) {
     if (!g_model || !g_ctx || g_generating) return -1;
     g_generating = 1; g_output_pos = 0; g_output[0] = '\0';
 
-    quant_config cfg = {
-        .temperature = temperature, .top_p = 0.9f,
-        .max_tokens = max_tokens > 0 ? max_tokens : 256,
-        .n_threads = g_wasm_threads, .kv_compress = 1,
-    };
-    if (g_ctx) quant_free_ctx(g_ctx);
-    g_ctx = quant_new(g_model, &cfg);
+    g_ctx->config.temperature = temperature;
+    g_ctx->config.top_p = 0.9f;
+    g_ctx->config.max_tokens = max_tokens > 0 ? max_tokens : 256;
 
     double t0 = emscripten_get_now();
-    int n = quant_generate(g_ctx, prompt, on_token_sync, NULL);
+    int n = quant_chat(g_ctx, prompt, on_token_sync, NULL);
     double elapsed = emscripten_get_now() - t0;
     js_on_done(n > 0 ? n : 0, elapsed);
     g_generating = 0;
     return 0;
+}
+
+/* Reset the chat session — wipes KV cache. Call when user starts new chat. */
+EMSCRIPTEN_KEEPALIVE
+void wasm_reset_chat(void) {
+    if (g_ctx) quant_chat(g_ctx, NULL, NULL, NULL);
 }
 
 EMSCRIPTEN_KEEPALIVE const char* wasm_model_info(void) {

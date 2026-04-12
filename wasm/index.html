@@ -389,6 +389,18 @@ function getChatPrompt(text) {
     return `<|im_start|>user\n${text}<|im_end|>\n<|im_start|>assistant\n`;
 }
 
+/* Multi-turn chat history. Sent on every turn so the model has context.
+ * The C side's quant_chat() does text-prefix matching: turn N's prefill
+ * is O(new tokens since last call), not O(full history). */
+let chatHistory = '';
+
+function resetChatSession() {
+    chatHistory = '';
+    if (typeof Module !== 'undefined' && Module._wasm_reset_chat) {
+        Module._wasm_reset_chat();
+    }
+}
+
 function stopGeneration() { stopRequested = true; }
 
 async function generate() {
@@ -405,11 +417,14 @@ async function generate() {
 
     addMessage('user', text);
     const aDiv = addMessage('assistant', '');
-    aDiv.innerHTML = '<span class="thinking"><span class="spinner"></span> Processing prompt (may take a few seconds)...</span>';
+    const isFirstTurn = chatHistory.length === 0;
+    aDiv.innerHTML = isFirstTurn
+        ? '<span class="thinking"><span class="spinner"></span> Processing prompt (first turn — may take a few seconds)...</span>'
+        : '<span class="thinking"><span class="spinner"></span> Generating...</span>';
     let output = '', count = 0;
     const t0 = performance.now();
     document.getElementById('statTokens').textContent = '';
-    document.getElementById('statSpeed').textContent = 'processing prompt...';
+    document.getElementById('statSpeed').textContent = isFirstTurn ? 'processing prompt...' : 'generating...';
 
     Module.onToken = (tok) => {
         output += tok; count++;
@@ -433,11 +448,13 @@ async function generate() {
 
     await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
 
-    const prompt = getChatPrompt(text);
+    /* Build the full ChatML prompt by appending this turn to the history.
+     * The C side's quant_chat() does text-prefix matching, so the previous
+     * turns are reused from the KV cache — only the new user message gets
+     * prefilled. Turn N's latency: O(new user message), not O(full history). */
+    chatHistory += `<|im_start|>user\n${text}<|im_end|>\n<|im_start|>assistant\n`;
+    const prompt = chatHistory;
 
-    // Use ccall with async:true — this is the correct way to call
-    // ASYNCIFY-enabled C functions. Module._fn() direct calls do NOT
-    // return Promises; only ccall({async:true}) does.
     try {
         await Module.ccall(
             'wasm_generate_async',
@@ -448,6 +465,12 @@ async function generate() {
         );
     } catch(e) {
         console.error('generate error:', e);
+    }
+
+    /* Append the model's response to history so the next turn matches
+     * the cached_text prefix exactly (byte-for-byte). */
+    if (output) {
+        chatHistory += `${output}<|im_end|>\n`;
     }
 
     if (!output && !count) {
