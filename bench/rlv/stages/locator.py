@@ -433,26 +433,22 @@ def locate(
     rrf_top2_score = rrf_ranked[1][1] if len(rrf_ranked) > 1 else 0.0
     rrf_margin = (rrf_top1_score - rrf_top2_score) / max(rrf_top1_score, 0.001)
 
-    if llm_choice >= 0 and llm_choice not in excluded:
-        if llm_choice == rrf_top1:
-            # LLM and RRF agree — high confidence
-            chosen = llm_choice
-            method = "rrf+llm"
-            confidence = "high"
-        elif rrf_margin < 0.15:
-            # RRF is close — trust LLM to break the tie
-            chosen = llm_choice
-            method = "rrf+llm-override"
-            confidence = "medium"
-        else:
-            # RRF has a clear winner — trust RRF over LLM
-            chosen = rrf_top1
-            method = "rrf(llm-overruled)"
-            confidence = "high"
-    else:
-        chosen = rrf_top1
-        method = "rrf"
-        confidence = "medium" if rrf_margin > 0.1 else "low"
+    # Day 5: always trust RRF. LLM classification on small models is
+    # unreliable — it consistently picks the wrong chunk. BM25+keyword
+    # RRF is deterministic and more accurate for entity lookup queries.
+    # LLM is only used as a tiebreaker when RRF margin is essentially zero.
+    chosen = rrf_top1
+    method = "rrf"
+    confidence = "high" if rrf_margin > 0.05 else "medium"
+
+    if llm_choice >= 0 and llm_choice == rrf_top1:
+        method = "rrf+llm"
+        confidence = "high"
+    elif llm_choice >= 0 and rrf_margin < 0.005:
+        # Dead tie — let LLM break it
+        chosen = llm_choice
+        method = "rrf+llm-tiebreak"
+        confidence = "medium"
 
     if verbose:
         print(f"[locator] chosen: chunk {chosen} via {method} (confidence={confidence})")

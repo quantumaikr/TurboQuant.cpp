@@ -191,9 +191,22 @@ def _literal_verify(
     if not q_ok:
         return "CONTRADICTED", f"question not grounded ({q_reason}) — likely wrong chunk"
 
+    # Day 5: detect "I don't know" / "not provided" answers — these should
+    # never be CONFIDENT. The model is explicitly saying it couldn't find
+    # the answer, so send it back to RESEARCH for a different chunk.
+    answer_lower = answer.lower()
+    refusal_phrases = [
+        "does not provide", "not provide", "no information",
+        "not contain", "not mention", "cannot determine",
+        "unable to", "not specified", "not stated", "not available",
+        "i don't know", "i'm not sure", "unclear",
+    ]
+    if any(p in answer_lower for p in refusal_phrases):
+        return "UNSURE", f"answer is a refusal ('{answer[:60]}...')"
+
     word_terms, number_terms = _extract_answer_key_terms(answer)
     if not word_terms and not number_terms:
-        return "CONFIDENT", f"q-grounded ({q_reason}); no extractable answer entities"
+        return "UNSURE", f"q-grounded ({q_reason}); no extractable answer entities"
 
     word_found = [t for t in word_terms if _fuzzy_in_region(t, region_norm)]
     num_found = [n for n in number_terms if n in region_norm]
@@ -267,6 +280,13 @@ def verify(
             if verbose:
                 print(f"[verifier] literal -> {verdict} ({reason})")
             return VerifyResult(verdict=verdict, reason=reason, method=method)
+
+        # Day 5: if the answer is a refusal, don't let LLM override to CONFIDENT.
+        # The literal check correctly flagged it as UNSURE — trust that.
+        if "refusal" in reason:
+            if verbose:
+                print(f"[verifier] refusal detected, skipping LLM fallback -> UNSURE")
+            return VerifyResult(verdict="UNSURE", reason=reason, method="literal(refusal)")
 
         # Ambiguous — fall back to LLM verification on the same region
         if verbose:
