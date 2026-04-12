@@ -309,6 +309,7 @@ endif()
 
 # OpenAI-compatible HTTP server (POSIX only — uses sys/socket.h)
 if(TQ_BUILD_SERVER AND NOT MSVC)
+    # Legacy server (libturboquant-based) — kept for backwards compat.
     add_executable(quant-server src/server/tq_server.c)
     target_include_directories(quant-server PRIVATE
         ${CMAKE_SOURCE_DIR}/src/server
@@ -323,4 +324,17 @@ if(TQ_BUILD_SERVER AND NOT MSVC)
             -Wall -Wextra -Wpedantic -Wno-unused-parameter)
     endif()
     message(STATUS "quant.cpp: HTTP server target enabled (quant-server)")
+
+    # Unified server (quant.h-based) — recommended, no sync divergence.
+    # Compiles quant.h directly (single-header amalgamation) so the
+    # inference path is guaranteed identical to Python/WASM/CLI.
+    add_executable(quant-server-unified tools/quant_server_unified.c)
+    target_include_directories(quant-server-unified PRIVATE ${CMAKE_SOURCE_DIR})
+    target_link_libraries(quant-server-unified Threads::Threads)
+    if(NOT MSVC)
+        target_link_libraries(quant-server-unified m)
+        target_compile_options(quant-server-unified PRIVATE
+            -Wall -Wextra -Wpedantic -Wno-unused-parameter -w)
+    endif()
+    message(STATUS "quant.cpp: Unified server target enabled (quant-server-unified)")
 endif()
