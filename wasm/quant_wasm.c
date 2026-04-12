@@ -61,6 +61,14 @@ static void on_token_sync(const char* text, void* ud) {
 EMSCRIPTEN_KEEPALIVE
 int wasm_load_model(const char* path) {
     js_on_status("Loading model...");
+    /* Reset generation state on load — if a previous run was interrupted
+     * (page reload mid-stream, JS error in the token callback), the
+     * busy flag would otherwise be stuck at 1 and every subsequent
+     * generate call would early-return -1 forever. */
+    g_generating = 0;
+    g_output_pos = 0;
+    g_output[0] = '\0';
+    g_stream_count = 0;
     if (g_model) { quant_free_model(g_model); g_model = NULL; }
     if (g_ctx)   { quant_free_ctx(g_ctx);     g_ctx = NULL; }
 

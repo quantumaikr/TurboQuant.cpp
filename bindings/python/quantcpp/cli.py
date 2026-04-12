@@ -151,24 +151,63 @@ def cmd_run(args):
             print(tok, end="", flush=True)
         print()
     else:
+        from quantcpp import ChatContextOverflow
         print("quantcpp \u2014 type your message, Ctrl+C to exit", file=sys.stderr)
         # Multi-turn chat: accumulate history as ChatML so the model sees
         # prior turns. m.chat() reuses the KV cache via prefix-match, so
         # repeating the history is cheap (O(new tokens), not O(n^2)).
-        history = ""
+        # turns is a list of (user_msg, assistant_msg) pairs so we can
+        # trim from the front when we hit context overflow.
+        turns = []
+        def _build_history(extra_user=None):
+            parts = []
+            for u, a in turns:
+                parts.append(f"<|im_start|>user\n{u}<|im_end|>\n<|im_start|>assistant\n{a}<|im_end|>\n")
+            if extra_user is not None:
+                parts.append(f"<|im_start|>user\n{extra_user}<|im_end|>\n<|im_start|>assistant\n")
+            return "".join(parts)
+
         try:
             while True:
                 question = input("\nYou: ")
                 if not question.strip():
                     continue
-                history += f"<|im_start|>user\n{question}<|im_end|>\n<|im_start|>assistant\n"
                 print("AI: ", end="", flush=True)
                 reply_buf = []
-                for tok in m.chat(history):
-                    print(tok, end="", flush=True)
-                    reply_buf.append(tok)
+                # Retry loop: on context overflow, drop the oldest turn
+                # and try again. Without this, the C side resets the KV
+                # cache but Python's history still has the bloat, so
+                # every subsequent turn would loop back into overflow.
+                attempt = 0
+                while True:
+                    history = _build_history(extra_user=question)
+                    try:
+                        for tok in m.chat(history):
+                            print(tok, end="", flush=True)
+                            reply_buf.append(tok)
+                        break
+                    except ChatContextOverflow:
+                        if not turns:
+                            print("\n[chat] message alone exceeds context window — try a shorter question.",
+                                  file=sys.stderr)
+                            reply_buf = []  # nothing was emitted
+                            break
+                        dropped = turns.pop(0)
+                        attempt += 1
+                        print(f"\n[chat] context full \u2014 dropped oldest turn ({len(dropped[0])+len(dropped[1])} chars), retrying...",
+                              file=sys.stderr)
+                        # The session was already reset by the C side;
+                        # retrying with the trimmed history will hit
+                        # the slow path on this turn and the fast path
+                        # again from the next turn onward.
+                        if attempt > 8:
+                            print("[chat] too many overflow retries, giving up on this turn.",
+                                  file=sys.stderr)
+                            reply_buf = []
+                            break
                 print()
-                history += "".join(reply_buf) + "<|im_end|>\n"
+                if reply_buf:
+                    turns.append((question, "".join(reply_buf)))
         except (KeyboardInterrupt, EOFError):
             print("\nBye!", file=sys.stderr)
 

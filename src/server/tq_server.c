@@ -109,6 +109,12 @@ typedef struct {
     int         cached_capacity;
     char*       cached_text;          /* prompt + generated, for text-prefix matching */
     long        last_used;            /* monotonic counter for LRU */
+    /* Track the kv_type / value_quant_bits used to allocate kv_state.
+     * If a later request reuses this session id with different params,
+     * we must rebuild the state — the cached KV blocks are formatted
+     * for the original config and would be misinterpreted otherwise. */
+    tq_type     kv_type;
+    int         value_quant_bits;
 } kv_session_t;
 
 struct tq_server {
@@ -123,7 +129,8 @@ struct tq_server {
 };
 
 /* Find or allocate a session by id. Caller holds inference_mutex.
- * Returns a pointer into server->sessions. Never NULL (LRU evicts). */
+ * Returns a pointer into server->sessions, or NULL on allocation failure
+ * (caller must check and respond with HTTP 500). */
 static kv_session_t* get_or_create_session(tq_server_t* server,
                                             const char* sid,
                                             tq_type kv_type,
@@ -141,8 +148,36 @@ static kv_session_t* get_or_create_session(tq_server_t* server,
             continue;
         }
         if (strncmp(server->sessions[i].id, sid, SESSION_ID_MAX) == 0) {
-            server->sessions[i].last_used = server->session_clock;
-            return &server->sessions[i];
+            kv_session_t* hit = &server->sessions[i];
+            hit->last_used = server->session_clock;
+            /* If the client switched kv_type / value_quant_bits between
+             * turns, the cached KV blocks are formatted for the OLD
+             * config. We must rebuild — reusing the state would
+             * misinterpret quantized blocks and produce garbage. */
+            if (hit->kv_type != kv_type ||
+                hit->value_quant_bits != value_quant_bits) {
+                fprintf(stderr, "[server] session %s: kv_type/vq_bits changed, rebuilding state\n", hit->id);
+                if (hit->kv_state) tq_free_state(hit->kv_state);
+                if (hit->cached_tokens) free(hit->cached_tokens);
+                if (hit->cached_text) free(hit->cached_text);
+                hit->kv_state = tq_create_state_ex(
+                    &server->config.model->config, kv_type, value_quant_bits);
+                if (!hit->kv_state) {
+                    /* Free state failed → mark slot empty so we don't
+                     * leave a half-baked entry that future calls would
+                     * NULL-deref. */
+                    fprintf(stderr, "[server] tq_create_state_ex failed (rebuild) for session %s\n", hit->id);
+                    memset(hit, 0, sizeof(*hit));
+                    return NULL;
+                }
+                hit->cached_tokens = NULL;
+                hit->n_cached = 0;
+                hit->cached_capacity = 0;
+                hit->cached_text = NULL;
+                hit->kv_type = kv_type;
+                hit->value_quant_bits = value_quant_bits;
+            }
+            return hit;
         }
         if (server->sessions[i].last_used < lru_time) {
             lru_time = server->sessions[i].last_used;
@@ -163,6 +198,17 @@ static kv_session_t* get_or_create_session(tq_server_t* server,
     strncpy(s->id, sid, SESSION_ID_MAX - 1);
     s->kv_state = tq_create_state_ex(
         &server->config.model->config, kv_type, value_quant_bits);
+    if (!s->kv_state) {
+        /* tq_create_state_ex returned NULL (OOM, bad config). Clear the
+         * slot id so the slot looks empty again, otherwise the next
+         * call with the same sid would find this entry and dereference
+         * a NULL kv_state. */
+        fprintf(stderr, "[server] tq_create_state_ex failed for session %s\n", sid);
+        memset(s, 0, sizeof(*s));
+        return NULL;
+    }
+    s->kv_type = kv_type;
+    s->value_quant_bits = value_quant_bits;
     s->last_used = server->session_clock;
     return s;
 }
@@ -779,13 +825,22 @@ static void handle_chat_completions(tq_server_t* server, int fd, const char* bod
         kv_session_t* sess = get_or_create_session(server, req.session_id,
                                                     gen_cfg.kv_type,
                                                     gen_cfg.value_quant_bits);
-        int gen_rc = tq_generate_chat_text(server->config.model, server->config.tokenizer,
-                               sess->kv_state, req.prompt, &gen_cfg,
-                               &sess->cached_text,
-                               &sess->cached_tokens, &sess->n_cached,
-                               &sess->cached_capacity,
-                               output, sizeof(output));
-        if (gen_rc == -2) {
+        int gen_rc;
+        if (!sess) {
+            /* tq_create_state_ex failed inside get_or_create_session.
+             * Synthesize an error event in the SSE stream so the client
+             * doesn't see a happy "stop" with empty content. */
+            gen_rc = -1;
+            LOG_ERROR("Session allocation failed");
+        } else {
+            gen_rc = tq_generate_chat_text(server->config.model, server->config.tokenizer,
+                                   sess->kv_state, req.prompt, &gen_cfg,
+                                   &sess->cached_text,
+                                   &sess->cached_tokens, &sess->n_cached,
+                                   &sess->cached_capacity,
+                                   output, sizeof(output));
+        }
+        if (gen_rc == -2 && sess) {
             /* Context overflow — auto-reset session and surface error.
              * Client should retry with a shorter conversation history. */
             LOG_ERROR("Session %s: context overflow, auto-reset", sess->id);
@@ -797,7 +852,37 @@ static void handle_chat_completions(tq_server_t* server, int fd, const char* bod
             if (sess->cached_text) { free(sess->cached_text); sess->cached_text = NULL; }
         }
 
-        /* Send final chunk with finish_reason */
+        /* Send final chunk. finish_reason: "stop" on success, "error"
+         * on -1, "length" on -2 (overflow). The previous code always
+         * sent "stop" even when generation errored, leaving clients
+         * thinking the model decided to produce zero tokens. */
+        const char* finish_reason = "stop";
+        if (gen_rc == -2) finish_reason = "length";
+        else if (gen_rc < 0) finish_reason = "error";
+
+        if (gen_rc < 0) {
+            /* Emit an error delta so OpenAI-compatible clients can see
+             * what went wrong. Most clients surface the delta content. */
+            char err_chunk[SSE_CHUNK_SIZE];
+            const char* msg = (gen_rc == -2)
+                ? "context overflow — session reset, retry with shorter history"
+                : "internal error during generation";
+            snprintf(err_chunk, sizeof(err_chunk),
+                "{"
+                    "\"id\":\"%s\","
+                    "\"object\":\"chat.completion.chunk\","
+                    "\"created\":%ld,"
+                    "\"model\":\"%s\","
+                    "\"choices\":[{"
+                        "\"index\":0,"
+                        "\"delta\":{\"content\":\"[%s]\"},"
+                        "\"finish_reason\":null"
+                    "}]"
+                "}",
+                completion_id, (long)time(NULL), model_id, msg);
+            send_sse_event(fd, err_chunk);
+        }
+
         char final_chunk[SSE_CHUNK_SIZE];
         snprintf(final_chunk, sizeof(final_chunk),
             "{"
@@ -808,14 +893,15 @@ static void handle_chat_completions(tq_server_t* server, int fd, const char* bod
                 "\"choices\":[{"
                     "\"index\":0,"
                     "\"delta\":{},"
-                    "\"finish_reason\":\"stop\""
+                    "\"finish_reason\":\"%s\""
                 "}]"
             "}",
-            completion_id, (long)time(NULL), model_id);
+            completion_id, (long)time(NULL), model_id, finish_reason);
         send_sse_event(fd, final_chunk);
         send_sse_event(fd, "[DONE]");
 
-        LOG_INFO("Streaming complete: %d tokens", sse_ctx.token_count);
+        LOG_INFO("Streaming complete: %d tokens (rc=%d)",
+                 sse_ctx.token_count, gen_rc);
 
     } else {
         /* --- Non-streaming --- */
@@ -828,6 +914,16 @@ static void handle_chat_completions(tq_server_t* server, int fd, const char* bod
         kv_session_t* sess = get_or_create_session(server, req.session_id,
                                                     gen_cfg.kv_type,
                                                     gen_cfg.value_quant_bits);
+        if (!sess) {
+            LOG_ERROR("Session allocation failed");
+            free(collect.buf);
+            pthread_mutex_unlock(&server->inference_mutex);
+            free_chat_request(&req);
+            send_json(fd, 500, "Internal Server Error",
+                "{\"error\":{\"message\":\"Failed to allocate KV state for session\","
+                "\"type\":\"server_error\",\"code\":\"session_alloc_failed\"}}");
+            return;
+        }
         int gen_rc = tq_generate_chat_text(server->config.model, server->config.tokenizer,
                                sess->kv_state, req.prompt, &gen_cfg,
                                &sess->cached_text,
@@ -850,6 +946,20 @@ static void handle_chat_completions(tq_server_t* server, int fd, const char* bod
                 "{\"error\":{\"message\":\"Conversation history exceeds context window. "
                 "Session has been reset; please retry with a shorter history.\","
                 "\"type\":\"context_overflow\",\"code\":\"context_full\"}}");
+            return;
+        }
+        if (gen_rc < 0) {
+            /* Other error (-1: invalid args, OOM during prefill, etc.).
+             * The previous code fell through and sent HTTP 200 with an
+             * empty content string, which is indistinguishable from a
+             * deliberate empty completion. Return 500 instead. */
+            LOG_ERROR("Session %s: generation failed (rc=%d)", sess->id, gen_rc);
+            free(collect.buf);
+            pthread_mutex_unlock(&server->inference_mutex);
+            free_chat_request(&req);
+            send_json(fd, 500, "Internal Server Error",
+                "{\"error\":{\"message\":\"Generation failed (allocation error or invalid state)\","
+                "\"type\":\"server_error\",\"code\":\"generation_failed\"}}");
             return;
         }
 

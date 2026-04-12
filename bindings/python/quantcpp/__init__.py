@@ -35,6 +35,16 @@ from quantcpp._binding import (
 )
 
 
+class ChatContextOverflow(RuntimeError):
+    """Raised when chat history exceeds the model's context window.
+
+    The C side has already auto-reset the session by the time this is
+    raised — the caller must trim its conversation history (drop the
+    oldest turns) and retry. Catching this is the supported way to
+    detect "we hit max_seq_len" without parsing log output.
+    """
+
+
 # -----------------------------------------------------------------------
 # Model registry — small GGUF models auto-downloaded from HuggingFace
 # -----------------------------------------------------------------------
@@ -394,6 +404,15 @@ class Model:
 
         Falls back to ``generate()`` on older library builds without
         ``quant_chat`` symbol.
+
+        Raises
+        ------
+        ChatContextOverflow
+            When the conversation history exceeds the model's context
+            window. The session has been auto-reset; the caller should
+            trim history and retry.
+        RuntimeError
+            On other generation failures (allocation, invalid state).
         """
         self._ensure_open()
         lib = get_lib()
@@ -414,6 +433,7 @@ class Model:
         tokens = []
         done = threading.Event()
         error_box = [None]
+        rc_box = [0]
 
         def _on_token(text_ptr, _user_data):
             if text_ptr:
@@ -424,7 +444,8 @@ class Model:
         def _run():
             try:
                 with self._lock:
-                    lib.quant_chat(self._ctx, prompt.encode("utf-8"), cb, None)
+                    rc_box[0] = lib.quant_chat(
+                        self._ctx, prompt.encode("utf-8"), cb, None)
             except Exception as e:
                 error_box[0] = e
             finally:
@@ -447,6 +468,19 @@ class Model:
 
         if error_box[0] is not None:
             raise error_box[0]
+
+        # Surface generation failures from the C side. Previously these
+        # were silently swallowed: -2 (context overflow) and -1 (alloc
+        # failure) both produced empty token streams that callers could
+        # not distinguish from "the model decided to say nothing".
+        rc = rc_box[0]
+        if rc == -2:
+            raise ChatContextOverflow(
+                "conversation history exceeds the model's context window — "
+                "session has been reset, retry with shorter history"
+            )
+        if rc < 0:
+            raise RuntimeError(f"quant_chat failed with rc={rc}")
 
     def reset_chat(self) -> None:
         """Reset the chat KV cache. Next chat() call starts fresh."""
@@ -528,4 +562,4 @@ def load(path: str, **kwargs) -> Model:
     return Model(path, **kwargs)
 
 
-__all__ = ["Model", "load", "download", "__version__"]
+__all__ = ["Model", "load", "download", "ChatContextOverflow", "__version__"]

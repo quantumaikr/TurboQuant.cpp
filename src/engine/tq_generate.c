@@ -653,20 +653,23 @@ int tq_generate_continue(tq_model_t* model,
         n_new = 1;
     }
 
-    /* Sliding window: if the new prompt + reserved generation room would
-     * exceed max_seq_len, drop the oldest tokens from the front of the
-     * prompt. We keep the most recent (max_seq_len - max_tokens - 32) tokens.
-     * Note: this discards conversation history; ideally callers send
-     * pre-trimmed prompts, but this prevents catastrophic failure. */
+    /* Overflow check: reject prompts that won't fit. The previous
+     * behavior was to silently drop oldest tokens via a sliding window,
+     * but that desynced any cached_text the higher-level wrapper held
+     * (cached_text claimed the full prompt, while cached_tokens only
+     * had the truncated tail — next turn's text-prefix match would
+     * map text bytes to the wrong KV positions). Returning -2 lets the
+     * caller decide (reset chat, show error). */
     int reserve = config->max_tokens > 0 ? config->max_tokens : 256;
     int budget  = max_prompt - reserve - 32;
     if (budget < 64) budget = 64;
     if (n_new > budget) {
-        int drop = n_new - budget;
-        memmove(new_tokens, new_tokens + drop, (size_t)budget * sizeof(int));
-        n_new = budget;
-        /* Force full reprefill since the prefix shifted */
-        *n_cached_io = 0;
+        free(new_tokens);
+        if (getenv("TQ_CHAT_DEBUG")) {
+            fprintf(stderr, "[chat] OVERFLOW n_new=%d budget=%d max=%d\n",
+                    n_new, budget, max_prompt);
+        }
+        return -2;
     }
 
     int n_cached = *n_cached_io;
@@ -835,6 +838,7 @@ typedef struct {
     char*  buf;
     size_t len;
     size_t cap;
+    int    tainted;   /* 1 if accumulation ever failed → buf is incomplete */
     void (*user_cb)(const char*, void*);
     void*  user_data;
 } chat_accum_t;
@@ -842,18 +846,22 @@ typedef struct {
 static void chat_accum_callback(const char* tok, void* u) {
     chat_accum_t* ctx = (chat_accum_t*)u;
     if (!tok) return;
+    /* Always pass through to the user's callback first — losing tokens
+     * from the user's stream because of an INTERNAL realloc failure is
+     * far worse than a stale cached_text on the next turn. */
+    if (ctx->user_cb) ctx->user_cb(tok, ctx->user_data);
+    if (ctx->tainted) return;
     size_t tlen = strlen(tok);
     if (ctx->len + tlen + 1 > ctx->cap) {
         size_t new_cap = (ctx->cap + tlen + 64) * 2;
         char* nb = (char*)realloc(ctx->buf, new_cap);
-        if (!nb) return;
+        if (!nb) { ctx->tainted = 1; return; }
         ctx->buf = nb;
         ctx->cap = new_cap;
     }
     memcpy(ctx->buf + ctx->len, tok, tlen);
     ctx->len += tlen;
     ctx->buf[ctx->len] = '\0';
-    if (ctx->user_cb) ctx->user_cb(tok, ctx->user_data);
 }
 
 int tq_generate_chat_text(tq_model_t* model,
@@ -897,7 +905,7 @@ int tq_generate_chat_text(tq_model_t* model,
 
     /* Wrap user callback to capture generated text into a buffer for the
      * next call's cached_text update. */
-    chat_accum_t accum = { .buf = NULL, .len = 0, .cap = 0,
+    chat_accum_t accum = { .buf = NULL, .len = 0, .cap = 0, .tainted = 0,
                             .user_cb = config->on_token,
                             .user_data = config->user_data };
     void (*orig_cb)(const char*, void*) = config->on_token;
@@ -971,11 +979,35 @@ int tq_generate_chat_text(tq_model_t* model,
                     matched_text_len, n_suffix);
         }
 
-        /* --- Run generation loop directly --- */
+        /* --- Run generation loop directly. Mirrors tq_generate_continue
+         *     including rep_penalty (the fast path was silently dropping
+         *     it before, leaving rep_penalty inconsistent across turns). */
         int vocab_size = model->config.vocab_size;
         int n_cached = *n_cached_io;
         int pos = n_cached;
         int prev_token = n_cached > 0 ? cached[n_cached - 1] : 1;
+
+        float rep_penalty = config->rep_penalty;
+        int rep_window = config->rep_window;
+        if (rep_window > 64) rep_window = 64;
+        int recent_tokens[64];
+        int recent_count = 0;
+        for (int i = (n_cached > rep_window ? n_cached - rep_window : 0); i < n_cached; i++) {
+            recent_tokens[recent_count % 64] = cached[i];
+            recent_count++;
+        }
+        if (rep_penalty > 1.0f) {
+            int window = recent_count < rep_window ? recent_count : rep_window;
+            for (int r = 0; r < window; r++) {
+                int idx = (recent_count - 1 - r) % 64;
+                if (idx < 0) idx += 64;
+                int tok = recent_tokens[idx];
+                if (tok >= 0 && tok < vocab_size && state->logits) {
+                    if (state->logits[tok] > 0) state->logits[tok] /= rep_penalty;
+                    else                         state->logits[tok] *= rep_penalty;
+                }
+            }
+        }
 
         unsigned long long rng_state = config->rng_seed
             ? (unsigned long long)config->rng_seed : (unsigned long long)time(NULL);
@@ -1022,9 +1054,24 @@ int tq_generate_chat_text(tq_model_t* model,
             pos++;
             generated++;
 
+            if (rep_penalty > 1.0f) {
+                int window = recent_count < rep_window ? recent_count : rep_window;
+                for (int r = 0; r < window; r++) {
+                    int idx = (recent_count - 1 - r) % 64;
+                    if (idx < 0) idx += 64;
+                    int tok = recent_tokens[idx];
+                    if (tok >= 0 && tok < vocab_size) {
+                        if (state->logits[tok] > 0) state->logits[tok] /= rep_penalty;
+                        else                         state->logits[tok] *= rep_penalty;
+                    }
+                }
+            }
+
             next_token = tq_sample_topp(state->logits, vocab_size,
                                          config->temperature, config->top_p,
                                          &rng_state);
+            recent_tokens[recent_count % 64] = next_token;
+            recent_count++;
         }
 
         if (output && output_size > 0) {
@@ -1041,24 +1088,36 @@ int tq_generate_chat_text(tq_model_t* model,
             output, output_size);
     }
 
-update_cache:
     /* Restore the original callback before returning to caller */
     config->on_token = orig_cb;
     config->user_data = orig_ud;
 
-    /* Update cached_text = prompt + generated text. The next call can
-     * fast-path against this if its prompt starts with this string. */
+    /* Update cached_text only if we know the KV state corresponds
+     * EXACTLY to (prompt + accum.buf):
+     *   - generated >= 0: generation didn't error out
+     *   - !accum.tainted: every generated token was captured
+     * On any failure, clear cached_text so the next call falls through
+     * to the slow path with a clean slate instead of trusting bytes
+     * that don't match the KV cache. */
     if (cached_text_io) {
-        size_t plen = strlen(prompt);
-        size_t glen = accum.len;
-        size_t new_len = plen + glen;
-        char* nt = (char*)malloc(new_len + 1);
-        if (nt) {
-            memcpy(nt, prompt, plen);
-            if (glen > 0 && accum.buf) memcpy(nt + plen, accum.buf, glen);
-            nt[new_len] = '\0';
-            if (*cached_text_io) free(*cached_text_io);
-            *cached_text_io = nt;
+        if (generated < 0 || accum.tainted) {
+            if (*cached_text_io) { free(*cached_text_io); *cached_text_io = NULL; }
+        } else {
+            size_t plen = strlen(prompt);
+            size_t glen = accum.len;
+            size_t new_len = plen + glen;
+            char* nt = (char*)malloc(new_len + 1);
+            if (nt) {
+                memcpy(nt, prompt, plen);
+                if (glen > 0 && accum.buf) memcpy(nt + plen, accum.buf, glen);
+                nt[new_len] = '\0';
+                if (*cached_text_io) free(*cached_text_io);
+                *cached_text_io = nt;
+            } else {
+                /* malloc failed → can't refresh cached_text. Clearing it
+                 * is safer than leaving the previous (now stale) value. */
+                if (*cached_text_io) { free(*cached_text_io); *cached_text_io = NULL; }
+            }
         }
     }
     if (accum.buf) free(accum.buf);
