@@ -2290,14 +2290,14 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
             memcpy(&s->x[i], &bits, 4);
         }
 #endif
-    } else if (model->output_gguf && !model->token_embedding) {
+    } else if (model->embed_gguf && !model->token_embedding) {
         /* GGUF embedding: dequant single row on demand (no FP32 table in memory) */
-        int block_elems = tq_ggml_type_blck(model->output_gguf_type);
-        int block_bytes = (int)tq_ggml_type_size(model->output_gguf_type);
+        int block_elems = tq_ggml_type_blck(model->embed_gguf_type);
+        int block_bytes = (int)tq_ggml_type_size(model->embed_gguf_type);
         int n_blocks = dim / block_elems;
         size_t row_bytes = (size_t)n_blocks * block_bytes;
-        const uint8_t* row_ptr = (const uint8_t*)model->output_gguf + (size_t)token * row_bytes;
-        tq_dequant_row_gguf(model->output_gguf_type, row_ptr, s->x, dim);
+        const uint8_t* row_ptr = (const uint8_t*)model->embed_gguf + (size_t)token * row_bytes;
+        tq_dequant_row_gguf(model->embed_gguf_type, row_ptr, s->x, dim);
     } else {
         memcpy(s->x, model->token_embedding + (size_t)token * dim,
                dim * sizeof(float));

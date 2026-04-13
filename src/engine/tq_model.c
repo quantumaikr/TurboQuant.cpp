@@ -3687,11 +3687,15 @@ tq_model_t* tq_load_gguf(const char* path) {
         } else if (emb_t->type == TQ_GGML_TYPE_BF16 || emb_t->type == TQ_GGML_TYPE_F16) {
             model->embed_bf16 = (const uint16_t*)emb_t->data;
         } else if (c->vocab_size > 100000 || emb_t->shape[1] > 100000) {
-            /* Large vocab: keep GGUF for output projection, dequant rows on demand */
-            model->output_gguf = emb_t->data;
+            /* Large vocab: keep GGUF pointers for on-demand dequant.
+             * embed_gguf = embedding for token lookup (per-row dequant)
+             * output_gguf = lm_head for output projection (fused dot)
+             * These start as the same tensor; if output.weight exists separately,
+             * output_gguf is overridden below. */
+            model->embed_gguf = emb_t->data;
+            model->embed_gguf_type = emb_t->type;
+            model->output_gguf = emb_t->data;        /* default: tied weights */
             model->output_gguf_type = emb_t->type;
-            /* Still need FP32 embedding for token lookup — allocate just one row buffer.
-             * The full FP32 table is NOT allocated. Token lookup uses on-the-fly dequant. */
             model->token_embedding = NULL;
             model->embed_bf16 = NULL;
             fprintf(stderr, "tq_load_gguf: large vocab (%d) — using GGUF embedding "
@@ -3710,7 +3714,17 @@ tq_model_t* tq_load_gguf(const char* path) {
 
     const tq_gguf_tensor_t* out_t = find_gguf_tensor(gguf, "output.weight");
     if (out_t) {
-        if (out_t->type == TQ_GGML_TYPE_F32) {
+        /* Separate output weight tensor (untied from embedding).
+         * For large vocab: use GGUF fused dot for output projection too. */
+        if (c->vocab_size > 100000 || (emb_t && emb_t->shape[1] > 100000)) {
+            /* Override output_gguf with the actual output weight (not embedding) */
+            model->output_gguf = out_t->data;
+            model->output_gguf_type = out_t->type;
+            model->output_weight = NULL;
+            fprintf(stderr, "tq_load_gguf: separate output.weight detected — "
+                    "using %s for lm_head (type differs from embedding)\n",
+                    tq_ggml_type_name(out_t->type));
+        } else if (out_t->type == TQ_GGML_TYPE_F32) {
             model->output_weight = (float*)out_t->data;
         } else if (out_t->type == TQ_GGML_TYPE_BF16 || out_t->type == TQ_GGML_TYPE_F16) {
             model->output_weight_bf16 = (const uint16_t*)out_t->data;

@@ -227,13 +227,23 @@ int tq_generate(tq_model_t* model, tq_tokenizer_t* tokenizer,
         if (model->config.model_type == 1) {
             add_bos = 1; /* Gemma: always prepend BOS=2 */
         } else {
-            /* Auto-detect: if vocab[0..7] contains <s>, add BOS.
-             * This covers Phi-3, LLaMA 2, and any future model
-             * that uses <s> as BOS without needing model-specific flags. */
+            /* Auto-detect BOS: check if vocab contains <s> (LLaMA 2, Phi-3)
+             * or <|begin_of_text|> (LLaMA 3). Both require BOS prepending. */
             for (int i = 0; i < tokenizer->vocab_size && i < 8; i++) {
                 if (tokenizer->vocab[i] && strcmp(tokenizer->vocab[i], "<s>") == 0) {
                     add_bos = 1; break;
                 }
+            }
+            /* LLaMA 3: <|begin_of_text|> is at high token ID (128000+), not in first 8.
+             * Use direct lookup instead of scanning. */
+            if (!add_bos) {
+                int bos_id = -1;
+                for (int i = 128000; i < tokenizer->vocab_size && i < 128010; i++) {
+                    if (tokenizer->vocab[i] && strcmp(tokenizer->vocab[i], "<|begin_of_text|>") == 0) {
+                        bos_id = i; break;
+                    }
+                }
+                if (bos_id >= 0) add_bos = 1;
             }
         }
         n_prompt = tq_encode(tokenizer, prompt, prompt_tokens, 4096, add_bos);
@@ -662,6 +672,13 @@ int tq_generate_continue(tq_model_t* model,
             for (int i = 0; i < tokenizer->vocab_size && i < 8; i++) {
                 if (tokenizer->vocab[i] && strcmp(tokenizer->vocab[i], "<s>") == 0) {
                     add_bos = 1; break;
+                }
+            }
+            if (!add_bos) {
+                for (int i = 128000; i < tokenizer->vocab_size && i < 128010; i++) {
+                    if (tokenizer->vocab[i] && strcmp(tokenizer->vocab[i], "<|begin_of_text|>") == 0) {
+                        add_bos = 1; break;
+                    }
                 }
             }
         }

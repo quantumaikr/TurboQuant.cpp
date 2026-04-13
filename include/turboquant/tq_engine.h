@@ -253,8 +253,10 @@ typedef struct {
     float* output_scales;     /* [vocab_size * n_blocks] Q4 block scales */
 
     /* GGUF output weight — keep quantized for fused dot output projection */
-    const void* output_gguf;  /* mmap'd quantized weight, or NULL */
+    const void* output_gguf;  /* mmap'd quantized weight for lm_head, or NULL */
     int output_gguf_type;     /* tq_ggml_dtype */
+    const void* embed_gguf;   /* mmap'd quantized embedding for token lookup (may differ from output_gguf) */
+    int embed_gguf_type;      /* tq_ggml_dtype */
 
     /* Q8 weight quantization */
     int use_q8_weights;       /* 1 if layer weights are Q8-quantized */
