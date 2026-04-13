@@ -201,6 +201,19 @@ static void dequant_q8_0(const void* src, float* dst, int n) {
     }
 }
 
+/* --- Q8_1: 36 bytes, 32 elements --- */
+static void dequant_q8_1(const void* src, float* dst, int n) {
+    const int nb = n / 32;
+    const block_q8_1* blk = (const block_q8_1*)src;
+
+    for (int b = 0; b < nb; b++) {
+        const float d = fp16_to_fp32(blk[b].d);
+        for (int j = 0; j < 32; j++) {
+            dst[b * 32 + j] = d * blk[b].qs[j];
+        }
+    }
+}
+
 /* --- Q4_0: 18 bytes, 32 elements --- */
 static void dequant_q4_0(const void* src, float* dst, int n) {
     const int nb = n / 32;
@@ -1155,6 +1168,9 @@ void tq_dequant_row_gguf(tq_ggml_dtype type, const void* src, float* dst, int n)
         case TQ_GGML_TYPE_Q8_0:
             dequant_q8_0(src, dst, n);
             break;
+        case TQ_GGML_TYPE_Q8_1:
+            dequant_q8_1(src, dst, n);
+            break;
         case TQ_GGML_TYPE_Q2_K:
             dequant_q2_k(src, dst, n);
             break;
@@ -1511,6 +1527,69 @@ static float fused_dot_q8_0(const void* row, const float* x, int n) {
         vtotal1 = vfmaq_n_f32(vtotal1, vaddq_f32(vs2, vs3), d1);
     }
     /* Handle odd block */
+    for (; b < nb; b++) {
+        const float d = fp16_to_fp32(blk[b].d);
+        const float* xp = x + b * 32;
+        float32x4_t vs0 = vdupq_n_f32(0.0f), vs1 = vdupq_n_f32(0.0f);
+        for (int j = 0; j < 32; j += 8) {
+            int8x8_t vq = vld1_s8(blk[b].qs + j);
+            int16x8_t vq16 = vmovl_s8(vq);
+            vs0 = vfmaq_f32(vs0, vcvtq_f32_s32(vmovl_s16(vget_low_s16(vq16))),  vld1q_f32(xp + j));
+            vs1 = vfmaq_f32(vs1, vcvtq_f32_s32(vmovl_s16(vget_high_s16(vq16))), vld1q_f32(xp + j + 4));
+        }
+        vtotal0 = vfmaq_n_f32(vtotal0, vaddq_f32(vs0, vs1), d);
+    }
+    sum = vaddvq_f32(vaddq_f32(vtotal0, vtotal1));
+#else
+    for (int b = 0; b < nb; b++) {
+        const float d = fp16_to_fp32(blk[b].d);
+        const float* xp = x + b * 32;
+        float block_sum = 0.0f;
+        for (int j = 0; j < 32; j++) block_sum += (float)blk[b].qs[j] * xp[j];
+        sum += d * block_sum;
+    }
+#endif
+    return sum;
+}
+
+/* Fused Q8_1 dot product: 36 bytes per 32 elements.
+ * Same math as Q8_0 (val = d * qs[i]) but different block layout.
+ * The `s` (sum) field is only used for Q4×Q8_1 mixed-type dot products. */
+static float fused_dot_q8_1(const void* row, const float* x, int n) {
+    const int nb = n / 32;
+    const block_q8_1* blk = (const block_q8_1*)row;
+    float sum = 0.0f;
+
+#if TQ_HAS_NEON
+    float32x4_t vtotal0 = vdupq_n_f32(0.0f);
+    float32x4_t vtotal1 = vdupq_n_f32(0.0f);
+
+    int b = 0;
+    for (; b + 1 < nb; b += 2) {
+        if (b + 3 < nb) __builtin_prefetch(&blk[b + 2], 0, 3);
+
+        const float d0 = fp16_to_fp32(blk[b].d);
+        const float* xp0 = x + b * 32;
+        float32x4_t vs0 = vdupq_n_f32(0.0f), vs1 = vdupq_n_f32(0.0f);
+        for (int j = 0; j < 32; j += 8) {
+            int8x8_t vq = vld1_s8(blk[b].qs + j);
+            int16x8_t vq16 = vmovl_s8(vq);
+            vs0 = vfmaq_f32(vs0, vcvtq_f32_s32(vmovl_s16(vget_low_s16(vq16))),  vld1q_f32(xp0 + j));
+            vs1 = vfmaq_f32(vs1, vcvtq_f32_s32(vmovl_s16(vget_high_s16(vq16))), vld1q_f32(xp0 + j + 4));
+        }
+        vtotal0 = vfmaq_n_f32(vtotal0, vaddq_f32(vs0, vs1), d0);
+
+        const float d1 = fp16_to_fp32(blk[b + 1].d);
+        const float* xp1 = x + (b + 1) * 32;
+        float32x4_t vs2 = vdupq_n_f32(0.0f), vs3 = vdupq_n_f32(0.0f);
+        for (int j = 0; j < 32; j += 8) {
+            int8x8_t vq = vld1_s8(blk[b + 1].qs + j);
+            int16x8_t vq16 = vmovl_s8(vq);
+            vs2 = vfmaq_f32(vs2, vcvtq_f32_s32(vmovl_s16(vget_low_s16(vq16))),  vld1q_f32(xp1 + j));
+            vs3 = vfmaq_f32(vs3, vcvtq_f32_s32(vmovl_s16(vget_high_s16(vq16))), vld1q_f32(xp1 + j + 4));
+        }
+        vtotal1 = vfmaq_n_f32(vtotal1, vaddq_f32(vs2, vs3), d1);
+    }
     for (; b < nb; b++) {
         const float d = fp16_to_fp32(blk[b].d);
         const float* xp = x + b * 32;
@@ -2153,7 +2232,7 @@ void tq_matmul_gguf(float* out, const float* x,
                                         tq_ggml_dtype, int, int);
         extern int tq_metal_batch_active(void);
 
-        if (tq_metal_available() && !tq_matmul_force_cpu) {
+        if (!tq_matmul_force_cpu && tq_metal_available()) {
             /* In batch mode, always dispatch to GPU (overhead is amortized).
              * In immediate mode, only for types that have Metal pipelines
              * AND large matrices where GPU wins. */
@@ -2326,6 +2405,9 @@ void tq_matmul_gguf(float* out, const float* x,
             break;
         case TQ_GGML_TYPE_Q8_0:
             fused_dot = fused_dot_q8_0;
+            break;
+        case TQ_GGML_TYPE_Q8_1:
+            fused_dot = fused_dot_q8_1;
             break;
         case TQ_GGML_TYPE_Q3_K:
             fused_dot = fused_dot_q3_k;

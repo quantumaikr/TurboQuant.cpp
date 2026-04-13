@@ -1184,6 +1184,12 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
         if (rope_pairs > model->rope_freqs_len)
             rope_pairs = model->rope_freqs_len;
 
+        /* Gemma 4 / STEP35 uses NeoX-style RoPE: pairs are (q[i], q[i+half])
+         * where half = head_dim/2. Other models use interleaved: (q[2i], q[2i+1]).
+         * The GGUF converter generates rope_freqs assuming NeoX layout. */
+        int neox = c->is_gemma4;
+        int half = head_dim / 2;
+
         for (int h = 0; h < n_heads; h++) {
             float* qh = s->q + h * head_dim;
             for (int i = 0; i < rope_pairs; i++) {
@@ -1192,10 +1198,12 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
                 float theta = pos * freq;
                 float cos_t = cosf(theta);
                 float sin_t = sinf(theta);
-                float q0 = qh[2 * i];
-                float q1 = qh[2 * i + 1];
-                qh[2 * i]     = q0 * cos_t - q1 * sin_t;
-                qh[2 * i + 1] = q0 * sin_t + q1 * cos_t;
+                int a = neox ? i        : 2 * i;
+                int b = neox ? i + half  : 2 * i + 1;
+                float q0 = qh[a];
+                float q1 = qh[b];
+                qh[a] = q0 * cos_t - q1 * sin_t;
+                qh[b] = q0 * sin_t + q1 * cos_t;
             }
             /* Pairs beyond rope_pairs are left unrotated (pass-through) */
         }
@@ -1207,10 +1215,12 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
                 float theta = pos * freq;
                 float cos_t = cosf(theta);
                 float sin_t = sinf(theta);
-                float k0 = kh[2 * i];
-                float k1 = kh[2 * i + 1];
-                kh[2 * i]     = k0 * cos_t - k1 * sin_t;
-                kh[2 * i + 1] = k0 * sin_t + k1 * cos_t;
+                int a = neox ? i        : 2 * i;
+                int b = neox ? i + half  : 2 * i + 1;
+                float k0 = kh[a];
+                float k1 = kh[b];
+                kh[a] = k0 * cos_t - k1 * sin_t;
+                kh[b] = k0 * sin_t + k1 * cos_t;
             }
         }
     } else {
@@ -1256,6 +1266,33 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
             if (pos >= c->rope_orig_ctx_len && c->rope_attn_factor > 0.0f) {
                 float scale = c->rope_attn_factor;
                 for (int i = 0; i < n_heads * head_dim; i++) s->q[i] *= scale;
+            }
+        } else if (c->is_gemma4) {
+            /* Gemma 4 uses NeoX-style RoPE: pairs are (q[i], q[i+half]) */
+            int half = head_dim / 2;
+            for (int h = 0; h < n_heads; h++) {
+                float* qh = s->q + h * head_dim;
+                for (int i = 0; i < half; i++) {
+                    float freq = 1.0f / powf(rope_base, 2.0f * i / (float)head_dim);
+                    float theta = pos * freq;
+                    float cos_t = cosf(theta);
+                    float sin_t = sinf(theta);
+                    float q0 = qh[i], q1 = qh[i + half];
+                    qh[i]        = q0 * cos_t - q1 * sin_t;
+                    qh[i + half] = q0 * sin_t + q1 * cos_t;
+                }
+            }
+            for (int h = 0; h < n_kv_heads; h++) {
+                float* kh = s->k + h * head_dim;
+                for (int i = 0; i < half; i++) {
+                    float freq = 1.0f / powf(rope_base, 2.0f * i / (float)head_dim);
+                    float theta = pos * freq;
+                    float cos_t = cosf(theta);
+                    float sin_t = sinf(theta);
+                    float k0 = kh[i], k1 = kh[i + half];
+                    kh[i]        = k0 * cos_t - k1 * sin_t;
+                    kh[i + half] = k0 * sin_t + k1 * cos_t;
+                }
             }
         } else {
             tq_rope(s->q, s->k, pos, head_dim, n_heads, n_kv_heads, rope_base);

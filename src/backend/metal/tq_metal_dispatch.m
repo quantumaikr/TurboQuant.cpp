@@ -628,6 +628,8 @@ int tq_metal_available(void) {
     /* TEMP DEBUG: force Metal OFF to isolate Phi-3.5 garbage output.
      * If this produces correct output for Phi-3.5, the issue is in Metal
      * initialization or GPU buffer allocation, not in matmul code. */
+    /* TQ_NO_METAL=1: disable Metal GPU entirely (Phi-3.5 workaround).
+     * TQ_NO_METAL_COMPUTE=1: init Metal but skip GPU compute (for debugging). */
     static int force_off = -1;
     if (force_off < 0) {
         force_off = (getenv("TQ_NO_METAL") != NULL) ? 1 : 0;

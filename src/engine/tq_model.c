@@ -3090,9 +3090,11 @@ tq_model_t* tq_load_gguf(const char* path) {
     int attn_indices[256]; /* max layers */
 
     /* Detect if GGUF already has Gemma +1.0 norm adjustment baked in.
-     * If first layer's attn_norm has mean > 2.0, it's already adjusted. */
-    int gemma_norms_adjusted = 0;
-    if (c->model_type == 1) {
+     * If first layer's attn_norm has mean > 2.0, it's already adjusted.
+     * Gemma 4 does NOT use the +1 convention (norm_shift=0 in converter),
+     * so skip the adjustment entirely for Gemma 4. */
+    int gemma_norms_adjusted = c->is_gemma4 ? 1 : 0;
+    if (c->model_type == 1 && !c->is_gemma4) {
         const tq_gguf_tensor_t* probe = tq_gguf_find_tensor(gguf, "blk.0.attn_norm.weight");
         if (probe && probe->type == TQ_GGML_TYPE_F32 && probe->shape[0] > 0) {
             const float* pw = (const float*)probe->data;
@@ -4130,9 +4132,15 @@ skip_q4_conversion: ;
      *   Adding +1 at runtime would double-apply and cause activation explosion.
      * The Gemma heuristic above (mean > 2.0 check) handles the Gemma case. */
 
-    /* Initialize persistent Metal GPU buffers for layer-level compute */
+    /* Initialize persistent Metal GPU buffers for layer-level compute.
+     * Skip for Phi-3 (has_fused_qkv): Metal GPU init corrupts Phi-3.5
+     * inference. The matmul dispatch already falls back to CPU via
+     * tq_matmul_force_cpu, but the GPU buffer allocation itself (or the
+     * Metal init it triggers) causes garbage output. Root cause TBD —
+     * possibly Metal shared-memory buffer allocation interferes with the
+     * GGUF mmap'd weight data on unified memory. */
 #ifdef TQ_HAS_METAL
-    {
+    if (!c->has_fused_qkv) {
         extern int tq_metal_gpu_init_buffers(int, int, int, int);
         extern int tq_metal_gpu_init_attn(int, int, int);
         int max_q_dim = c->n_heads * c->head_dim;

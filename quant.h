@@ -11658,16 +11658,21 @@ tq_model_t* tq_load_gguf(const char* path) {
      *
      * Also set for Phi-3 (fused QKV, never permuted by converter). */
     /* NeoX-style RoPE for models where n_heads*head_dim != hidden_dim
-     * (Qwen3: 32×128=4096 ≠ 2560). BUT: Gemma 4 also has this mismatch
-     * (8×256=2048 ≠ 1536) yet uses STANDARD interleaved RoPE, not NeoX.
-     * Exclude Gemma models from NeoX RoPE auto-detection. */
+     * (Qwen3: 32×128=4096 ≠ 2560). Exclude Gemma 3 (uses interleaved).
+     * Gemma 4 uses NeoX RoPE (confirmed: llama.cpp returns LLAMA_ROPE_TYPE_NEOX
+     * for LLM_ARCH_GEMMA4; converter generates NeoX-layout rope_freqs). */
     if (c->n_heads > 0 && c->head_dim > 0 &&
         c->n_heads * c->head_dim != c->hidden_dim &&
-        c->model_type != 1 /* exclude Gemma */) {
+        c->model_type != 1 /* exclude Gemma 3 */) {
         c->use_neox_rope = 1;
         fprintf(stderr, "tq_load_gguf: NeoX RoPE enabled "
                 "(n_heads*head_dim=%d != hidden=%d)\n",
                 c->n_heads * c->head_dim, c->hidden_dim);
+    }
+    /* Gemma 4 always uses NeoX-style RoPE (even though Gemma 3 uses interleaved) */
+    if (c->is_gemma4) {
+        c->use_neox_rope = 1;
+        fprintf(stderr, "tq_load_gguf: NeoX RoPE enabled for Gemma 4\n");
     }
 
     if (c->n_layers == 0 || c->hidden_dim == 0) {
@@ -11708,9 +11713,11 @@ tq_model_t* tq_load_gguf(const char* path) {
     int attn_indices[256]; /* max layers */
 
     /* Detect if GGUF already has Gemma +1.0 norm adjustment baked in.
-     * If first layer's attn_norm has mean > 2.0, it's already adjusted. */
-    int gemma_norms_adjusted = 0;
-    if (c->model_type == 1) {
+     * If first layer's attn_norm has mean > 2.0, it's already adjusted.
+     * Gemma 4 does NOT use the +1 convention (norm_shift=0 in converter),
+     * so skip the adjustment entirely for Gemma 4. */
+    int gemma_norms_adjusted = c->is_gemma4 ? 1 : 0;  /* Gemma4: treat as already adjusted (no +1 needed) */
+    if (c->model_type == 1 && !c->is_gemma4) {
         const tq_gguf_tensor_t* probe = tq_gguf_find_tensor(gguf, "blk.0.attn_norm.weight");
         if (probe && probe->type == TQ_GGML_TYPE_F32 && probe->shape[0] > 0) {
             const float* pw = (const float*)probe->data;
@@ -14435,6 +14442,12 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
         if (rope_pairs > model->rope_freqs_len)
             rope_pairs = model->rope_freqs_len;
 
+        /* Gemma 4 / STEP35 uses NeoX-style RoPE: pairs are (q[i], q[i+half])
+         * where half = head_dim/2. Other models use interleaved: (q[2i], q[2i+1]).
+         * The GGUF converter generates rope_freqs assuming NeoX layout. */
+        int neox = c->is_gemma4;
+        int half = head_dim / 2;
+
         for (int h = 0; h < n_heads; h++) {
             float* qh = s->q + h * head_dim;
             for (int i = 0; i < rope_pairs; i++) {
@@ -14443,10 +14456,12 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
                 float theta = pos * freq;
                 float cos_t = cosf(theta);
                 float sin_t = sinf(theta);
-                float q0 = qh[2 * i];
-                float q1 = qh[2 * i + 1];
-                qh[2 * i]     = q0 * cos_t - q1 * sin_t;
-                qh[2 * i + 1] = q0 * sin_t + q1 * cos_t;
+                int a = neox ? i        : 2 * i;
+                int b = neox ? i + half  : 2 * i + 1;
+                float q0 = qh[a];
+                float q1 = qh[b];
+                qh[a] = q0 * cos_t - q1 * sin_t;
+                qh[b] = q0 * sin_t + q1 * cos_t;
             }
             /* Pairs beyond rope_pairs are left unrotated (pass-through) */
         }
@@ -14458,10 +14473,12 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
                 float theta = pos * freq;
                 float cos_t = cosf(theta);
                 float sin_t = sinf(theta);
-                float k0 = kh[2 * i];
-                float k1 = kh[2 * i + 1];
-                kh[2 * i]     = k0 * cos_t - k1 * sin_t;
-                kh[2 * i + 1] = k0 * sin_t + k1 * cos_t;
+                int a = neox ? i        : 2 * i;
+                int b = neox ? i + half  : 2 * i + 1;
+                float k0 = kh[a];
+                float k1 = kh[b];
+                kh[a] = k0 * cos_t - k1 * sin_t;
+                kh[b] = k0 * sin_t + k1 * cos_t;
             }
         }
     } else {
