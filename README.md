@@ -41,26 +41,26 @@
 ```bash
 pip install quantcpp
 
-quantcpp pull phi-3.5-mini              # download from HuggingFace (~2.4 GB)
-quantcpp run phi-3.5-mini               # interactive chat
-quantcpp serve phi-3.5-mini -p 8080     # OpenAI-compatible HTTP server (SSE streaming)
+quantcpp pull qwen3                     # download Qwen3-4B Q4_K_M (~2.5 GB)
+quantcpp run qwen3                      # interactive chat
+quantcpp serve qwen3 -p 8080            # OpenAI-compatible HTTP server (SSE streaming)
 quantcpp client "Hi"                    # streaming client → server on :8080
 quantcpp list                           # show cached models
 ```
 
-Recommended default: **Phi-3.5-mini** (3.8B params, vocab 32K). The 32K vocab is the smallest in the registry, which makes the per-token `lm_head` matmul the fastest of any model we ship — Phi-3.5-mini is the best speed/quality combo on a laptop. Other aliases: `smollm2`, `smollm2:135m`, `llama3.2:1b`, `qwen3.5:0.8b`. Auto-pulls on first `run` / `serve`.
+Recommended default: **Qwen3-4B** (4B params, MMLU 73, 4.5 tok/s on M3). Best speed AND quality — the Q4 NEON fused dot path makes it 2.4x faster than Phi-3.5-mini despite a larger vocab. Other aliases: `phi3.5`, `smollm2`, `llama3.2:1b`. Auto-pulls on first `run` / `serve`.
 
 The `serve` subcommand exposes `POST /v1/chat/completions` (OpenAI-compatible) on port 8080 — clients pass `"stream": true` for SSE streaming, or omit it for a single JSON response. Built-in `quantcpp client` supports both modes (default: streaming, `--no-stream` for single response).
 
 **One-shot question:**
 ```bash
-quantcpp run phi-3.5-mini "What is gravity?"
+quantcpp run qwen3 "What is gravity?"
 ```
 
 **Python API (3 lines):**
 ```python
 from quantcpp import Model
-m = Model.from_pretrained("Phi-3.5-mini")
+m = Model.from_pretrained("Qwen3-4B")
 print(m.ask("What is gravity?"))
 ```
 

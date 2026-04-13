@@ -4,23 +4,17 @@ quantcpp -- Compress AI's memory 3x. It gets faster.
 Quick start:
 
     from quantcpp import Model
-    m = Model.from_pretrained("Phi-3.5-mini")
+    m = Model.from_pretrained("Qwen3-4B")
     print(m.ask("What is gravity?"))
 
 Model selection guide:
-    Phi-3.5-mini   (3.8 GB, vocab 32K)  — DEFAULT. 3.8B params, Q8_0.
-                                          2x faster than Q4_K_M on NEON
-                                          (3.0 vs 1.5 tok/s on M3).
-                                          Best speed/quality combo.
-    SmolLM2-1.7B   (1.7 GB, vocab 49K)  — lightweight all-rounder. ~12 tok/s
-                                          on Apple M3, smaller download.
-    Llama-3.2-1B   (750 MB, vocab 128K) — smallest download but slower
-                                          due to large vocab (~2 tok/s on M3).
-    SmolLM2-135M   (138 MB, vocab 49K)  — demo only, low quality output.
-
-Larger vocab = slower lm_head matmul → smaller params with smaller vocab
-often beats larger params with larger vocab. See docs/supported_models.md
-for the architecture support matrix.
+    Qwen3-4B       (2.5 GB, vocab 152K) — DEFAULT. 4.5 tok/s on M3.
+                                          Best quality (MMLU 73) AND
+                                          fastest (Q4 NEON fused dot).
+    Phi-3.5-mini   (3.8 GB, vocab 32K)  — 1.9 tok/s. Good quality.
+    SmolLM2-1.7B   (1.7 GB, vocab 49K)  — lightweight, ~12 tok/s.
+    Llama-3.2-1B   (750 MB, vocab 128K) — smallest download.
+    SmolLM2-135M   (138 MB, vocab 49K)  — demo only.
 """
 
 try:
@@ -71,30 +65,39 @@ _CACHE_DIR = Path(os.environ.get("QUANTCPP_CACHE",
 # adding new entries — there is no integrity check at runtime.
 _MODEL_REGISTRY = {
     # ── DEFAULT ──
-    # Phi-3.5-mini-instruct Q8_0. Switched from Q4_K_M on 2026-04-12
-    # after benchmarking: Q8_0 is 2x faster on Apple Silicon NEON
-    # (3.0 vs 1.5 tok/s on M3). Q4_K_M's complex super-block dequant
-    # dominates compute at batch-1; Q8_0's simple int8 dequant is
-    # NEON-friendly. Both produce identical quality. The larger download
-    # (3.8 GB vs 2.2 GB) is a one-time cost.
+    # Qwen3-4B Q4_K_M: best speed + quality combo (2026-04-13).
+    #
+    # Measured on Apple M3 (CPU, kv_compress=0):
+    #   Qwen3-4B Q4_K_M:    4.5 tok/s  (Q4 converted, NEON fused dot)
+    #   Phi-3.5-mini Q8_0:  1.9 tok/s  (GGUF on-the-fly, no Q4 path)
+    #
+    # Qwen3 is 2.4x faster AND has higher benchmark scores (MMLU 73
+    # vs ~65). The speed advantage comes from separate Q/K/V tensors
+    # that enable load-time Q4 conversion → NEON Q4×Q8 fused dot.
+    # Phi-3.5's fused QKV blocks this optimization.
+    #
+    # vocab 152K is larger than Phi-3.5's 32K, but the Q4 matmul
+    # speed more than compensates for the bigger lm_head.
+    "Qwen3-4B": (
+        "bartowski/Qwen_Qwen3-4B-GGUF",
+        "Qwen_Qwen3-4B-Q4_K_M.gguf",
+        2500,
+    ),
+    # Previous default. Still a good option for users who want the
+    # smallest lm_head (vocab 32K). Slower than Qwen3 because the
+    # fused QKV tensor blocks Q4 conversion.
     "Phi-3.5-mini": (
         "bartowski/Phi-3.5-mini-instruct-GGUF",
         "Phi-3.5-mini-instruct-Q8_0.gguf",
         3800,
     ),
-    # Lightweight all-rounder for users who want a smaller download
-    # than Phi-3.5-mini. vocab 49K keeps the lm_head matmul small, so
-    # on a mid-range M-series chip we measure ~12 tok/s — comfortable
-    # for interactive chat. Same llama arch family as SmolLM2-135M.
+    # Lightweight all-rounder. vocab 49K, ~12 tok/s on M3.
     "SmolLM2-1.7B": (
         "bartowski/SmolLM2-1.7B-Instruct-GGUF",
         "SmolLM2-1.7B-Instruct-Q8_0.gguf",
         1700,
     ),
-    # Smallest download in the "actually usable" tier. Slower at
-    # inference time because of the 128K Llama-3 vocab (~5x slower
-    # lm_head matmul on M3). Kept in the registry for users who
-    # specifically want a Llama model.
+    # Smallest usable download. 128K vocab → slower lm_head.
     "Llama-3.2-1B": (
         "hugging-quants/Llama-3.2-1B-Instruct-Q4_K_M-GGUF",
         "llama-3.2-1b-instruct-q4_k_m.gguf",
@@ -105,9 +108,7 @@ _MODEL_REGISTRY = {
         "Qwen3.5-0.8B-Q4_K_M.gguf",
         508,
     ),
-    # 138 MB demo model. Tokenizer + arch are llama-compatible but the
-    # model is too small to produce coherent output for general chat.
-    # Listed only so users can verify the install/load path quickly.
+    # 138 MB demo model. Too small for real use.
     "SmolLM2-135M": (
         "Felladrin/gguf-Q8_0-SmolLM2-135M-Instruct",
         "smollm2-135m-instruct-q8_0.gguf",

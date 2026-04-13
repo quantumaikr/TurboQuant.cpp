@@ -28,26 +28,26 @@
 ```bash
 pip install quantcpp
 
-quantcpp pull phi-3.5-mini              # HuggingFace에서 다운로드 (~2.4 GB)
-quantcpp run phi-3.5-mini               # 대화형 채팅
-quantcpp serve phi-3.5-mini -p 8080     # OpenAI 호환 HTTP 서버 (SSE 스트리밍)
+quantcpp pull qwen3                     # Qwen3-4B Q4_K_M 다운로드 (~2.5 GB)
+quantcpp run qwen3                      # 대화형 채팅
+quantcpp serve qwen3 -p 8080            # OpenAI 호환 HTTP 서버 (SSE 스트리밍)
 quantcpp client "안녕"                   # 스트리밍 클라이언트 → :8080 서버
 quantcpp list                           # 캐시된 모델 목록
 ```
 
-추천 기본 모델: **Phi-3.5-mini** (3.8B params, vocab 32K). registry의 모든 모델 중 가장 작은 vocab(32K)이라 토큰당 `lm_head` matmul이 가장 빠릅니다 — 노트북에서 속도와 품질의 최적 조합입니다. 다른 별칭: `smollm2`, `smollm2:135m`, `llama3.2:1b`, `qwen3.5:0.8b`. `run`/`serve` 첫 실행 시 자동 다운로드.
+추천 기본 모델: **Qwen3-4B** (4B params, MMLU 73, M3에서 4.5 tok/s). 최고 품질 AND 최고 속도 — Q4 NEON fused dot 경로로 Phi-3.5-mini보다 2.4배 빠릅니다. 다른 별칭: `phi3.5`, `smollm2`, `llama3.2:1b`. `run`/`serve` 첫 실행 시 자동 다운로드.
 
 `serve`는 OpenAI 호환 `POST /v1/chat/completions` 엔드포인트를 8080 포트에 제공합니다 — 클라이언트가 `"stream": true`를 보내면 SSE 토큰 단위 스트리밍, 생략하면 단일 JSON 응답. 내장 `quantcpp client`는 두 모드 모두 지원 (기본: 스트리밍, `--no-stream`: 단일 응답).
 
 **한 줄 질문:**
 ```bash
-quantcpp run phi-3.5-mini "중력이란 무엇인가요?"
+quantcpp run qwen3 "중력이란 무엇인가요?"
 ```
 
 **Python API (3줄):**
 ```python
 from quantcpp import Model
-m = Model.from_pretrained("Phi-3.5-mini")
+m = Model.from_pretrained("Qwen3-4B")
 print(m.ask("중력이란 무엇인가요?"))
 ```
 

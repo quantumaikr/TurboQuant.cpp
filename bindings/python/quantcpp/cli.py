@@ -19,10 +19,10 @@ import json
 
 
 # Ollama-style short aliases → canonical _MODEL_REGISTRY keys.
-# Plain "smollm2" without a size suffix points at the 1.7B model — that's
-# the recommended default. Users who explicitly want the 135M demo model
-# need to ask for it by full name.
 MODEL_ALIASES = {
+    "qwen3":           "Qwen3-4B",
+    "qwen3:4b":        "Qwen3-4B",
+    "qwen":            "Qwen3-4B",
     "smollm2":         "SmolLM2-1.7B",
     "smollm2:1.7b":    "SmolLM2-1.7B",
     "smollm2:135m":    "SmolLM2-135M",
@@ -428,7 +428,7 @@ def cmd_chat_default(args):
                      the registry (32K) AND 3.8B params, giving the
                      best speed/quality combo we ship.
     """
-    args.model = args.model or "Phi-3.5-mini"
+    args.model = args.model or "Qwen3-4B"
     args.threads = getattr(args, "threads", 4)
     args.max_tokens = getattr(args, "max_tokens", 256)
     args.temperature = getattr(args, "temperature", 0.7)
