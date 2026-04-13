@@ -392,6 +392,56 @@ class Model:
 
         return text
 
+    def ask_verified(self, context: str, question: str) -> tuple:
+        """Answer a question from context with coherence verification.
+
+        Returns (answer, confidence) where confidence is 0.0-1.0.
+        If verification fails, returns ("", 0.0).
+
+        This is the Python wrapper for quant_ask_verified() — the
+        universal coherence check that catches 'related but wrong' answers.
+
+        Example
+        -------
+        >>> answer, conf = m.ask_verified("Acme reported $847M revenue.", "What was revenue?")
+        >>> print(f"{answer} (confidence: {conf:.0%})")
+        '$847M (confidence: 90%)'
+        """
+        self._ensure_open()
+
+        # Step 1: Ask with self-check format
+        lookup_prompt = (
+            f"Document:\n{context}\n\n"
+            f"Question: {question}\n"
+            f"If this text answers the question, reply ANSWER: <answer>. "
+            f"If not, reply NONE."
+        )
+        answer = self.ask(lookup_prompt)
+
+        if not answer or answer.startswith("NONE") or "does not" in answer.lower():
+            return ("", 0.05)
+
+        # Strip ANSWER: prefix
+        text = answer
+        if text.upper().startswith("ANSWER:"):
+            text = text[7:].strip()
+
+        # Step 2: Coherence check
+        check_prompt = (
+            f"A user asked: \"{question}\"\n"
+            f"The system answered: \"{text[:200]}\"\n"
+            f"Is the EXACT question answered? YES or NO."
+        )
+        verdict = self.ask(check_prompt)
+        v = verdict.strip().lower()[:10] if verdict else ""
+
+        if "no" in v and "yes" not in v:
+            return (text, 0.1)
+        elif "yes" in v:
+            return (text, 0.9)
+        else:
+            return (text, 0.5)
+
     def generate(self, prompt: str) -> Iterator[str]:
         """Stream tokens from a prompt. Yields token strings one at a time.
 

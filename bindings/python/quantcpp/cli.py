@@ -361,6 +361,63 @@ def cmd_client(args):
         return 1
 
 
+def cmd_recommend(args):
+    """Suggest the best model based on priority."""
+    import quantcpp
+
+    # Model specs: (name, params, vocab, q4_gb, q8_gb, speed_note, quality_note)
+    models = [
+        ("Phi-3.5-mini", "3.8B", 32064, 2.4, 4.1, "~6.5 tok/s (Q8)", "MMLU 65.5, GSM8K 76.9"),
+        ("SmolLM2-1.7B", "1.7B", 49152, 1.1, 1.8, "~23 tok/s (Q8)", "Good for simple QA"),
+        ("Llama-3.2-1B", "1.0B", 128256, 0.8, 1.4, "~2.3 tok/s (Q8)", "MMLU 49.3"),
+        ("Qwen3.5-0.8B", "0.8B", 248320, 0.5, 0.9, "~1 tok/s (Q8)", "DeltaNet hybrid"),
+    ]
+
+    priority = args.priority
+    print(f"\n  quantcpp recommend (priority: {priority})")
+    print(f"  {'='*60}\n")
+
+    if priority == "speed":
+        pick = models[1]  # SmolLM2
+        reason = "Smallest model + small vocab (49K) = fastest generation"
+    elif priority == "quality":
+        pick = models[0]  # Phi-3.5
+        reason = "Best benchmarks at usable speed (32K vocab)"
+    else:  # balanced
+        pick = models[0]  # Phi-3.5
+        reason = "32K vocab gives best speed/quality ratio in 3-4B class"
+
+    print(f"  Recommended: {pick[0]}")
+    print(f"  Params:      {pick[1]}")
+    print(f"  Vocab:       {pick[2]:,} tokens")
+    print(f"  Q4 size:     {pick[3]:.1f} GB")
+    print(f"  Q8 size:     {pick[4]:.1f} GB")
+    print(f"  Speed:       {pick[5]}")
+    print(f"  Quality:     {pick[6]}")
+    print(f"  Reason:      {reason}")
+    print()
+
+    # Check if cached
+    registry, cache_dir = quantcpp._MODEL_REGISTRY, quantcpp._CACHE_DIR
+    if pick[0] in registry:
+        _, filename, _ = registry[pick[0]]
+        cached = (cache_dir / filename).exists()
+        if cached:
+            print(f"  Status: cached ✓")
+        else:
+            print(f"  Install: quantcpp pull {pick[0].lower().replace(' ', '-')}")
+    print()
+
+    print("  All models (sorted by speed):")
+    print(f"  {'Model':<16} {'Params':>6} {'Vocab':>8} {'Speed':>18} {'Quality'}")
+    print(f"  {'-'*16} {'-'*6} {'-'*8} {'-'*18} {'-'*20}")
+    for m in models:
+        marker = " ←" if m[0] == pick[0] else ""
+        print(f"  {m[0]:<16} {m[1]:>6} {m[2]:>8,} {m[5]:>18} {m[6]}{marker}")
+    print()
+    return 0
+
+
 def cmd_chat_default(args):
     """Backwards-compatible default: auto-download Phi-3.5-mini and chat.
 
@@ -453,6 +510,12 @@ backwards-compat (no subcommand):
     p_client.add_argument("--no-stream", action="store_true",
                           help="Disable SSE streaming (single JSON response)")
 
+    # recommend
+    p_rec = sub.add_parser("recommend",
+        help="Suggest the best model for your hardware")
+    p_rec.add_argument("--priority", choices=["speed", "quality", "balanced"],
+                       default="balanced", help="Optimization priority")
+
     # Backwards-compat: top-level args for direct chat
     parser.add_argument("prompt", nargs="*", default=None,
                         help="(default mode) question to ask")
@@ -466,7 +529,7 @@ backwards-compat (no subcommand):
     # known subcommand, treat all positionals as a prompt. We must detect
     # this BEFORE argparse sees the argv, because the subparser will reject
     # unknown choices with an error.
-    known_commands = {"pull", "list", "run", "serve", "client"}
+    known_commands = {"pull", "list", "run", "serve", "client", "recommend"}
     argv = sys.argv[1:]
 
     first_pos = None
@@ -499,6 +562,8 @@ backwards-compat (no subcommand):
         return cmd_serve(args)
     if args.command == "client":
         return cmd_client(args)
+    if args.command == "recommend":
+        return cmd_recommend(args)
 
     # No subcommand → backwards-compat default chat
     return cmd_chat_default(args)
