@@ -177,6 +177,9 @@ typedef struct {
     const void* gguf_wq;  int gguf_wq_type;  /* Q proj (quantized, mmap'd) */
     const void* gguf_wk;  int gguf_wk_type;  /* K proj */
     const void* gguf_wv;  int gguf_wv_type;  /* V proj */
+    float* q_bias;         /* Q proj bias (Qwen2) — NULL if not present */
+    float* k_bias;         /* K proj bias */
+    float* v_bias;         /* V proj bias */
     const void* gguf_wo;  int gguf_wo_type;  /* O proj */
     /* GGUF on-the-fly for DeltaNet weights */
     const void* gguf_delta_qkv;  int gguf_delta_qkv_type;

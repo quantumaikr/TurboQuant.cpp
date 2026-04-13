@@ -3301,6 +3301,17 @@ tq_model_t* tq_load_gguf(const char* path) {
             t = find_gguf_tensor(gguf, tname);
             if (t) { layer->gguf_wo = t->data; layer->gguf_wo_type = t->type; }
 
+            /* Attention biases (Qwen2/2.5/3): Q, K, V biases are F32 */
+            snprintf(tname, sizeof(tname), "blk.%d.attn_q.bias", l);
+            t = find_gguf_tensor(gguf, tname);
+            if (t) layer->q_bias = dequant_tensor_fp32(t);
+            snprintf(tname, sizeof(tname), "blk.%d.attn_k.bias", l);
+            t = find_gguf_tensor(gguf, tname);
+            if (t) layer->k_bias = dequant_tensor_fp32(t);
+            snprintf(tname, sizeof(tname), "blk.%d.attn_v.bias", l);
+            t = find_gguf_tensor(gguf, tname);
+            if (t) layer->v_bias = dequant_tensor_fp32(t);
+
             attn_indices[n_attn_layers++] = l;
         }
         post_attn_load: ; /* Both fused QKV and standard Q/K/V paths converge here */

@@ -1040,6 +1040,12 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
             tq_matmul(s->q, s->xb, layer->wq, n_heads * head_dim, dim);
         }
     }
+    /* Apply Q bias (Qwen2/2.5/3) */
+    if (layer->q_bias) {
+        int q_dim = n_heads * head_dim;
+        for (int i = 0; i < q_dim; i++) s->q[i] += layer->q_bias[i];
+    }
+
     /* Check if this is a KV-shared layer (reuse KV cache from source layer).
      * KV-shared layers DO have K/V weights in GGUF but we skip them, matching
      * llama.cpp's has_kv(il) which returns false for l >= n_layer - n_kv_shared_layers. */
@@ -1073,6 +1079,16 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
             tq_matmul_gguf(s->v, s->xb, layer->gguf_wv, layer->gguf_wv_type, kv_dim, dim);
         } else {
             tq_matmul(s->v, s->xb, layer->wv, kv_dim, dim);
+        }
+    }
+
+    /* Apply K/V biases (Qwen2/2.5/3) */
+    if (!is_kv_shared) {
+        if (layer->k_bias) {
+            for (int i = 0; i < kv_dim; i++) s->k[i] += layer->k_bias[i];
+        }
+        if (layer->v_bias) {
+            for (int i = 0; i < kv_dim; i++) s->v[i] += layer->v_bias[i];
         }
     }
 
