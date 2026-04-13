@@ -155,12 +155,14 @@ def _literal_verify(
     # that happen to contain a refusal phrase are likely real content.
     answer_lower = answer.lower()
     answer_head = answer_lower[:120]
+    # Model-agnostic refusal detection: covers Phi-3.5, Qwen3.5, Qwen3, SmolLM2
     refusal_phrases = [
-        "does not provide", "no information", "not contain the answer",
-        "cannot determine", "unable to find", "unable to determine",
-        "not specified in", "not stated in", "not available in",
-        "i don't know", "i'm not sure", "no relevant information",
+        "does not provide", "no information", "not contain",
+        "cannot determine", "unable to", "not specified",
+        "not stated", "not available", "not mentioned",
+        "i don't know", "i'm not sure", "no relevant",
         "the text does not", "the passage does not",
+        "not found", "no answer", "[none]",
     ]
     if len(answer) < 200 and any(p in answer_head for p in refusal_phrases):
         return "UNSURE", f"answer is a refusal ('{answer[:60]}...')"
