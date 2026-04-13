@@ -11648,8 +11648,13 @@ tq_model_t* tq_load_gguf(const char* path) {
      * of how the converter permuted them.
      *
      * Also set for Phi-3 (fused QKV, never permuted by converter). */
+    /* NeoX-style RoPE for models where n_heads*head_dim != hidden_dim
+     * (Qwen3: 32×128=4096 ≠ 2560). BUT: Gemma 4 also has this mismatch
+     * (8×256=2048 ≠ 1536) yet uses STANDARD interleaved RoPE, not NeoX.
+     * Exclude Gemma models from NeoX RoPE auto-detection. */
     if (c->n_heads > 0 && c->head_dim > 0 &&
-        c->n_heads * c->head_dim != c->hidden_dim) {
+        c->n_heads * c->head_dim != c->hidden_dim &&
+        c->model_type != 1 /* exclude Gemma */) {
         c->use_neox_rope = 1;
         fprintf(stderr, "tq_load_gguf: NeoX RoPE enabled "
                 "(n_heads*head_dim=%d != hidden=%d)\n",
@@ -15756,12 +15761,22 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
     TQ_PROF_STOP(_tp, matmul_ns);
 
     if (pos <= 1 && getenv("TQ_DEBUG")) {
-        /* Print top-5 logits for debugging */
+        /* Print logits for debugging — include key token IDs */
         fprintf(stderr, "[DEBUG] pos=%d logits[0:8] = ", pos);
         for (int i = 0; i < 8; i++) fprintf(stderr, "%.2f ", s->logits[i]);
-        float max_l = s->logits[0]; int max_i = 0;
-        for (int i = 1; i < c->vocab_size; i++) { if (s->logits[i] > max_l) { max_l = s->logits[i]; max_i = i; } }
-        fprintf(stderr, "... max=%.2f @%d\n", max_l, max_i);
+        /* Token 100 = <|channel> (Gemma 4 thinking start) */
+        if (c->vocab_size > 100)
+            fprintf(stderr, " tok100=%.2f", s->logits[100]);
+        /* Top-5 */
+        int top5[5] = {0,0,0,0,0}; float top5v[5] = {-1e30f,-1e30f,-1e30f,-1e30f,-1e30f};
+        for (int i = 0; i < c->vocab_size; i++) {
+            int minj = 0;
+            for (int j = 1; j < 5; j++) if (top5v[j] < top5v[minj]) minj = j;
+            if (s->logits[i] > top5v[minj]) { top5[minj] = i; top5v[minj] = s->logits[i]; }
+        }
+        fprintf(stderr, " ... top5: ");
+        for (int j = 0; j < 5; j++) fprintf(stderr, "%d(%.1f) ", top5[j], top5v[j]);
+        fprintf(stderr, "\n");
     }
 
     /* Final logit soft-capping: logits = cap * tanh(logits / cap) */
@@ -16039,6 +16054,13 @@ int tq_generate(tq_model_t* model, tq_tokenizer_t* tokenizer,
             }
             if (s_id >= 0) add_bos = 1;
         }
+        /* Skip BOS when the prompt already starts with a special token
+         * (e.g., <|im_start|> for ChatML, <|user|> for Phi-3). Adding
+         * BOS before a chat template confuses Qwen3 and other models
+         * that expect the template to be the first token. */
+        if (add_bos && prompt && prompt[0] == '<' && prompt[1] == '|') {
+            add_bos = 0;
+        }
         n_prompt = tq_encode(tokenizer, prompt, prompt_tokens, 4096, add_bos);
     } else {
         /* No tokenizer: use BOS only (Gemma=2, Qwen=skip) */
@@ -16313,6 +16335,8 @@ int tq_generate_continue(tq_model_t* model,
     int n_new = 0;
     if (tokenizer && prompt) {
         int add_bos = (model->config.model_type == 1) ? 1 : 0;
+        /* Skip BOS for chat-template prompts (same logic as tq_generate) */
+        if (add_bos && prompt[0] == '<' && prompt[1] == '|') add_bos = 0;
         n_new = tq_encode(tokenizer, prompt, new_tokens, max_prompt, add_bos);
     }
     if (n_new <= 0) {
