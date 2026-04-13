@@ -31,7 +31,7 @@ REPO = Path(__file__).resolve().parent.parent.parent.parent
 # quant.h as a single translation unit — no sync issues.
 # Phi-3.5: ~1.15 tok/s (CPU NEON), ~6.5 tok/s reported in PR #79.
 # Q8_0 is 2x faster than Q4_K_M on NEON (simpler dequant, 3.0 vs 1.5 tok/s).
-DEFAULT_MODEL = REPO / "models" / "Qwen3.5-4B-Q4_K_M.gguf"
+DEFAULT_MODEL = REPO / "models" / "Phi-3.5-mini-instruct-Q8_0.gguf"
 DEFAULT_SERVER_BINARY = REPO / "build_metal" / "quant-server-unified"
 DEFAULT_SERVER_HOST = "127.0.0.1"
 DEFAULT_SERVER_PORT = 8421  # arbitrary, avoid conflicts with 8080
@@ -44,7 +44,7 @@ DEFAULT_SERVER_PORT = 8421  # arbitrary, avoid conflicts with 8080
 CLIFF_BUDGET = {
     "models/Llama-3.2-3B-Instruct-Q8_0.gguf": 1024,
     "models/Llama-3.2-1B-Instruct-Q8_0.gguf": 512,
-    "models/Qwen3.5-4B-Q4_K_M.gguf": 1024,
+    "models/Phi-3.5-mini-instruct-Q8_0.gguf": 1024,
     "models/Phi-3.5-mini-instruct-Q4_K_M.gguf": 1024,
 }
 
