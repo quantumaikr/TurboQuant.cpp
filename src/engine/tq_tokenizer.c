@@ -1255,21 +1255,66 @@ int tq_encode(const tq_tokenizer_t* tok, const char* text,
         }
         free(norm);
     } else {
-        /* GPT2/Qwen byte-level BPE: each byte maps to a BPE character token */
-        for (int i = 0; i < text_len && n_tokens < max_tokens; i++) {
-            unsigned char byte = (unsigned char)text[i];
-            char bpe_char[4];
-            encode_byte_to_bpe_char(byte, bpe_char);
+        /* GPT2/Qwen/Gemma4 byte-level BPE.
+         *
+         * Pre-pass: match special/control tokens BEFORE byte-level decomposition.
+         * Special tokens like <|turn>, <turn|>, <|think|>, <|channel>, <|im_start|>,
+         * <|im_end|>, <|endoftext|> etc. must be emitted as single token IDs.
+         * Without this, "<|turn>" gets byte-decomposed into 7 separate tokens.
+         *
+         * Strategy: scan the text left-to-right. At each position, try to match
+         * the longest special token starting with '<'. If found, emit it and skip.
+         * Otherwise, emit a single byte as BPE character. */
+        int i = 0;
+        while (i < text_len && n_tokens < max_tokens) {
+            /* Try to match a special token at position i.
+             * Special tokens typically start with '<' and may contain '|'.
+             * Match greedily: find the longest token that matches at this position. */
+            int matched = 0;
+            if (text[i] == '<') {
+                /* Try matching known patterns: longest first.
+                 * Scan forward for '>' to find the end of the potential special token. */
+                int best_len = 0;
+                int best_id = -1;
+                for (int end = i + 2; end < text_len && end - i <= 32; end++) {
+                    if (text[end] == '>' || text[end] == '\n') {
+                        int try_len = (text[end] == '>') ? end - i + 1 : end - i;
+                        char buf[64];
+                        if (try_len > 0 && try_len < 64) {
+                            memcpy(buf, text + i, (size_t)try_len);
+                            buf[try_len] = '\0';
+                            int id = str_lookup(tok, buf);
+                            if (id >= 0 && try_len > best_len) {
+                                best_len = try_len;
+                                best_id = id;
+                            }
+                        }
+                        if (text[end] == '>') break; /* stop at first '>' */
+                    }
+                }
+                if (best_id >= 0) {
+                    tokens[n_tokens++] = best_id;
+                    i += best_len;
+                    matched = 1;
+                }
+            }
+            if (!matched) {
+                /* Standard BPE byte encoding */
+                unsigned char byte = (unsigned char)text[i];
+                char bpe_char[4];
+                encode_byte_to_bpe_char(byte, bpe_char);
 
-            int id = str_lookup(tok, bpe_char);
-            if (id >= 0) {
-                tokens[n_tokens++] = id;
-            } else {
-                char direct[2] = { (char)byte, '\0' };
-                id = str_lookup(tok, direct);
+                int id = str_lookup(tok, bpe_char);
                 if (id >= 0) {
                     tokens[n_tokens++] = id;
+                } else {
+                    char direct[2] = { (char)byte, '\0' };
+                    id = str_lookup(tok, direct);
+                    if (id >= 0) {
+                        tokens[n_tokens++] = id;
+                    }
                 }
+                i++;
             }
         }
     }
