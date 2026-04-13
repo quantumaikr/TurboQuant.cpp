@@ -17049,6 +17049,14 @@ quant_ctx* quant_new(quant_model* model, const quant_config* config) {
             gc.kv_type = TQ_TYPE_UNIFORM_3B;
             gc.value_quant_bits = 4;
             gc.delta_kv = 1;
+        } else if (config->kv_compress == 0) {
+            /* Explicitly disable KV compression. Without this, the
+             * default kv_type (TQ_TYPE_UNIFORM_4B from tq_default_gen_config)
+             * stays active even when the user requested no compression.
+             * This breaks Qwen3 (GQA + head_dim != hidden_dim/n_heads)
+             * where the quantized key cache path has stride mismatches. */
+            gc.kv_type = TQ_TYPE_COUNT;  /* sentinel = no compression */
+            gc.value_quant_bits = 0;
         }
     }
 
