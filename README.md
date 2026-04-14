@@ -8,7 +8,7 @@
 <p align="center">
   Chunking was a workaround for small context windows. We just made it unnecessary.<br>
   6.4× KV compression brings full-document understanding to consumer hardware.<br>
-  <code>pip install quantcpp</code> — 16K lines of C, zero dependencies.
+  <code>pip install quantcpp</code> — 17.6K lines of C, zero dependencies.
 </p>
 
 <table align="center">
@@ -16,7 +16,7 @@
 <td align="center"><b>7/7 vs 0/7</b><br>Beyond RAG measured</td>
 <td align="center"><b>6.4x compression</b><br>+3% PPL</td>
 <td align="center"><b>128K context</b><br>on 16GB Mac</td>
-<td align="center"><b>16K LOC</b><br>zero deps</td>
+<td align="center"><b>17.6K LOC</b><br>zero deps</td>
 </tr>
 </table>
 
@@ -400,6 +400,23 @@ On a 16GB Mac with Llama 3.2 3B: llama.cpp maxes out at ~50K tokens (FP16 KV). q
 ```
 
 Both are per-block methods. The quality gap comes from block size (128 vs 32), min-max range encoding, independent K/V treatment, and delta compression — not from a fundamental design flaw in llama.cpp. At ~1.6x compression, llama.cpp Q8+Q5 is excellent. quant.cpp targets the **4-7x range** where the difference matters.
+
+### vs llama.cpp: Inference speed (honest numbers)
+
+Generation throughput, 50 tokens, 4 threads, CPU-only, Apple M1 Pro:
+
+| Model | quant.cpp | llama.cpp | Ratio |
+|:--|:-:|:-:|:-:|
+| Llama 3.2 3B Q8_0 | **13.3 tok/s** | 12.6 tok/s | **105%** ✅ |
+| Phi-3.5-mini Q8_0 | 4.0 tok/s | 7.7 tok/s | 52% |
+| Phi-3.5-mini Q4_K_M | 2.9 tok/s | 16.0 tok/s | 18% |
+| Llama 3.2 1B Q8_0 | 38.3 tok/s | 289.7 tok/s | 13% |
+
+**Where we match**: Q8_0 on 3B-class models — our NEON int8×int8 fused dot is competitive with llama.cpp's hand-tuned assembly.
+
+**Where we lag**: Q4_K_M (mixed Q2_K/Q3_K/Q4_K) — llama.cpp has years of assembly tuning on these K-quant types. We have NEON for Q4_K and Q2_K but not Q3_K, and our implementations are ~2-5× slower than llama.cpp's tuned code.
+
+**Why we still exist**: llama.cpp is ~500K LOC (C++/CUDA/Metal/Vulkan). quant.cpp is ~17.6K LOC of C with zero dependencies. If you want the fastest inference, use llama.cpp. If you want something you can read end-to-end, embed in a single `.c` file, or use as a research platform for new KV compression methods — we're the alternative.
 
 ### vs other TurboQuant implementations
 
