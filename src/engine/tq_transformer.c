@@ -2342,17 +2342,18 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
     if (model->ple_dim > 0 && model->ple_embedding && model->ple_proj && !getenv("TQ_NO_PLE")) {
         int ple_dim = model->ple_dim;
         int n_layers = c->n_layers;
-        int total_ple = n_layers * ple_dim;  /* e.g., 35 * 256 = 8960 */
+        int total_ple = n_layers * ple_dim;  /* E2B: 35*256=8960, E4B: 42*256=10752 */
 
         /* Lazy allocation of ple_buf */
         if (!s->ple_buf) {
             s->ple_buf = (float*)calloc((size_t)total_ple, sizeof(float));
         }
 
-        /* Step A: Dequant per_layer_token_embd[token] → temp_embd[8960]
+        /* Step A: Dequant per_layer_token_embd[token] → temp_embd
          * The embedding tensor is [total_ple, vocab_size] in GGUF row-major,
          * so one token's data is at row offset = token * row_bytes. */
-        float temp_embd[8960];  /* stack buffer, total_ple <= 8960 */
+        float temp_embd[16384];  /* stack buffer, sized for total_ple up to 16384 (E4B=10752) */
+        if (total_ple > 16384) return s->logits;  /* safety guard — should not happen */
         {
             size_t type_size = tq_ggml_type_size(model->ple_embedding_type);
             int blck = tq_ggml_type_blck(model->ple_embedding_type);
@@ -2368,11 +2369,11 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
             temp_embd[i] *= ple_scale;
         }
 
-        /* Step B: per_layer_model_proj @ embed_raw → temp_proj[8960]
-         * ple_proj is [total_ple, hidden_dim] FP32 (rows=8960, cols=1536).
+        /* Step B: per_layer_model_proj @ embed_raw → temp_proj
+         * ple_proj is [total_ple, hidden_dim] FP32. For E4B: [10752, 2560].
          * We need: for each output row d in [0, total_ple): dot(ple_proj[d,:], s->x[:])
          * Note: s->x already has the scaled embedding from above. */
-        float temp_proj[8960];
+        float temp_proj[16384];
         tq_matmul(temp_proj, s->x, model->ple_proj, total_ple, dim);
 
         /* Scale by 1/sqrt(hidden_dim) */
