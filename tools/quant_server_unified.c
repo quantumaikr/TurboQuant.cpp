@@ -48,10 +48,11 @@ typedef struct {
 /* ============================================================
  * Chat template
  * ============================================================ */
-/* Template types: 0=ChatML (Qwen/Llama), 1=Phi-3, 2=Gemma */
+/* Template types: 0=ChatML, 1=Phi-3, 2=Gemma 4, 3=Llama 3.x */
 #define TMPL_CHATML  0
 #define TMPL_PHI3    1
 #define TMPL_GEMMA   2
+#define TMPL_LLAMA3  3
 
 static char* build_prompt(const char** roles, const char** contents,
                            int n_msgs, int template_type) {
@@ -95,6 +96,11 @@ static char* build_prompt(const char** roles, const char** contents,
                 n = snprintf(w, rem, "<|turn>user\n%s<turn|>\n", c);
             else
                 n = snprintf(w, rem, "<|turn>model\n%s<turn|>\n", c);
+        } else if (template_type == TMPL_LLAMA3) {
+            /* Llama 3.x: <|start_header_id|>role<|end_header_id|>\n\n{content}<|eot_id|> */
+            n = snprintf(w, rem,
+                "<|start_header_id|>%s<|end_header_id|>\n\n%s<|eot_id|>",
+                roles[i], c);
         } else {
             /* ChatML: <|im_start|>role\n...<|im_end|>\n */
             n = snprintf(w, rem, "<|im_start|>%s\n%s<|im_end|>\n", roles[i], c);
@@ -105,6 +111,8 @@ static char* build_prompt(const char** roles, const char** contents,
         snprintf(w, rem, "<|assistant|>\n");
     else if (template_type == TMPL_GEMMA)
         snprintf(w, rem, "<|turn>model\n");
+    else if (template_type == TMPL_LLAMA3)
+        snprintf(w, rem, "<|start_header_id|>assistant<|end_header_id|>\n\n");
     else
         snprintf(w, rem, "<|im_start|>assistant\n");
 
@@ -261,7 +269,11 @@ static void stream_on_token(const char* text, void* user_data) {
         strstr(text, "<start_of_turn>") || strstr(text, "<end_of_turn>") ||
         strstr(text, "<|turn>") || strstr(text, "<turn|>") ||
         strstr(text, "<|think|>") || strstr(text, "<|channel>") ||
-        strstr(text, "<eos>")) return;
+        strstr(text, "<eos>") ||
+        /* Llama 3.x special tokens */
+        strstr(text, "<|begin_of_text|>") || strstr(text, "<|end_of_text|>") ||
+        strstr(text, "<|start_header_id|>") || strstr(text, "<|end_header_id|>") ||
+        strstr(text, "<|eot_id|>")) return;
 
     /* JSON-escape the token */
     char escaped[1024];
@@ -299,7 +311,11 @@ static void collect_on_token(const char* text, void* user_data) {
         strstr(text, "<start_of_turn>") || strstr(text, "<end_of_turn>") ||
         strstr(text, "<|turn>") || strstr(text, "<turn|>") ||
         strstr(text, "<|think|>") || strstr(text, "<|channel>") ||
-        strstr(text, "<eos>")) return;
+        strstr(text, "<eos>") ||
+        /* Llama 3.x special tokens */
+        strstr(text, "<|begin_of_text|>") || strstr(text, "<|end_of_text|>") ||
+        strstr(text, "<|start_header_id|>") || strstr(text, "<|end_header_id|>") ||
+        strstr(text, "<|eot_id|>")) return;
 
     size_t tlen = strlen(text);
     if (cc->len + tlen >= cc->cap) {
@@ -599,6 +615,7 @@ int main(int argc, char** argv) {
             if (strcmp(t, "phi3") == 0) template_type = TMPL_PHI3;
             else if (strcmp(t, "gemma") == 0) template_type = TMPL_GEMMA;
             else if (strcmp(t, "chatml") == 0) template_type = TMPL_CHATML;
+            else if (strcmp(t, "llama3") == 0) template_type = TMPL_LLAMA3;
             fprintf(stderr, "Chat template: %s (--template override)\n", t);
         }
     }
@@ -615,6 +632,13 @@ int main(int argc, char** argv) {
         else if (strstr(bn, "gemma") || strstr(bn, "Gemma")) {
             template_type = TMPL_GEMMA;
             fprintf(stderr, "Detected Gemma model — using Gemma chat template\n");
+        }
+        /* Llama 3.x family: Llama-3, Llama-3.1, Llama-3.2 */
+        else if (strstr(bn, "Llama-3") || strstr(bn, "llama-3") ||
+                 strstr(bn, "Llama3") || strstr(bn, "llama3") ||
+                 strstr(bn, "Meta-Llama-3")) {
+            template_type = TMPL_LLAMA3;
+            fprintf(stderr, "Detected Llama 3 model — using Llama 3 chat template\n");
         }
     }
     int has_fused_qkv = (template_type == TMPL_PHI3) ? 1 : 0;
