@@ -16175,6 +16175,15 @@ tq_gen_skip_tokenize:
         }
     }
 
+    /* Suppress <think> token to disable thinking/reasoning mode.
+     * Qwen3.5 models default to thinking mode which adds many tokens
+     * of internal reasoning before the actual answer. By suppressing
+     * the <think> special token, the model goes directly to answering. */
+    int think_token_id = tokenizer ? str_lookup(tokenizer, "<think>") : -1;
+    if (think_token_id >= 0 && think_token_id < vocab_size) {
+        state->logits[think_token_id] = -1e30f;
+    }
+
     /* Sample first generated token. The seed is configurable via
      * config->rng_seed (default 42); 0 falls back to 42 so existing
      * callers that never set rng_seed get bit-identical behaviour. */
@@ -16191,6 +16200,7 @@ tq_gen_skip_tokenize:
     int generated = 0;
     int output_pos = 0;
     int prev_token = prompt_tokens[n_prompt - 1];
+    int seen_nonwhitespace = 0; /* track whether we've emitted non-whitespace yet */
 
     /* EOS token IDs — check common values across model families.
      * Qwen3.5: eos = 248044 (<|endoftext|>), 248046 (<|im_end|>)
@@ -16286,6 +16296,19 @@ tq_gen_skip_tokenize:
                     strstr(piece, "<1st>") || strstr(piece, "<2nd>") || strstr(piece, "<3rd>")) {
                     piece = "";
                 }
+                /* Skip leading whitespace-only tokens (Qwen3.5 thinking mode
+                 * produces <think>...</think> which gets filtered, but the
+                 * surrounding newlines remain as plain text tokens).
+                 * Only skip before any non-whitespace content has been emitted. */
+                if (!seen_nonwhitespace && piece[0] != '\0') {
+                    const char* p = piece;
+                    while (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t') p++;
+                    if (*p == '\0') {
+                        piece = ""; /* all whitespace — skip */
+                    } else {
+                        seen_nonwhitespace = 1;
+                    }
+                }
             }
             if (should_stop) break;
 
@@ -16307,7 +16330,11 @@ tq_gen_skip_tokenize:
         prev_token = next_token;
         tq_forward(model, state, next_token, pos);
         pos++;
-        generated++;
+        /* Only count tokens that produced visible output toward the limit.
+         * Leading whitespace from thinking mode should not consume the budget. */
+        if (seen_nonwhitespace) {
+            generated++;
+        }
 
         /* Apply repetition penalty before sampling */
         if (rep_penalty > 1.0f) {
@@ -16323,6 +16350,11 @@ tq_gen_skip_tokenize:
                         state->logits[tok] *= rep_penalty;
                 }
             }
+        }
+
+        /* Suppress <think> token to prevent entering thinking mode */
+        if (think_token_id >= 0 && think_token_id < vocab_size) {
+            state->logits[think_token_id] = -1e30f;
         }
 
         /* Sample next token */
