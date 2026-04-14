@@ -704,6 +704,9 @@ typedef struct {
     const void* gguf_wk;  int gguf_wk_type;  /* K proj */
     const void* gguf_wv;  int gguf_wv_type;  /* V proj */
     const void* gguf_wo;  int gguf_wo_type;  /* O proj */
+    float* q_bias;        /* Q proj bias (Qwen2/2.5) — NULL if not present */
+    float* k_bias;        /* K proj bias */
+    float* v_bias;        /* V proj bias */
     /* GGUF on-the-fly for DeltaNet weights */
     const void* gguf_delta_qkv;  int gguf_delta_qkv_type;
     const void* gguf_delta_z;    int gguf_delta_z_type;
@@ -807,8 +810,10 @@ typedef struct {
     void* gguf_ctx;           /* tq_gguf_ctx_t* */
 
     /* GGUF embedding for output projection (large-vocab models keep quantized) */
-    const void* output_gguf;  /* raw GGUF quantized embedding data (NULL if using FP32/BF16) */
+    const void* output_gguf;  /* raw GGUF quantized weight for lm_head (may differ from embedding) */
     int output_gguf_type;     /* tq_ggml_dtype of output_gguf */
+    const void* embed_gguf;   /* raw GGUF quantized embedding for token lookup (may differ from output) */
+    int embed_gguf_type;      /* tq_ggml_dtype of embed_gguf */
 
     /* MoE config (valid when config.is_moe) */
     void* moe_config;         /* tq_moe_config_t* */
@@ -8507,21 +8512,56 @@ int tq_encode(const tq_tokenizer_t* tok, const char* text,
         }
         free(norm);
     } else {
-        /* GPT2/Qwen byte-level BPE: each byte maps to a BPE character token */
-        for (int i = 0; i < text_len && n_tokens < max_tokens; i++) {
-            unsigned char byte = (unsigned char)text[i];
-            char bpe_char[4];
-            encode_byte_to_bpe_char(byte, bpe_char);
+        /* GPT2/Qwen/Gemma4 byte-level BPE.
+         *
+         * Pre-pass: match special/control tokens BEFORE byte-level decomposition.
+         * Special tokens like <|turn>, <turn|>, <|think|>, <|im_start|>, etc.
+         * must be emitted as single token IDs (not byte-decomposed). */
+        int i = 0;
+        while (i < text_len && n_tokens < max_tokens) {
+            int matched = 0;
+            if (text[i] == '<') {
+                /* Greedy longest-match: scan for '>' to find token end */
+                int best_len = 0;
+                int best_id = -1;
+                for (int end = i + 2; end < text_len && end - i <= 32; end++) {
+                    if (text[end] == '>' || text[end] == '\n') {
+                        int try_len = (text[end] == '>') ? end - i + 1 : end - i;
+                        char buf[64];
+                        if (try_len > 0 && try_len < 64) {
+                            memcpy(buf, text + i, (size_t)try_len);
+                            buf[try_len] = '\0';
+                            int id = str_lookup(tok, buf);
+                            if (id >= 0 && try_len > best_len) {
+                                best_len = try_len;
+                                best_id = id;
+                            }
+                        }
+                        if (text[end] == '>') break;
+                    }
+                }
+                if (best_id >= 0) {
+                    tokens[n_tokens++] = best_id;
+                    i += best_len;
+                    matched = 1;
+                }
+            }
+            if (!matched) {
+                unsigned char byte = (unsigned char)text[i];
+                char bpe_char[4];
+                encode_byte_to_bpe_char(byte, bpe_char);
 
-            int id = str_lookup(tok, bpe_char);
-            if (id >= 0) {
-                tokens[n_tokens++] = id;
-            } else {
-                char direct[2] = { (char)byte, '\0' };
-                id = str_lookup(tok, direct);
+                int id = str_lookup(tok, bpe_char);
                 if (id >= 0) {
                     tokens[n_tokens++] = id;
+                } else {
+                    char direct[2] = { (char)byte, '\0' };
+                    id = str_lookup(tok, direct);
+                    if (id >= 0) {
+                        tokens[n_tokens++] = id;
+                    }
                 }
+                i++;
             }
         }
     }
@@ -11928,6 +11968,17 @@ tq_model_t* tq_load_gguf(const char* path) {
             t = find_gguf_tensor(gguf, tname);
             if (t) { layer->gguf_wo = t->data; layer->gguf_wo_type = t->type; }
 
+            /* Attention biases (Qwen2/2.5): Q, K, V biases (F32) */
+            snprintf(tname, sizeof(tname), "blk.%d.attn_q.bias", l);
+            t = find_gguf_tensor(gguf, tname);
+            if (t) layer->q_bias = dequant_tensor_fp32(t);
+            snprintf(tname, sizeof(tname), "blk.%d.attn_k.bias", l);
+            t = find_gguf_tensor(gguf, tname);
+            if (t) layer->k_bias = dequant_tensor_fp32(t);
+            snprintf(tname, sizeof(tname), "blk.%d.attn_v.bias", l);
+            t = find_gguf_tensor(gguf, tname);
+            if (t) layer->v_bias = dequant_tensor_fp32(t);
+
             attn_indices[n_attn_layers++] = l;
         }
 
@@ -12325,7 +12376,12 @@ post_attn_load:
             /* Keep as-is for streaming dequant */
             model->embed_bf16 = (const uint16_t*)emb_t->data;
         } else if (c->vocab_size > 100000 || emb_t->shape[1] > 100000) {
-            /* Large vocab: keep GGUF for output projection, dequant rows on demand */
+            /* Large vocab: keep GGUF pointers for on-demand dequant.
+             * embed_gguf = embedding for token lookup (per-row dequant)
+             * output_gguf = lm_head for output projection (defaults to same tensor for tied weights;
+             *   overridden below if separate output.weight exists with different type) */
+            model->embed_gguf = emb_t->data;
+            model->embed_gguf_type = emb_t->type;
             model->output_gguf = emb_t->data;
             model->output_gguf_type = emb_t->type;
             model->token_embedding = NULL;
@@ -12341,7 +12397,13 @@ post_attn_load:
 
     const tq_gguf_tensor_t* out_t = find_gguf_tensor(gguf, "output.weight");
     if (out_t) {
-        if (out_t->type == TQ_GGML_TYPE_F32) {
+        /* Separate output weight tensor (untied from embedding).
+         * For large vocab: override output_gguf with the actual output weight (not embedding). */
+        if (c->vocab_size > 100000 || (emb_t && emb_t->shape[1] > 100000)) {
+            model->output_gguf = out_t->data;
+            model->output_gguf_type = out_t->type;
+            model->output_weight = NULL;
+        } else if (out_t->type == TQ_GGML_TYPE_F32) {
             model->output_weight = (float*)out_t->data;
         } else if (out_t->type == TQ_GGML_TYPE_BF16 || out_t->type == TQ_GGML_TYPE_F16) {
             model->output_weight_bf16 = (const uint16_t*)out_t->data;
@@ -14257,6 +14319,11 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
         } else {
             tq_matmul(s->q, s->xb, layer->wq, n_heads * head_dim, dim);
         }
+        /* Apply Q bias (Qwen2/2.5) */
+        if (layer->q_bias) {
+            int q_dim = n_heads * head_dim;
+            for (int i = 0; i < q_dim; i++) s->q[i] += layer->q_bias[i];
+        }
         if (pos == 0 && l == 0 && getenv("TQ_DEBUG")) {
             fprintf(stderr, "[DEBUG] layer0 Q[0:4] = %.4f %.4f %.4f %.4f  K[0:4] = ",
                     s->q[0], s->q[1], s->q[2], s->q[3]);
@@ -14281,6 +14348,10 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
     } else {
         tq_matmul(s->k, s->xb, layer->wk, kv_dim, dim);
     }
+    /* Apply K bias (Qwen2/2.5) — skip for KV-shared layers (no K projection done) */
+    if (layer->k_bias && !kv_shared_skip && !has_fused_qkv_layer) {
+        for (int i = 0; i < kv_dim; i++) s->k[i] += layer->k_bias[i];
+    }
     if (pos == 0 && l == 0 && getenv("TQ_DEBUG")) {
         fprintf(stderr, "%.4f %.4f %.4f %.4f\n", s->k[0], s->k[1], s->k[2], s->k[3]);
     }
@@ -14303,6 +14374,10 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
             tq_matmul_gguf(s->v, s->xb, layer->gguf_wv, layer->gguf_wv_type, kv_dim, dim);
         } else {
             tq_matmul(s->v, s->xb, layer->wv, kv_dim, dim);
+        }
+        /* Apply V bias (Qwen2/2.5) */
+        if (layer->v_bias && has_v_weights) {
+            for (int i = 0; i < kv_dim; i++) s->v[i] += layer->v_bias[i];
         }
     }
 
@@ -15362,14 +15437,15 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
             memcpy(&s->x[i], &bits, 4);
         }
 #endif
-    } else if (model->output_gguf && !model->token_embedding) {
-        /* GGUF embedding: dequant single row on demand (no FP32 table in memory) */
-        int block_elems = tq_ggml_type_blck(model->output_gguf_type);
-        int block_bytes = (int)tq_ggml_type_size(model->output_gguf_type);
+    } else if (model->embed_gguf && !model->token_embedding) {
+        /* GGUF embedding: dequant single row on demand (no FP32 table in memory).
+         * Use embed_gguf (token_embd) which may differ from output_gguf (lm_head). */
+        int block_elems = tq_ggml_type_blck(model->embed_gguf_type);
+        int block_bytes = (int)tq_ggml_type_size(model->embed_gguf_type);
         int n_blocks = dim / block_elems;
         size_t row_bytes = (size_t)n_blocks * block_bytes;
-        const uint8_t* row_ptr = (const uint8_t*)model->output_gguf + (size_t)token * row_bytes;
-        tq_dequant_row_gguf(model->output_gguf_type, row_ptr, s->x, dim);
+        const uint8_t* row_ptr = (const uint8_t*)model->embed_gguf + (size_t)token * row_bytes;
+        tq_dequant_row_gguf(model->embed_gguf_type, row_ptr, s->x, dim);
     } else {
         memcpy(s->x, model->token_embedding + (size_t)token * dim,
                dim * sizeof(float));
@@ -16101,6 +16177,14 @@ int tq_generate(tq_model_t* model, tq_tokenizer_t* tokenizer,
                 }
             }
             if (s_id >= 0) add_bos = 1;
+            /* Llama 3: <|begin_of_text|> is at high token ID (128000+), not in first 8 */
+            if (!add_bos) {
+                for (int i = 128000; i < tokenizer->vocab_size && i < 128010; i++) {
+                    if (tokenizer->vocab[i] && strcmp(tokenizer->vocab[i], "<|begin_of_text|>") == 0) {
+                        add_bos = 1; break;
+                    }
+                }
+            }
         }
         /* Skip BOS when the prompt already starts with a special token
          * (e.g., <|im_start|> for ChatML, <|user|> for Phi-3). Adding
