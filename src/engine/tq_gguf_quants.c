@@ -1815,6 +1815,105 @@ static float fused_dot_iq3_xxs(const void* row, const float* x, int n) {
  *   First 32 elements: d1 * (q[l] & 0xF) - m1  (low nibble, scale pair[0])
  *   Next 32 elements:  d2 * (q[l] >> 4)  - m2   (high nibble, scale pair[1])
  */
+/* Fused Q2_K dot product: 84 bytes per 256 elements.
+ * 2-bit values packed 4-per-byte in qs[64]. scales[16] holds:
+ *   low 4 bits = sub-block scale (× d)
+ *   high 4 bits = sub-block min (× dmin)
+ * 16 sub-blocks of 16 elements each. Formula per sub-block:
+ *   sum += dl * dot(q2_values, x) - ml * sum(x)
+ * where q2_values are unsigned 2-bit values in [0, 3]. */
+static float fused_dot_q2_k(const void* row, const float* x, int n) {
+    const int nb = n / 256;
+    const block_q2_K* blk = (const block_q2_K*)row;
+    float sum = 0.0f;
+
+    for (int b = 0; b < nb; b++) {
+        const float d    = fp16_to_fp32(blk[b].d);
+        const float dmin = fp16_to_fp32(blk[b].dmin);
+        const uint8_t* q = blk[b].qs;
+        const float* xp = x + b * 256;
+
+        int is = 0;
+        /* 2 halves, 4 shifts per half, 2 sub-blocks per shift */
+        for (int half = 0; half < 2; half++) {
+            int shift = 0;
+            for (int j = 0; j < 4; ++j) {
+                /* Sub-block 0: q[0..15] >> shift & 3 */
+                uint8_t sc0 = blk[b].scales[is++];
+                float dl0 = d * (sc0 & 0x0F);
+                float ml0 = dmin * (sc0 >> 4);
+
+                /* Sub-block 1: q[16..31] >> shift & 3 */
+                uint8_t sc1 = blk[b].scales[is++];
+                float dl1 = d * (sc1 & 0x0F);
+                float ml1 = dmin * (sc1 >> 4);
+
+#if TQ_HAS_NEON
+                /* Load 16 packed bytes, extract 2-bit values, dot with x.
+                 * Mask is uint8x16_t of 0x03; shift applied via vshrq_n_u8. */
+                uint8x16_t qv0 = vld1q_u8(q);        /* sub-block 0 bytes */
+                uint8x16_t qv1 = vld1q_u8(q + 16);   /* sub-block 1 bytes */
+                uint8x16_t m03 = vdupq_n_u8(0x03);
+                uint8x16_t v0, v1;
+                switch (shift) {
+                    case 0: v0 = vandq_u8(qv0, m03); v1 = vandq_u8(qv1, m03); break;
+                    case 2: v0 = vandq_u8(vshrq_n_u8(qv0, 2), m03); v1 = vandq_u8(vshrq_n_u8(qv1, 2), m03); break;
+                    case 4: v0 = vandq_u8(vshrq_n_u8(qv0, 4), m03); v1 = vandq_u8(vshrq_n_u8(qv1, 4), m03); break;
+                    default: v0 = vshrq_n_u8(qv0, 6); v1 = vshrq_n_u8(qv1, 6); break;
+                }
+                /* Expand u8 → float32, accumulate dot and sum_x */
+                #define TQ_Q2K_ACC(nv, off, dl_v, ml_v)                                        \
+                    do {                                                                        \
+                        uint16x8_t w16_l = vmovl_u8(vget_low_u8(nv));                           \
+                        uint16x8_t w16_h = vmovl_u8(vget_high_u8(nv));                          \
+                        float32x4_t wf0 = vcvtq_f32_u32(vmovl_u16(vget_low_u16(w16_l)));        \
+                        float32x4_t wf1 = vcvtq_f32_u32(vmovl_u16(vget_high_u16(w16_l)));       \
+                        float32x4_t wf2 = vcvtq_f32_u32(vmovl_u16(vget_low_u16(w16_h)));        \
+                        float32x4_t wf3 = vcvtq_f32_u32(vmovl_u16(vget_high_u16(w16_h)));       \
+                        float32x4_t x0 = vld1q_f32(xp + (off));                                 \
+                        float32x4_t x1 = vld1q_f32(xp + (off) + 4);                             \
+                        float32x4_t x2 = vld1q_f32(xp + (off) + 8);                             \
+                        float32x4_t x3 = vld1q_f32(xp + (off) + 12);                            \
+                        float32x4_t vd = vdupq_n_f32(0.0f);                                     \
+                        vd = vfmaq_f32(vd, wf0, x0);                                            \
+                        vd = vfmaq_f32(vd, wf1, x1);                                            \
+                        vd = vfmaq_f32(vd, wf2, x2);                                            \
+                        vd = vfmaq_f32(vd, wf3, x3);                                            \
+                        float dot_s = vaddvq_f32(vd);                                           \
+                        float sum_s = vaddvq_f32(vaddq_f32(vaddq_f32(x0, x1), vaddq_f32(x2, x3))); \
+                        sum += (dl_v) * dot_s - (ml_v) * sum_s;                                 \
+                    } while (0)
+
+                int yi = half * 128 + j * 32;
+                TQ_Q2K_ACC(v0, yi, dl0, ml0);
+                TQ_Q2K_ACC(v1, yi + 16, dl1, ml1);
+                #undef TQ_Q2K_ACC
+#else
+                int yi = half * 128 + j * 32;
+                float dot0 = 0, sumx0 = 0;
+                for (int l = 0; l < 16; l++) {
+                    float xv = xp[yi + l];
+                    dot0 += (float)((q[l] >> shift) & 3) * xv;
+                    sumx0 += xv;
+                }
+                sum += dl0 * dot0 - ml0 * sumx0;
+
+                float dot1 = 0, sumx1 = 0;
+                for (int l = 0; l < 16; l++) {
+                    float xv = xp[yi + 16 + l];
+                    dot1 += (float)((q[l + 16] >> shift) & 3) * xv;
+                    sumx1 += xv;
+                }
+                sum += dl1 * dot1 - ml1 * sumx1;
+#endif
+                shift += 2;
+            }
+            q += 32;
+        }
+    }
+    return sum;
+}
+
 static float fused_dot_q4_k(const void* row, const float* x, int n) {
     const int nb = n / 256;
     const block_q4_K* blk = (const block_q4_K*)row;
@@ -1846,14 +1945,72 @@ static float fused_dot_q4_k(const void* row, const float* x, int n) {
         const float* xp = x + b * 256;
         int is = 0;
 
-        /* 4 groups of 64 elements */
+#if TQ_HAS_NEON
+        /* 4 groups of 64 elements, NEON-accelerated */
+        const uint8x16_t mask_lo = vdupq_n_u8(0x0F);
         for (int j = 0; j < 256; j += 64) {
             const float d1 = d * sc[is + 0];
             const float m1 = dmin * mn[is + 0];
             const float d2 = d * sc[is + 1];
             const float m2 = dmin * mn[is + 1];
 
-            /* First 32 elements: low nibble */
+            /* Load 32 bytes = 32 pairs of nibbles covering 64 elements */
+            uint8x16_t qa = vld1q_u8(q);
+            uint8x16_t qb = vld1q_u8(q + 16);
+            /* Extract low nibbles (→ elements 0..31) and high nibbles (→ 32..63) */
+            uint8x16_t lo_a = vandq_u8(qa, mask_lo);
+            uint8x16_t lo_b = vandq_u8(qb, mask_lo);
+            uint8x16_t hi_a = vshrq_n_u8(qa, 4);
+            uint8x16_t hi_b = vshrq_n_u8(qb, 4);
+
+            /* Convert u8 nibbles [0..15] to float32 and dot with xp[...] */
+            float32x4_t vdot1 = vdupq_n_f32(0.0f);
+            float32x4_t vsum1 = vdupq_n_f32(0.0f);
+            float32x4_t vdot2 = vdupq_n_f32(0.0f);
+            float32x4_t vsum2 = vdupq_n_f32(0.0f);
+            /* Helper: process 16 elements of x[off:off+16] with nibble vector `nv` */
+            #define TQ_Q4K_ACC(nv, off, vdot, vsum)                                              \
+                do {                                                                             \
+                    uint16x8_t w16_l = vmovl_u8(vget_low_u8(nv));                                \
+                    uint16x8_t w16_h = vmovl_u8(vget_high_u8(nv));                               \
+                    float32x4_t wf0 = vcvtq_f32_u32(vmovl_u16(vget_low_u16(w16_l)));             \
+                    float32x4_t wf1 = vcvtq_f32_u32(vmovl_u16(vget_high_u16(w16_l)));            \
+                    float32x4_t wf2 = vcvtq_f32_u32(vmovl_u16(vget_low_u16(w16_h)));             \
+                    float32x4_t wf3 = vcvtq_f32_u32(vmovl_u16(vget_high_u16(w16_h)));            \
+                    float32x4_t x0 = vld1q_f32(xp + (off));                                      \
+                    float32x4_t x1 = vld1q_f32(xp + (off) + 4);                                  \
+                    float32x4_t x2 = vld1q_f32(xp + (off) + 8);                                  \
+                    float32x4_t x3 = vld1q_f32(xp + (off) + 12);                                 \
+                    (vdot) = vfmaq_f32((vdot), wf0, x0);                                         \
+                    (vdot) = vfmaq_f32((vdot), wf1, x1);                                         \
+                    (vdot) = vfmaq_f32((vdot), wf2, x2);                                         \
+                    (vdot) = vfmaq_f32((vdot), wf3, x3);                                         \
+                    (vsum) = vaddq_f32((vsum), vaddq_f32(vaddq_f32(x0, x1), vaddq_f32(x2, x3))); \
+                } while (0)
+            TQ_Q4K_ACC(lo_a, j +  0, vdot1, vsum1);
+            TQ_Q4K_ACC(lo_b, j + 16, vdot1, vsum1);
+            TQ_Q4K_ACC(hi_a, j + 32, vdot2, vsum2);
+            TQ_Q4K_ACC(hi_b, j + 48, vdot2, vsum2);
+            #undef TQ_Q4K_ACC
+
+            float dot1_s = vaddvq_f32(vdot1);
+            float sum1_s = vaddvq_f32(vsum1);
+            float dot2_s = vaddvq_f32(vdot2);
+            float sum2_s = vaddvq_f32(vsum2);
+            sum += d1 * dot1_s - m1 * sum1_s;
+            sum += d2 * dot2_s - m2 * sum2_s;
+
+            q += 32;
+            is += 2;
+        }
+#else
+        /* Scalar fallback (non-ARM) */
+        for (int j = 0; j < 256; j += 64) {
+            const float d1 = d * sc[is + 0];
+            const float m1 = dmin * mn[is + 0];
+            const float d2 = d * sc[is + 1];
+            const float m2 = dmin * mn[is + 1];
+
             float dot1 = 0.0f, sum_x1 = 0.0f;
             for (int l = 0; l < 32; l++) {
                 dot1  += (float)(q[l] & 0x0F) * xp[j + l];
@@ -1861,7 +2018,6 @@ static float fused_dot_q4_k(const void* row, const float* x, int n) {
             }
             sum += d1 * dot1 - m1 * sum_x1;
 
-            /* Next 32 elements: high nibble */
             float dot2 = 0.0f, sum_x2 = 0.0f;
             for (int l = 0; l < 32; l++) {
                 dot2  += (float)(q[l] >> 4) * xp[j + 32 + l];
@@ -1872,6 +2028,7 @@ static float fused_dot_q4_k(const void* row, const float* x, int n) {
             q += 32;
             is += 2;
         }
+#endif
     }
     return sum;
 }
@@ -2415,6 +2572,9 @@ void tq_matmul_gguf(float* out, const float* x,
             break;
         case TQ_GGML_TYPE_Q8_0:
             fused_dot = fused_dot_q8_0;
+            break;
+        case TQ_GGML_TYPE_Q2_K:
+            fused_dot = fused_dot_q2_k;
             break;
         case TQ_GGML_TYPE_Q8_1:
             fused_dot = fused_dot_q8_1;
