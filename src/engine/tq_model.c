@@ -3906,10 +3906,21 @@ tq_model_t* tq_load_gguf(const char* path) {
             goto skip_q4_conversion;
         }
         int has_gguf_weights = 0;
+        int phi3_split = (getenv("TQ_PHI3_SPLIT") != NULL);
         for (int l = 0; l < c->n_layers && !has_gguf_weights; l++) {
-            if (model->layers[l].gguf_wq || model->layers[l].gguf_w_gate
-                || model->layers[l].gguf_delta_qkv || model->layers[l].gguf_delta_z
-                || model->layers[l].moe)
+            tq_layer_weights_t* ly = &model->layers[l];
+            int fused_convertible = 0;
+            if (phi3_split && ly->gguf_w_qkv
+                && (ly->gguf_w_qkv_type == TQ_GGML_TYPE_Q4_K
+                 || ly->gguf_w_qkv_type == TQ_GGML_TYPE_Q4_0
+                 || ly->gguf_w_qkv_type == TQ_GGML_TYPE_Q5_K)) fused_convertible = 1;
+            if (phi3_split && ly->gguf_w_up_gate
+                && (ly->gguf_w_up_gate_type == TQ_GGML_TYPE_Q4_K
+                 || ly->gguf_w_up_gate_type == TQ_GGML_TYPE_Q4_0
+                 || ly->gguf_w_up_gate_type == TQ_GGML_TYPE_Q5_K)) fused_convertible = 1;
+            if (ly->gguf_wq || ly->gguf_w_gate
+                || ly->gguf_delta_qkv || ly->gguf_delta_z
+                || ly->moe || fused_convertible)
                 has_gguf_weights = 1;
         }
 
@@ -4004,6 +4015,70 @@ tq_model_t* tq_load_gguf(const char* path) {
                         layer->w_down = fp;
                         layer->gguf_w_down = NULL;
                         fp32_temps[n_tmp++] = fp;
+                    }
+                }
+
+                /* Phi-3 fused QKV split to internal Q4 was TESTED and caused
+                 * quality regression on arithmetic tasks (2+2=3 instead of 4).
+                 * The internal Q4 format has per-32 scales where Q4_K uses
+                 * 6-bit sub-block scales — strictly less precision. The split
+                 * path is preserved below but gated behind TQ_PHI3_SPLIT=1
+                 * for future work on a better-quality path (e.g., Q4+Q2 with
+                 * larger residual tables, or keeping Q5_K for critical rows). */
+                if (layer->gguf_w_qkv && getenv("TQ_PHI3_SPLIT")
+                    && (layer->gguf_w_qkv_type == TQ_GGML_TYPE_Q4_K
+                     || layer->gguf_w_qkv_type == TQ_GGML_TYPE_Q4_0
+                     || layer->gguf_w_qkv_type == TQ_GGML_TYPE_Q5_K)) {
+                    int lq = c->n_heads * c->head_dim;
+                    int lkv = c->n_kv_heads * c->head_dim;
+                    int total_out = lq + 2 * lkv;
+                    int n_full = total_out * dim;
+                    float* fp_full = (float*)malloc((size_t)n_full * sizeof(float));
+                    if (fp_full) {
+                        tq_dequant_row_gguf(layer->gguf_w_qkv_type, layer->gguf_w_qkv, fp_full, n_full);
+                        /* Split row-major [total_out, dim] → wq/wk/wv. */
+                        float* wq = (float*)malloc((size_t)lq  * dim * sizeof(float));
+                        float* wk = (float*)malloc((size_t)lkv * dim * sizeof(float));
+                        float* wv = (float*)malloc((size_t)lkv * dim * sizeof(float));
+                        if (wq && wk && wv) {
+                            memcpy(wq, fp_full,                              (size_t)lq  * dim * sizeof(float));
+                            memcpy(wk, fp_full + (size_t)lq * dim,           (size_t)lkv * dim * sizeof(float));
+                            memcpy(wv, fp_full + (size_t)(lq + lkv) * dim,   (size_t)lkv * dim * sizeof(float));
+                            layer->wq = wq;
+                            layer->wk = wk;
+                            layer->wv = wv;
+                            fp32_temps[n_tmp++] = wq;
+                            fp32_temps[n_tmp++] = wk;
+                            fp32_temps[n_tmp++] = wv;
+                        }
+                        free(fp_full);
+                        layer->gguf_w_qkv = NULL;
+                        c->has_fused_qkv = 0; /* after split, no longer fused */
+                    }
+                }
+                /* Same quality caveat as fused QKV. Gated behind TQ_PHI3_SPLIT. */
+                if (layer->gguf_w_up_gate && getenv("TQ_PHI3_SPLIT")
+                    && (layer->gguf_w_up_gate_type == TQ_GGML_TYPE_Q4_K
+                     || layer->gguf_w_up_gate_type == TQ_GGML_TYPE_Q4_0
+                     || layer->gguf_w_up_gate_type == TQ_GGML_TYPE_Q5_K)) {
+                    int n_full = 2 * lint * dim;
+                    float* fp_full = (float*)malloc((size_t)n_full * sizeof(float));
+                    if (fp_full) {
+                        tq_dequant_row_gguf(layer->gguf_w_up_gate_type, layer->gguf_w_up_gate, fp_full, n_full);
+                        /* Phi-3 layout is [gate | up] concatenated along output rows. */
+                        float* w_gate = (float*)malloc((size_t)lint * dim * sizeof(float));
+                        float* w_up   = (float*)malloc((size_t)lint * dim * sizeof(float));
+                        if (w_gate && w_up) {
+                            memcpy(w_gate, fp_full,                         (size_t)lint * dim * sizeof(float));
+                            memcpy(w_up,   fp_full + (size_t)lint * dim,    (size_t)lint * dim * sizeof(float));
+                            layer->w_gate = w_gate;
+                            layer->w_up = w_up;
+                            fp32_temps[n_tmp++] = w_gate;
+                            fp32_temps[n_tmp++] = w_up;
+                        }
+                        free(fp_full);
+                        layer->gguf_w_up_gate = NULL;
+                        c->has_fused_up_gate = 0;
                     }
                 }
 

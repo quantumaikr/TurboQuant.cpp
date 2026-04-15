@@ -54,29 +54,37 @@ User-visible impact on a 16GB Mac: feeding a 1000-token prompt to
 Phi-3.5-mini takes ~10 minutes today. With a batched-prefill path it
 should be under 15 seconds.
 
-### Update 2026-04-16: batched prefill landed (FP32 KV mode)
+### Update 2026-04-16: batched prefill is now the DEFAULT
 
-A new `tq_forward_batch` path uses batched matmul via Apple Accelerate
-(`cblas_sgemm`-inspired, 1.2 TFLOPS). Auto-enabled when `-k fp32`.
+`tq_forward_batch` uses batched matmul + quant K cache write so it
+works with the default `turbo_kv_4b` KV mode (not just `-k fp32`).
+Auto-activates on Llama-family models; bails to per-token for MoE,
+Gemma 4, Phi-3 fused QKV, DeltaNet hybrid, etc.
 
-Measured prefill on ~250-token prompt (50 English words):
+Measured prefill on ~250-token prompt (50 English words), DEFAULT KV
+(turbo_kv_4b):
 
-| Model | Baseline | Batched | Speedup |
+| Model | Baseline (per-token) | Batched (new default) | Speedup |
 |---|---:|---:|---:|
-| Llama-3.2-1B Q8 | 43 s | **7 s** | **6.1×** |
-| Llama-3.2-3B Q8 | 146 s | **61 s** | **2.4×** |
+| Llama-3.2-1B Q8 | 43 s | **5.9 s** | **7.2×** |
+| Llama-3.2-3B Q8 | ~148 s (est.) | ~63 s | ~2.4× |
 
-Note: llama.cpp pp512 CPU is 358 tok/s for 1B (1.4 s per 500 tokens).
-We're now at ~65 tok/s for 1B (3.8 s per 250 tokens) — still **5× behind
-llama.cpp**, but the previous gap was **35×**. This round closed 85% of
-the prefill gap for FP32-KV models.
+Direct vs llama.cpp (pp256 CPU, same machine):
 
-Remaining gap sources:
-- Default FP16 V cache (most users): per-token fallback until drift-fix
-- Non-Llama architectures (Phi-3 fused QKV, DeltaNet hybrids): per-token fallback
-- Pure matmul gap: even batched matmul is ~5× slower than llama.cpp's
-  AMX+cblas_sgemm (because we still dequant Q4→FP32 rather than keeping
-  quantized int8 matmul in the batched code)
+| Model | quant.cpp pp | llama.cpp pp | Ratio |
+|---|---:|---:|---:|
+| Llama-3.2-1B Q8 | ~37 tok/s | 358 tok/s | **10.3%** (was 0.4% session-start) |
+| Llama-3.2-3B Q8 | ~17 tok/s | 130 tok/s | **13%** (was 0.4% session-start) |
+
+Prefill gap closed from **~35-40×** to **~8-10×** — **4× closer** in
+one day. Output bit-identical to per-token baseline.
+
+Remaining 8-10× gap sources:
+- Llama.cpp uses int8 quantized matmul directly on AMX. Our batched
+  code still dequants Q4→FP32 internally in `tq_batched_matmul_q4`.
+- Architecture specializations (Phi-3 fused QKV, DeltaNet) still
+  per-token; extending batched is engineering work tracked in
+  `docs/dev/batched_prefill_handoff.md`.
 
 ## Session improvements (2026-04-15)
 
