@@ -3360,9 +3360,7 @@ int tq_forward_batch(tq_model_t* model, tq_state_t* s,
                     }
                 } else {
                     /* FP16 V cache: use NEON vcvt_f32_f16 to exactly match the
-                     * per-token attention path. Inline IEEE-754 conversion gave
-                     * subtly different rounding (1 ULP) which compounded across
-                     * 16 layers into garbage output. */
+                     * per-token attention path. */
                     for (int t = 0; t <= pos; t++) {
                         uint16_t* vh = V_layer_fp16 + (size_t)t * kv_dim + kvh * head_dim;
                         float w = att[t];

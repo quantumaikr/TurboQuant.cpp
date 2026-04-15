@@ -165,6 +165,8 @@ The bug was using the same tool for both. The fix is using each for what it's go
 
 > **v3.1 throughput update (2026-04-15):** A focused perf round (Q4_K/Q5_K int8 fused dot, ARMv8.2 `vdotq_s32`, weight-row prefetch, 2-row ILP, P-core thread default) lifted CPU generation throughput by **+58% to +141%** across our model lineup on M1 Pro. Phi-3.5-mini Q8_0 jumped 5.4 → 13.0 tok/s (now at 71% of llama.cpp's pure-CPU speed). We're still 3-6× behind llama.cpp's mature Metal kernels — that's the next gap to close. Full numbers + reproduce instructions: [`bench/results/2026-04-15_throughput_vs_llamacpp.md`](bench/results/2026-04-15_throughput_vs_llamacpp.md).
 
+> **v3.2 batched prefill (2026-04-16):** Prompt prefill was the widest gap vs llama.cpp (40-50× slower). A new `tq_forward_batch` path uses batched matrix-matrix matmul via Apple AMX (`cblas_sgemm`-inspired, 1.2 TFLOPS), auto-enabled when KV cache is FP32. On Llama-3.2-1B Q8 with a ~450-token prompt: **19s → 8s end-to-end** (2.4× total, ~4× on prefill alone), bit-identical to per-token. Auto-enables on `-k fp32`; default FP16 V still uses per-token because drift at softmax cliffs amplifies over 16 layers into wrong tokens. Closes the worst prefill gap by ~4× today; bringing batched to default-FP16 mode is the next major engineering item. Commits `ed4b087`, `672fea2`.
+
 ---
 
 ## More Features
