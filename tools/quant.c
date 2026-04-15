@@ -37,6 +37,9 @@
 #include <time.h>
 #include <math.h>
 #include <unistd.h>  /* sysconf for default thread count */
+#if defined(__APPLE__)
+#include <sys/sysctl.h>  /* sysctlbyname for hw.perflevel0.physicalcpu */
+#endif
 
 /* MSVC: clock_gettime compatibility */
 #ifdef _WIN32
@@ -195,9 +198,20 @@ int main(int argc, char** argv) {
     float temperature = 0.7f;
     float top_p = 0.9f;
     tq_type kv_type = TQ_TYPE_TURBO_KV_4B;
-    /* Default: all available cores. M1 Pro has 6P+2E=8; tests show
-     * 8 threads gives ~65% more throughput than the prior fixed-4 default. */
-    int n_threads = (int)sysconf(_SC_NPROCESSORS_ONLN);
+    /* Default: P-core count on macOS, total core count elsewhere.
+     * On Apple Silicon, mixing P+E cores at the same priority makes
+     * the slow E threads become stragglers — total throughput drops.
+     * Tests on M1 Pro: 8P-only (8 threads) ≈ 8P+2E (10 threads). */
+    int n_threads;
+#if defined(__APPLE__)
+    {
+        size_t sz = sizeof(int);
+        if (sysctlbyname("hw.perflevel0.physicalcpu", &n_threads, &sz, NULL, 0) != 0)
+            n_threads = (int)sysconf(_SC_NPROCESSORS_ONLN);
+    }
+#else
+    n_threads = (int)sysconf(_SC_NPROCESSORS_ONLN);
+#endif
     if (n_threads < 1) n_threads = 4;
     if (n_threads > 16) n_threads = 16;  /* matches TQ_TP_MAX */
     int quant_mode = 0;   /* 0 = none (default), 2 = Q2, 4 = Q4, 8 = Q8 */
