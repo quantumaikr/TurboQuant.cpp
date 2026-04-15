@@ -36,8 +36,10 @@ make_prompt() {
 bench_prefill() {
     local model="$1"
     local n_words="$2"
+    local mode_label="${3:-baseline}"
+    local extra_args="${4:-}"
     if [[ ! -f "$MODELS_DIR/$model" ]]; then
-        printf "  %-40s %4dw  [SKIP]\n" "$model" "$n_words"
+        printf "  %-40s %4dw  %-12s  [SKIP]\n" "$model" "$n_words" "$mode_label"
         return
     fi
     local prompt
@@ -46,14 +48,13 @@ bench_prefill() {
 
     local t0 t1 elapsed
     t0=$(date +%s.%N)
-    "$QUANT_BIN" "$MODELS_DIR/$model" -p "$prompt" -n 1 -T 0 > /dev/null 2>&1
+    "$QUANT_BIN" "$MODELS_DIR/$model" $extra_args -p "$prompt" -n 1 -T 0 > /dev/null 2>&1
     t1=$(date +%s.%N)
     elapsed=$(echo "$t1 - $t0" | bc -l)
-    # Approx token count: ~5 chars per token for English
     local approx_toks=$(( prompt_chars / 5 ))
     local rate=$(echo "scale=1; $approx_toks / $elapsed" | bc -l)
-    printf "  %-40s %4dw  %6.1fs  (~%d tok)  pp_tps≈%s\n" \
-        "$model" "$n_words" "$elapsed" "$approx_toks" "$rate"
+    printf "  %-40s %4dw  %-12s  %6.1fs  pp_tps≈%s\n" \
+        "$model" "$n_words" "$mode_label" "$elapsed" "$rate"
 }
 
 echo "=== Prefill throughput (TQ_NO_METAL=1) ==="
@@ -71,4 +72,12 @@ for model in \
     Qwen3.5-4B-Q4_K_M.gguf; do
     bench_prefill "$model" 10   # ~50 tokens
     bench_prefill "$model" 50   # ~250 tokens
+done
+
+echo ""
+echo "=== With -k fp32 (batched prefill auto-enabled, ~2-4× speedup on prefill) ==="
+for model in \
+    Llama-3.2-1B-Instruct-Q8_0.gguf \
+    Llama-3.2-3B-Instruct-Q8_0.gguf; do
+    bench_prefill "$model" 50 "-k fp32" "-k fp32"
 done

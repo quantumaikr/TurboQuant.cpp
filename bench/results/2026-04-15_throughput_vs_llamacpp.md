@@ -52,8 +52,31 @@ Reproduce: `bash scripts/test_prefill.sh` and `llama-bench -m <model> -p 512 -n 
 
 User-visible impact on a 16GB Mac: feeding a 1000-token prompt to
 Phi-3.5-mini takes ~10 minutes today. With a batched-prefill path it
-should be under 15 seconds. **This is the single biggest user-facing
-gap** — and the next major engineering project for the engine.
+should be under 15 seconds.
+
+### Update 2026-04-16: batched prefill landed (FP32 KV mode)
+
+A new `tq_forward_batch` path uses batched matmul via Apple Accelerate
+(`cblas_sgemm`-inspired, 1.2 TFLOPS). Auto-enabled when `-k fp32`.
+
+Measured prefill on ~250-token prompt (50 English words):
+
+| Model | Baseline | Batched | Speedup |
+|---|---:|---:|---:|
+| Llama-3.2-1B Q8 | 43 s | **7 s** | **6.1×** |
+| Llama-3.2-3B Q8 | 146 s | **61 s** | **2.4×** |
+
+Note: llama.cpp pp512 CPU is 358 tok/s for 1B (1.4 s per 500 tokens).
+We're now at ~65 tok/s for 1B (3.8 s per 250 tokens) — still **5× behind
+llama.cpp**, but the previous gap was **35×**. This round closed 85% of
+the prefill gap for FP32-KV models.
+
+Remaining gap sources:
+- Default FP16 V cache (most users): per-token fallback until drift-fix
+- Non-Llama architectures (Phi-3 fused QKV, DeltaNet hybrids): per-token fallback
+- Pure matmul gap: even batched matmul is ~5× slower than llama.cpp's
+  AMX+cblas_sgemm (because we still dequant Q4→FP32 rather than keeping
+  quantized int8 matmul in the batched code)
 
 ## Session improvements (2026-04-15)
 
