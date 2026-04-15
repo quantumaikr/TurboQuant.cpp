@@ -27,6 +27,49 @@ DYLD_LIBRARY_PATH=build \
 # prints: " I'm so excited"  ← baseline (correct)
 ```
 
+## Session 2 findings (2026-04-16 early AM)
+
+After extensive layer-by-layer diff between batched and per-token paths:
+
+**What's bit-identical**:
+- tok0 (pos=0) through Layer 15 — every sub-op, every layer
+- tok1 (pos=1) through Layer 2 final Xres
+- Layer 3 attention-residual value at indices 0, 2, 3, 4 (partial match)
+
+**What diverges**:
+- Layer 3 tok1 attention-residual at indices 1, 5, 6, 7 — exactly 1 ULP off
+- This 1-ULP drift compounds ~1%/layer → wrong token by Layer 15
+
+**Surprising**: Setting `TQ_BATCHED_SERIAL=1` (which replaces my bm_q4_worker
+with literal per-token `tq_matmul_q4_preq` calls — the SAME function baseline
+uses) STILL produces the divergence. So the bug is not in the batched matmul
+accumulator order; it's somewhere in the broader orchestration of
+tq_forward_batch when processing multi-token.
+
+**Fixed along the way** (each moved Layer 0 closer to bit-identical):
+- Q8 quantization: `roundf` → `tq_quantize_row_q8` (NEON RNE)
+- FP16 conversion (write): inline → `f32_to_fp16_vec`
+- FP16 conversion (read): inline → NEON `vcvt_f32_f16`
+- Attention score accumulation: scalar → `vfmaq_f32` NEON
+- bm_q4_worker: scalar accumulator → NEON `float32x4_t sumv[]` + `vaddvq_f32`
+
+**Remaining hypothesis** (to test next session):
+The drift is at specific indices, not random. Index 1 of Layer 3 tok1 diverges
+but indices 0, 2, 3 don't. This is consistent with a SPECIFIC memory location
+being read slightly off. Possibilities:
+- Aliasing: my X buffer might be accidentally read before fully written in
+  some multi-token iteration (out-of-order thread effect)
+- FP16 round-trip on a specific value whose LSB happens to sit on a boundary
+- The `tq_forward` final call (after batched) reads K-cache positions [0..pos-1]
+  written by batched; if ANY of those are 1 ULP off for any layer, final
+  attention sees slightly wrong history. Could be compounding effect.
+
+**Concrete next-session experiment**:
+1. Dump Layer 3 tok0 wo matmul output (OB→X) byte-for-byte vs baseline
+2. Dump Layer 3 tok1 attention scores (att[0], att[1]) vs baseline
+3. If scores differ, dump K-cache at layer 3 pos=0 vs baseline
+4. If K-cache differs, dump the WK matmul output for tok0 at layer 3
+
 ## Latest session findings (2026-04-15 evening)
 
 - ✅ **SANITY mode confirms orchestration is correct**. Setting

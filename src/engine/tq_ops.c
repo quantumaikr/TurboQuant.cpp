@@ -1082,25 +1082,30 @@ static void* bm_q4_worker(void* arg) {
     const uint8x16_t mask_0f = vdupq_n_u8(0x0F);
     const uint8x16_t v8 = vdupq_n_u8(8);
 #endif
+    /* Per-row, per-token NEON vector accumulators. To match matmul_q4_rows'
+     * FP rounding bit-for-bit, we must use vmlaq_n_f32 into a 4-lane
+     * float32x4_t accumulator and reduce with vaddvq_f32 at the end. A
+     * scalar `acc[n] += ...` path produces 1-ULP drift per block which
+     * compounds 1% per transformer layer and flips output tokens. */
+#ifdef __ARM_NEON
+    if (N > 64) { /* safety limit for stack-alloc'd sumv array */
+        /* Fallback: serial per-token via tq_matmul_q4_preq would be needed
+         * here. For now reject large batches to keep the hot path simple. */
+        return NULL;
+    }
+    float32x4_t sumv[64];
+#endif
     for (int i = t->start_row; i < t->end_row; i++) {
         const uint8_t* wi = t->w_qs + (size_t)i * n_blocks * 16;
         const float*   si = t->w_scales + (size_t)i * n_blocks;
 
-        /* Per-row N-element accumulator (FP32, on stack — N usually small). */
-        /* For very large N callers will need a different design (chunk N). */
-        float acc[256];
-        if (N > 256) { /* shouldn't happen at sane batch sizes */ continue; }
-        memset(acc, 0, sizeof(float) * N);
+#ifdef __ARM_NEON
+        for (int n = 0; n < N; n++) sumv[n] = vdupq_n_f32(0.0f);
 
         for (int b = 0; b < n_blocks; b++) {
-#ifdef __ARM_NEON
-            /* Unpack 16 packed bytes → 32 signed int8 nibbles, range [-8, 7]. */
             uint8x16_t pk = vld1q_u8(wi + b * 16);
             int8x16_t lo = vreinterpretq_s8_u8(vsubq_u8(vandq_u8(pk, mask_0f), v8));
             int8x16_t hi = vreinterpretq_s8_u8(vsubq_u8(vshrq_n_u8(pk, 4), v8));
-            /* The packed layout interleaves (lo,hi) pairs. Use vld2q_s8 on
-             * x_q to deinterleave to the same scheme: x_q[0,2,4,...] vs
-             * x_q[1,3,5,...]. matmul_q4_rows uses this; we match it. */
 
             const float wd = si[b];
             for (int n = 0; n < N; n++) {
@@ -1115,12 +1120,23 @@ static void* bm_q4_worker(void* arg) {
                 a0 = vaddq_s32(a0, vpaddlq_s16(vmull_s8(vget_low_s8(hi),  vget_low_s8(xd.val[1]))));
                 a0 = vaddq_s32(a0, vpaddlq_s16(vmull_s8(vget_high_s8(hi), vget_high_s8(xd.val[1]))));
 #endif
-                int32_t s = vaddvq_s32(a0);
                 float xd_n = t->X_d[(size_t)n * n_blocks + b];
-                acc[n] += wd * xd_n * (float)s;
+                /* Match matmul_q4_rows exactly: vmlaq_n_f32 with combined scale.
+                 * vcvtq_f32_s32(a0) on the int32 accumulator, scalar scale =
+                 * wd * xd_n, accumulate into sumv[n]. */
+                sumv[n] = vmlaq_n_f32(sumv[n], vcvtq_f32_s32(a0), wd * xd_n);
             }
+        }
+
+        for (int n = 0; n < N; n++) {
+            t->out[(size_t)n * n_rows + i] = vaddvq_f32(sumv[n]);
+        }
 #else
-            /* Scalar fallback */
+        /* Scalar fallback (x86 / no NEON). */
+        float acc[256];
+        if (N > 256) continue;
+        memset(acc, 0, sizeof(float) * N);
+        for (int b = 0; b < n_blocks; b++) {
             const float wd = si[b];
             int8_t lo[32], hi[32];
             for (int j = 0; j < 16; j++) {
@@ -1134,13 +1150,11 @@ static void* bm_q4_worker(void* arg) {
                 float xd_n = t->X_d[(size_t)n * n_blocks + b];
                 acc[n] += wd * xd_n * (float)s;
             }
-#endif
         }
-
-        /* Scatter accumulator into output row */
         for (int n = 0; n < N; n++) {
             t->out[(size_t)n * n_rows + i] = acc[n];
         }
+#endif
     }
     return NULL;
 }
