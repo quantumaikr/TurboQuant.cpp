@@ -2333,6 +2333,15 @@ void* q8_int_dot_worker(void* arg) {
     q8_int_task_t* t = (q8_int_task_t*)arg;
     for (int d = t->start_row; d < t->end_row; d++) {
         const block_q8_0* wblk = (const block_q8_0*)((const uint8_t*)t->weight + (size_t)d * t->row_bytes);
+        if (d + 1 < t->end_row) {
+            const uint8_t* next = (const uint8_t*)t->weight + (size_t)(d + 1) * t->row_bytes;
+            /* Q8_0 row is n_blocks * 34 bytes — for hidden=3072, ~3.4 KB.
+             * Prefetch first 4 cache lines; HW prefetcher takes the rest. */
+            __builtin_prefetch(next +   0, 0, 0);
+            __builtin_prefetch(next +  64, 0, 0);
+            __builtin_prefetch(next + 128, 0, 0);
+            __builtin_prefetch(next + 192, 0, 0);
+        }
         float row_sum = 0.0f;
         for (int b = 0; b < t->n_blocks; b++) {
             const float wd = fp16_to_fp32(wblk[b].d);
@@ -2369,11 +2378,159 @@ typedef struct {
     const int32_t* x_isums; size_t row_bytes; int nb_super; int start_row; int end_row;
 } q4k_int_task_t;
 
+/* Q5_K int8 dot worker — same pattern as Q4_K, plus 5th bit from qh.
+ * The qh array has 1 bit per element across 8 sub-blocks; bit position
+ * shifts by 2 per j-iteration (u1 = 1<<(2*iter), u2 = 2<<(2*iter)). */
+typedef q4k_int_task_t q5k_int_task_t;
+
+void* q5k_int_dot_worker(void* arg) {
+    q5k_int_task_t* t = (q5k_int_task_t*)arg;
+    const uint8x16_t mask_lo = vdupq_n_u8(0x0F);
+    for (int d = t->start_row; d < t->end_row; d++) {
+        const block_q5_K* wblk = (const block_q5_K*)((const uint8_t*)t->weight + (size_t)d * t->row_bytes);
+        if (d + 1 < t->end_row) {
+            const uint8_t* next = (const uint8_t*)t->weight + (size_t)(d + 1) * t->row_bytes;
+            __builtin_prefetch(next +   0, 0, 0);
+            __builtin_prefetch(next +  64, 0, 0);
+            __builtin_prefetch(next + 128, 0, 0);
+            __builtin_prefetch(next + 192, 0, 0);
+        }
+        float row_sum = 0.0f;
+        for (int sb = 0; sb < t->nb_super; sb++) {
+            const block_q5_K* blk = wblk + sb;
+            const float dW    = fp16_to_fp32(blk->d);
+            const float dminW = fp16_to_fp32(blk->dmin);
+
+            uint8_t sc[8], mn[8];
+            sc[0] = blk->scales[0] & 63;
+            sc[1] = blk->scales[1] & 63;
+            sc[2] = blk->scales[2] & 63;
+            sc[3] = blk->scales[3] & 63;
+            mn[0] = blk->scales[4] & 63;
+            mn[1] = blk->scales[5] & 63;
+            mn[2] = blk->scales[6] & 63;
+            mn[3] = blk->scales[7] & 63;
+            sc[4] = (blk->scales[8]  & 0x0F) | ((blk->scales[0] >> 6) << 4);
+            sc[5] = (blk->scales[9]  & 0x0F) | ((blk->scales[1] >> 6) << 4);
+            sc[6] = (blk->scales[10] & 0x0F) | ((blk->scales[2] >> 6) << 4);
+            sc[7] = (blk->scales[11] & 0x0F) | ((blk->scales[3] >> 6) << 4);
+            mn[4] = (blk->scales[8]  >> 4) | ((blk->scales[4] >> 6) << 4);
+            mn[5] = (blk->scales[9]  >> 4) | ((blk->scales[5] >> 6) << 4);
+            mn[6] = (blk->scales[10] >> 4) | ((blk->scales[6] >> 6) << 4);
+            mn[7] = (blk->scales[11] >> 4) | ((blk->scales[7] >> 6) << 4);
+
+            const uint8_t* ql = blk->qs;   /* 128 bytes of low nibbles */
+            const uint8_t* qh = blk->qh;   /* 32 bytes of high bits */
+            int sub_base = sb * 8;
+            int is = 0;
+            uint8_t u1 = 1, u2 = 2;
+
+            for (int j = 0; j < 256; j += 64) {
+                int sub_idx_a = sub_base + is;
+                int sub_idx_b = sub_base + is + 1;
+
+                /* Low 4 bits of weights */
+                uint8x16_t qa = vld1q_u8(ql);
+                uint8x16_t qb = vld1q_u8(ql + 16);
+                uint8x16_t lo_a = vandq_u8(qa, mask_lo);
+                uint8x16_t lo_b = vandq_u8(qb, mask_lo);
+                uint8x16_t hi_a = vshrq_n_u8(qa, 4);
+                uint8x16_t hi_b = vshrq_n_u8(qb, 4);
+
+                /* 5th bit from qh: extract bit u1 (sub-block A) and u2 (B).
+                 * qh[0..15] covers elements 0..15, qh[16..31] covers 16..31.
+                 * For sub-block A (low nibbles), bit position = log2(u1).
+                 * Convert "bit set" → byte value 16 by shifting to bit 4. */
+                uint8x16_t qh_a = vld1q_u8(qh);
+                uint8x16_t qh_b = vld1q_u8(qh + 16);
+                uint8x16_t u1v = vdupq_n_u8(u1);
+                uint8x16_t u2v = vdupq_n_u8(u2);
+                /* Test bit, then convert to 0 or 16:
+                 *   masked_a = qh & u1  →  0 or u1 (in {1,4,16,64})
+                 *   want bit 4 set when u1 bit set → multiply masked_a by (16/u1)
+                 * For u1 in {1,4,16,64}: 16/u1 in {16,4,1,1/4}.
+                 * Easier: vceqq + select between 0 and 16. */
+                uint8x16_t bit_a_lo = vceqq_u8(vandq_u8(qh_a, u1v), u1v);  /* 0xFF or 0x00 */
+                uint8x16_t bit_a_hi = vceqq_u8(vandq_u8(qh_b, u1v), u1v);
+                uint8x16_t bit_b_lo = vceqq_u8(vandq_u8(qh_a, u2v), u2v);
+                uint8x16_t bit_b_hi = vceqq_u8(vandq_u8(qh_b, u2v), u2v);
+                uint8x16_t v16 = vdupq_n_u8(16);
+                /* And with 16 to get 0 or 16 */
+                lo_a = vorrq_u8(lo_a, vandq_u8(bit_a_lo, v16));
+                lo_b = vorrq_u8(lo_b, vandq_u8(bit_a_hi, v16));
+                hi_a = vorrq_u8(hi_a, vandq_u8(bit_b_lo, v16));
+                hi_b = vorrq_u8(hi_b, vandq_u8(bit_b_hi, v16));
+
+                int8x16_t wa_lo = vreinterpretq_s8_u8(lo_a);
+                int8x16_t wa_hi = vreinterpretq_s8_u8(lo_b);
+                int8x16_t wb_lo = vreinterpretq_s8_u8(hi_a);
+                int8x16_t wb_hi = vreinterpretq_s8_u8(hi_b);
+
+                const int8_t* xa = t->x_qs + (size_t)sub_idx_a * 32;
+                int8x16_t xa_lo = vld1q_s8(xa);
+                int8x16_t xa_hi = vld1q_s8(xa + 16);
+                const int8_t* xb = t->x_qs + (size_t)sub_idx_b * 32;
+                int8x16_t xb_lo = vld1q_s8(xb);
+                int8x16_t xb_hi = vld1q_s8(xb + 16);
+
+#ifdef __ARM_FEATURE_DOTPROD
+                int32x4_t accA = vdotq_s32(vdupq_n_s32(0), wa_lo, xa_lo);
+                accA = vdotq_s32(accA, wa_hi, xa_hi);
+                int32_t isumA = vaddvq_s32(accA);
+                int32x4_t accB = vdotq_s32(vdupq_n_s32(0), wb_lo, xb_lo);
+                accB = vdotq_s32(accB, wb_hi, xb_hi);
+                int32_t isumB = vaddvq_s32(accB);
+#else
+                int32x4_t accA = vpadalq_s16(vdupq_n_s32(0),
+                                              vmull_s8(vget_low_s8(wa_lo), vget_low_s8(xa_lo)));
+                accA = vpadalq_s16(accA, vmull_s8(vget_high_s8(wa_lo), vget_high_s8(xa_lo)));
+                accA = vpadalq_s16(accA, vmull_s8(vget_low_s8(wa_hi), vget_low_s8(xa_hi)));
+                accA = vpadalq_s16(accA, vmull_s8(vget_high_s8(wa_hi), vget_high_s8(xa_hi)));
+                int32_t isumA = vaddvq_s32(accA);
+                int32x4_t accB = vpadalq_s16(vdupq_n_s32(0),
+                                              vmull_s8(vget_low_s8(wb_lo), vget_low_s8(xb_lo)));
+                accB = vpadalq_s16(accB, vmull_s8(vget_high_s8(wb_lo), vget_high_s8(xb_lo)));
+                accB = vpadalq_s16(accB, vmull_s8(vget_low_s8(wb_hi), vget_low_s8(xb_hi)));
+                accB = vpadalq_s16(accB, vmull_s8(vget_high_s8(wb_hi), vget_high_s8(xb_hi)));
+                int32_t isumB = vaddvq_s32(accB);
+#endif
+
+                float xdA = t->x_ds[sub_idx_a];
+                float xdB = t->x_ds[sub_idx_b];
+                int32_t xisA = t->x_isums[sub_idx_a];
+                int32_t xisB = t->x_isums[sub_idx_b];
+
+                row_sum += (dW * sc[is + 0] * xdA) * (float)isumA
+                         - (dminW * mn[is + 0] * xdA) * (float)xisA;
+                row_sum += (dW * sc[is + 1] * xdB) * (float)isumB
+                         - (dminW * mn[is + 1] * xdB) * (float)xisB;
+
+                ql += 32;
+                is += 2;
+                u1 <<= 2;
+                u2 <<= 2;
+            }
+        }
+        t->out[d] = row_sum;
+    }
+    return NULL;
+}
+
 void* q4k_int_dot_worker(void* arg) {
     q4k_int_task_t* t = (q4k_int_task_t*)arg;
     const uint8x16_t mask_lo = vdupq_n_u8(0x0F);
     for (int d = t->start_row; d < t->end_row; d++) {
         const block_q4_K* wblk = (const block_q4_K*)((const uint8_t*)t->weight + (size_t)d * t->row_bytes);
+        /* Prefetch the next row's weights while we're processing this one.
+         * Each row is nb_super * 144 bytes; for typical Phi-3.5 (in_dim=3072,
+         * 12 super-blocks) that's 1728 bytes. Prefetch 4 cache lines ahead. */
+        if (d + 1 < t->end_row) {
+            const uint8_t* next = (const uint8_t*)t->weight + (size_t)(d + 1) * t->row_bytes;
+            __builtin_prefetch(next +   0, 0, 0);
+            __builtin_prefetch(next +  64, 0, 0);
+            __builtin_prefetch(next + 128, 0, 0);
+            __builtin_prefetch(next + 192, 0, 0);
+        }
         float row_sum = 0.0f;
         for (int sb = 0; sb < t->nb_super; sb++) {
             const block_q4_K* blk = wblk + sb;
@@ -2690,8 +2847,8 @@ void tq_matmul_gguf(float* out, const float* x,
      * precompute per-block int sums for the dmin*mn correction, then
      * run vmull_s8 + vpadalq_s16 dots over 4-bit nibbles unpacked to int8.
      * Replaces the float fused_dot_q4_k path on Phi-3.5/Llama Q4_K_M models. */
-    if (weight_type == TQ_GGML_TYPE_Q4_K && in_dim >= 256 && in_dim <= 16384
-        && (in_dim % 256) == 0)
+    if ((weight_type == TQ_GGML_TYPE_Q4_K || weight_type == TQ_GGML_TYPE_Q5_K)
+        && in_dim >= 256 && in_dim <= 16384 && (in_dim % 256) == 0)
     {
         /* Stack buffers: x as int8 (16KB), per-block scales (512 floats =
          * 2KB), per-block int sums (512 ints = 2KB). Total ~20KB. */
@@ -2746,11 +2903,13 @@ void tq_matmul_gguf(float* out, const float* x,
             tasks[t].end_row   = (t == n_threads - 1) ? out_dim : (t + 1) * rows_per;
             ptrs[t] = &tasks[t];
         }
+        void* (*worker)(void*) = (weight_type == TQ_GGML_TYPE_Q5_K)
+                                  ? q5k_int_dot_worker : q4k_int_dot_worker;
         if (n_threads == 1) {
-            q4k_int_dot_worker(ptrs[0]);
+            worker(ptrs[0]);
         } else {
             extern void tq_tp_run(void* (*fn)(void*), void** args, int n);
-            tq_tp_run(q4k_int_dot_worker, ptrs, n_threads);
+            tq_tp_run(worker, ptrs, n_threads);
         }
         return;
     }
