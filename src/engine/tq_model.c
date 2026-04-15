@@ -3353,18 +3353,21 @@ tq_model_t* tq_load_gguf(const char* path) {
             t = find_gguf_tensor(gguf, tname);
             if (t) { layer->gguf_delta_b = t->data; layer->gguf_delta_b_type = t->type; }
 
-            /* Large DeltaNet projections: dequant to FP32 for recurrent
-             * state precision.  Q5_K (5-bit) introduces too much error in
-             * the recurrent state that accumulates across time steps.
-             * ~24 MB/layer × 30 layers ≈ 720 MB — fits in 16 GB. */
+            /* DeltaNet projections: historically dequanted Q5_K → FP32 with
+             * the rationale that "5-bit introduces too much error in recurrent
+             * state". This was over-cautious — the matmul output goes through
+             * FP32 accumulation regardless of weight type. Set TQ_DELTANET_FP32=1
+             * to restore the FP32 dequant if a downstream regression appears. */
+            int deltanet_fp32 = (getenv("TQ_DELTANET_FP32") != NULL);
             snprintf(tname, sizeof(tname), "blk.%d.attn_qkv.weight", l);
             t = find_gguf_tensor(gguf, tname);
             if (t) {
-                if (t->type == TQ_GGML_TYPE_Q5_K || t->type == TQ_GGML_TYPE_IQ2_XXS ||
-                    t->type == TQ_GGML_TYPE_IQ3_XXS || t->type == TQ_GGML_TYPE_IQ4_XS) {
-                    /* Low-precision: dequant to FP32 for recurrent accuracy */
+                int needs_fp32 = deltanet_fp32 &&
+                    (t->type == TQ_GGML_TYPE_Q5_K || t->type == TQ_GGML_TYPE_IQ2_XXS ||
+                     t->type == TQ_GGML_TYPE_IQ3_XXS || t->type == TQ_GGML_TYPE_IQ4_XS);
+                if (needs_fp32) {
                     layer->delta_in_proj_qkv = dequant_tensor_fp32(t);
-                    fprintf(stderr, "tq_load_gguf: layer %d attn_qkv dequant to FP32 (was type %d)\n", l, t->type);
+                    fprintf(stderr, "tq_load_gguf: layer %d attn_qkv dequant to FP32 (was type %d, TQ_DELTANET_FP32 set)\n", l, t->type);
                 } else {
                     layer->gguf_delta_qkv = t->data;
                     layer->gguf_delta_qkv_type = t->type;
@@ -3374,10 +3377,12 @@ tq_model_t* tq_load_gguf(const char* path) {
             snprintf(tname, sizeof(tname), "blk.%d.attn_gate.weight", l);
             t = find_gguf_tensor(gguf, tname);
             if (t) {
-                if (t->type == TQ_GGML_TYPE_Q5_K || t->type == TQ_GGML_TYPE_IQ2_XXS ||
-                    t->type == TQ_GGML_TYPE_IQ3_XXS || t->type == TQ_GGML_TYPE_IQ4_XS) {
+                int needs_fp32 = deltanet_fp32 &&
+                    (t->type == TQ_GGML_TYPE_Q5_K || t->type == TQ_GGML_TYPE_IQ2_XXS ||
+                     t->type == TQ_GGML_TYPE_IQ3_XXS || t->type == TQ_GGML_TYPE_IQ4_XS);
+                if (needs_fp32) {
                     layer->delta_in_proj_z = dequant_tensor_fp32(t);
-                    fprintf(stderr, "tq_load_gguf: layer %d attn_gate dequant to FP32 (was type %d)\n", l, t->type);
+                    fprintf(stderr, "tq_load_gguf: layer %d attn_gate dequant to FP32 (was type %d, TQ_DELTANET_FP32 set)\n", l, t->type);
                 } else {
                     layer->gguf_delta_z = t->data;
                     layer->gguf_delta_z_type = t->type;
