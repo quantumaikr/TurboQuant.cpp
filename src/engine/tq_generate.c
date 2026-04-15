@@ -316,8 +316,9 @@ int tq_generate(tq_model_t* model, tq_tokenizer_t* tokenizer,
             fprintf(stderr, "[batch_prefill] rc=%d expected=%d (N=%d)\n",
                     rc, prefill_start + n_prompt, n_prompt);
         if (rc == prefill_start + n_prompt) {
-            tq_forward(model, state, prompt_tokens[n_prompt - 1],
-                       prefill_start + n_prompt - 1);
+            /* tq_forward_batch now produces logits for the last position
+             * itself (so we don't double-advance DeltaNet SSM state). No
+             * final tq_forward needed. */
             batch_ok = 1;
         }
     }

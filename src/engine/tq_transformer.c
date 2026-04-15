@@ -3070,11 +3070,9 @@ int tq_forward_batch(tq_model_t* model, tq_state_t* s,
     if (s->delta_kv_enabled)                   { if (dbg) fprintf(stderr, "[batch] bail: delta_kv\n"); return -1; }
     /* k_highres_window supported — circular FP32 buffer for recent keys. */
     if (s->value_quant_bits != 0)              { if (dbg) fprintf(stderr, "[batch] bail: quant_V\n"); return -1; }
-    /* DeltaNet hybrid support is in-progress (see P1.6). For safety the
-     * bail is kept — batched advances SSM state per token and the final
-     * tq_forward's re-run of the last position double-advances state,
-     * producing empty/garbage generation. Path preserved below under
-     * TQ_DELTANET_BATCH=1 for future development. */
+    /* DeltaNet: hybrid batched is WIP. Default bail to per-token; opt-in
+     * via TQ_DELTANET_BATCH=1 for development. Known issue: FFN handling
+     * for DeltaNet layers in Qwen3.5 still produces empty output. */
     if (!getenv("TQ_DELTANET_BATCH")) {
         for (int l = 0; l < c->n_layers; l++) {
             if (model->layers[l].delta_a_log) {
@@ -3153,11 +3151,11 @@ int tq_forward_batch(tq_model_t* model, tq_state_t* s,
          * per-token because deltanet_forward writes residual into s->x and
          * we continue from there. */
         if (layer->delta_a_log) {
-            /* DeltaNet: SSM recurrent state can't be batched. Process the
-             * first N-1 tokens here; leave the last token for the final
-             * tq_forward to avoid advancing state past what that call expects. */
+            /* DeltaNet: SSM recurrent state can't be batched. Process each
+             * token in order so state advances correctly; no final
+             * tq_forward runs after this function (logits computed below). */
             extern void deltanet_forward(tq_model_t* model, tq_state_t* s, int l);
-            for (int n = 0; n < N - 1; n++) {
+            for (int n = 0; n < N; n++) {
                 memcpy(s->x, Xres + (size_t)n * dim, (size_t)dim * sizeof(float));
                 tq_rmsnorm(s->xb, s->x, layer->attn_norm, dim, c->rms_norm_eps);
                 deltanet_forward(model, s, l);
@@ -3563,6 +3561,28 @@ int tq_forward_batch(tq_model_t* model, tq_state_t* s,
                 fprintf(stderr, "[batch] L%d final Xres tok%d sum=%.9f sumabs=%.9f\n",
                     l, tn, s, sabs);
             }
+        }
+    }
+
+    /* Compute logits for the LAST token in the batch so the caller can
+     * skip running tq_forward again. For non-DeltaNet models this is just
+     * a convenience; for DeltaNet it's required to avoid double-advancing
+     * the recurrent state. */
+    {
+        int last = N - 1;
+        float* x_last = Xres + (size_t)last * dim;
+        memcpy(s->x, x_last, (size_t)dim * sizeof(float));
+        tq_rmsnorm(s->x, s->x, model->output_norm, dim, c->rms_norm_eps);
+        if (model->output_gguf) {
+            tq_matmul_gguf(s->logits, s->x, model->output_gguf,
+                            model->output_gguf_type, c->vocab_size, dim);
+        } else if (model->output_qs) {
+            tq_matmul_q4(s->logits, s->x, model->output_qs, model->output_scales,
+                          c->vocab_size, dim);
+        } else if (model->output_weight_bf16) {
+            tq_matmul_bf16(s->logits, s->x, model->output_weight_bf16, c->vocab_size, dim);
+        } else if (model->output_weight) {
+            tq_matmul(s->logits, s->x, model->output_weight, c->vocab_size, dim);
         }
     }
 
