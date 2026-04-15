@@ -3035,6 +3035,16 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
 int tq_forward_batch(tq_model_t* model, tq_state_t* s,
                      const int* tokens, int N, int pos_start) {
     if (N <= 0) return pos_start;
+    /* SANITY CHECK MODE: just call tq_forward N times. If THIS gives
+     * different results than the per-token tq_generate loop, the bug
+     * is in the orchestration outside the matmul work. Set
+     * TQ_BATCH_SANITY=1 to enable. */
+    if (getenv("TQ_BATCH_SANITY")) {
+        for (int n = 0; n < N; n++) {
+            tq_forward(model, s, tokens[n], pos_start + n);
+        }
+        return pos_start + N;
+    }
     tq_model_config_t* c = &model->config;
 
     /* Architectural gating: only standard Llama for now. */
@@ -3120,6 +3130,11 @@ int tq_forward_batch(tq_model_t* model, tq_state_t* s,
             free(OB); free(GB); free(UB);
             return -1;
         }
+        if (l == 0 && dbg) {
+            fprintf(stderr, "[batch] layer 0 q2 presence: wq=%p wk=%p wv=%p wo=%p g=%p u=%p d=%p\n",
+                (void*)layer->wq_q2, (void*)layer->wk_q2, (void*)layer->wv_q2,
+                (void*)layer->wo_q2, (void*)layer->w_gate_q2, (void*)layer->w_up_q2, (void*)layer->w_down_q2);
+        }
 
         /* 1. attn RMSNorm (per-row) */
         for (int n = 0; n < N; n++) {
@@ -3127,10 +3142,73 @@ int tq_forward_batch(tq_model_t* model, tq_state_t* s,
                        layer->attn_norm, dim, c->rms_norm_eps);
         }
 
-        /* 2. Q, K, V batched matmul */
+        /* 2. Q, K, V batched matmul (Q4 main weights) */
         tq_batched_matmul_q4(QB, layer->wq_q4, layer->wq_q4s, XBN, q_dim,  dim, N, NULL);
         tq_batched_matmul_q4(KB, layer->wk_q4, layer->wk_q4s, XBN, kv_dim, dim, N, NULL);
         tq_batched_matmul_q4(VB, layer->wv_q4, layer->wv_q4s, XBN, kv_dim, dim, N, NULL);
+
+        /* 2-r. Add Q2 residual correction per-token (matches tq_matmul_q4q2_preq).
+         * Load-time Q4 conversion stores BOTH Q4 main + Q2 residual. Skipping the
+         * Q2 part causes large numerical drift. We do the Q2 part per-token using
+         * the existing primitive — Q2 is small (2 bits) so the per-token cost is
+         * a fraction of the Q4 batched savings. */
+        if (layer->wq_q2 || layer->wk_q2 || layer->wv_q2) {
+            int n_blocks_d = dim / 32;
+            int8_t* xq = s->xb_q8;     /* reuse state's per-token Q8 buffer */
+            float*  xs = s->xb_q8s;
+            float* tmp_q = (float*)malloc((size_t)q_dim  * sizeof(float));
+            float* tmp_k = (float*)malloc((size_t)kv_dim * sizeof(float));
+            float* tmp_v = (float*)malloc((size_t)kv_dim * sizeof(float));
+            for (int n = 0; n < N; n++) {
+                /* Quantize this row's XBN to Q8 once. */
+                tq_quantize_row_q8(XBN + (size_t)n * dim, xq, xs, dim);
+                if (layer->wq_q2) {
+                    tq_matmul_q2_preq(tmp_q, layer->wq_q2, layer->wq_q2s, xq, xs, q_dim, dim);
+                    for (int i = 0; i < q_dim; i++) QB[(size_t)n * q_dim + i] += tmp_q[i];
+                }
+                if (layer->wk_q2) {
+                    tq_matmul_q2_preq(tmp_k, layer->wk_q2, layer->wk_q2s, xq, xs, kv_dim, dim);
+                    for (int i = 0; i < kv_dim; i++) KB[(size_t)n * kv_dim + i] += tmp_k[i];
+                }
+                if (layer->wv_q2) {
+                    tq_matmul_q2_preq(tmp_v, layer->wv_q2, layer->wv_q2s, xq, xs, kv_dim, dim);
+                    for (int i = 0; i < kv_dim; i++) VB[(size_t)n * kv_dim + i] += tmp_v[i];
+                }
+            }
+            free(tmp_q); free(tmp_k); free(tmp_v);
+            (void)n_blocks_d;
+        }
+
+        /* 2a. Apply Q/K/V biases (Qwen2/2.5/3 — NULL for Llama). */
+        if (layer->q_bias) {
+            for (int n = 0; n < N; n++)
+                for (int i = 0; i < q_dim; i++) QB[(size_t)n * q_dim + i] += layer->q_bias[i];
+        }
+        if (layer->k_bias) {
+            for (int n = 0; n < N; n++)
+                for (int i = 0; i < kv_dim; i++) KB[(size_t)n * kv_dim + i] += layer->k_bias[i];
+        }
+        if (layer->v_bias) {
+            for (int n = 0; n < N; n++)
+                for (int i = 0; i < kv_dim; i++) VB[(size_t)n * kv_dim + i] += layer->v_bias[i];
+        }
+        /* 2b. QK-norm (Qwen3 — NULL for Llama). */
+        if (layer->q_norm) {
+            for (int n = 0; n < N; n++) {
+                for (int h = 0; h < c->n_heads; h++) {
+                    float* qh = QB + (size_t)n * q_dim + h * c->head_dim;
+                    tq_rmsnorm(qh, qh, layer->q_norm, c->head_dim, c->rms_norm_eps);
+                }
+            }
+        }
+        if (layer->k_norm) {
+            for (int n = 0; n < N; n++) {
+                for (int h = 0; h < c->n_kv_heads; h++) {
+                    float* kh = KB + (size_t)n * kv_dim + h * c->head_dim;
+                    tq_rmsnorm(kh, kh, layer->k_norm, c->head_dim, c->rms_norm_eps);
+                }
+            }
+        }
 
         /* 3. RoPE + KV cache write (per-token).
          * Mirror tq_forward's RoPE selection: if model->rope_freqs is set
@@ -3141,13 +3219,15 @@ int tq_forward_batch(tq_model_t* model, tq_state_t* s,
             float* kn = KB + (size_t)n * kv_dim;
             int pos = pos_start + n;
             if (model->rope_freqs && model->rope_freqs_len > 0) {
-                int rope_pairs = c->head_dim / 2;
+                /* Match tq_forward's rope_n_dims selection: c->rope_n_dims may
+                 * differ from head_dim (e.g., Gemma partial RoPE). */
+                int rope_n_dims = (c->rope_n_dims > 0) ? c->rope_n_dims : c->head_dim;
+                int rope_pairs = rope_n_dims / 2;
                 if (rope_pairs > model->rope_freqs_len) rope_pairs = model->rope_freqs_len;
-                /* Llama 3 uses interleaved layout (a=2i, b=2i+1) */
                 for (int h = 0; h < c->n_heads; h++) {
                     float* qh = qn + h * c->head_dim;
                     for (int i = 0; i < rope_pairs; i++) {
-                        float base = 1.0f / powf(c->rope_freq_base, 2.0f * i / (float)c->head_dim);
+                        float base = 1.0f / powf(c->rope_freq_base, 2.0f * i / (float)rope_n_dims);
                         float freq = base / model->rope_freqs[i];
                         float theta = pos * freq;
                         float ct = cosf(theta), st = sinf(theta);
@@ -3159,7 +3239,7 @@ int tq_forward_batch(tq_model_t* model, tq_state_t* s,
                 for (int h = 0; h < c->n_kv_heads; h++) {
                     float* kh = kn + h * c->head_dim;
                     for (int i = 0; i < rope_pairs; i++) {
-                        float base = 1.0f / powf(c->rope_freq_base, 2.0f * i / (float)c->head_dim);
+                        float base = 1.0f / powf(c->rope_freq_base, 2.0f * i / (float)rope_n_dims);
                         float freq = base / model->rope_freqs[i];
                         float theta = pos * freq;
                         float ct = cosf(theta), st = sinf(theta);
@@ -3284,8 +3364,19 @@ int tq_forward_batch(tq_model_t* model, tq_state_t* s,
             }
         }
 
-        /* 5. O matmul batched */
+        /* 5. O matmul batched + Q2 residual */
         tq_batched_matmul_q4(X, layer->wo_q4, layer->wo_q4s, OB, dim, q_dim, N, NULL);
+        if (layer->wo_q2) {
+            int8_t* xq = s->xb_q8;
+            float*  xs = s->xb_q8s;
+            float* tmp = (float*)malloc((size_t)dim * sizeof(float));
+            for (int n = 0; n < N; n++) {
+                tq_quantize_row_q8(OB + (size_t)n * q_dim, xq, xs, q_dim);
+                tq_matmul_q2_preq(tmp, layer->wo_q2, layer->wo_q2s, xq, xs, dim, q_dim);
+                for (int i = 0; i < dim; i++) X[(size_t)n * dim + i] += tmp[i];
+            }
+            free(tmp);
+        }
 
         /* 6. Residual: Xres += X */
         for (size_t i = 0; i < (size_t)N * dim; i++) Xres[i] += X[i];
@@ -3296,9 +3387,26 @@ int tq_forward_batch(tq_model_t* model, tq_state_t* s,
                        layer->ffn_norm, dim, c->rms_norm_eps);
         }
 
-        /* 8. gate, up batched matmul */
+        /* 8. gate, up batched matmul + Q2 residuals */
         tq_batched_matmul_q4(GB, layer->w_gate_q4, layer->w_gate_q4s, XBN, inter, dim, N, NULL);
         tq_batched_matmul_q4(UB, layer->w_up_q4,   layer->w_up_q4s,   XBN, inter, dim, N, NULL);
+        if (layer->w_gate_q2 || layer->w_up_q2) {
+            int8_t* xq = s->xb_q8;
+            float*  xs = s->xb_q8s;
+            float* tmp = (float*)malloc((size_t)inter * sizeof(float));
+            for (int n = 0; n < N; n++) {
+                tq_quantize_row_q8(XBN + (size_t)n * dim, xq, xs, dim);
+                if (layer->w_gate_q2) {
+                    tq_matmul_q2_preq(tmp, layer->w_gate_q2, layer->w_gate_q2s, xq, xs, inter, dim);
+                    for (int i = 0; i < inter; i++) GB[(size_t)n * inter + i] += tmp[i];
+                }
+                if (layer->w_up_q2) {
+                    tq_matmul_q2_preq(tmp, layer->w_up_q2, layer->w_up_q2s, xq, xs, inter, dim);
+                    for (int i = 0; i < inter; i++) UB[(size_t)n * inter + i] += tmp[i];
+                }
+            }
+            free(tmp);
+        }
 
         /* 9. SiLU(gate) * up (per-element) */
         for (size_t i = 0; i < (size_t)N * inter; i++) {
@@ -3307,8 +3415,19 @@ int tq_forward_batch(tq_model_t* model, tq_state_t* s,
             GB[i] = silu * UB[i];
         }
 
-        /* 10. down matmul batched (output back into X) */
+        /* 10. down matmul batched (output back into X) + Q2 residual */
         tq_batched_matmul_q4(X, layer->w_down_q4, layer->w_down_q4s, GB, dim, inter, N, NULL);
+        if (layer->w_down_q2) {
+            int8_t* xq = s->xb_q8;
+            float*  xs = s->xb_q8s;
+            float* tmp = (float*)malloc((size_t)dim * sizeof(float));
+            for (int n = 0; n < N; n++) {
+                tq_quantize_row_q8(GB + (size_t)n * inter, xq, xs, inter);
+                tq_matmul_q2_preq(tmp, layer->w_down_q2, layer->w_down_q2s, xq, xs, dim, inter);
+                for (int i = 0; i < dim; i++) X[(size_t)n * dim + i] += tmp[i];
+            }
+            free(tmp);
+        }
 
         /* 11. Residual: Xres += X */
         for (size_t i = 0; i < (size_t)N * dim; i++) Xres[i] += X[i];

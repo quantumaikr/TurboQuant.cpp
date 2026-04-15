@@ -27,6 +27,31 @@ DYLD_LIBRARY_PATH=build \
 # prints: " I'm so excited"  ← baseline (correct)
 ```
 
+## Latest session findings (2026-04-15 evening)
+
+- ✅ **SANITY mode confirms orchestration is correct**. Setting
+  `TQ_BATCH_SANITY=1` makes `tq_forward_batch` simply call `tq_forward`
+  N times and the output matches baseline ("I'm so excited"). The bug
+  is purely in the per-token unrolled batched code, not in the integration
+  with `tq_generate`.
+
+- ✅ **Q4 matmul primitive verified at runtime** with both bias and Q-norm
+  fixes added (NULL for Llama anyway). Q2 residual handling added too —
+  but Llama 3.2 1B's load-time Q4 conversion does NOT produce Q2
+  residuals (`wq_q2 == NULL` confirmed by debug print), so Q2 isn't the
+  culprit either.
+
+- ❌ **Bug still present in actual batched path**. Output remains
+  "hell hel hell..." at N=2.
+
+- 🔍 **Strong suspect**: tq_forward uses different matmul function
+  variants for different projections (`tq_matmul_q4q2_preq` for wq/wk/wv,
+  `tq_matmul_q4` for wo/gate/up/down). Although they should be
+  functionally equivalent, there may be subtle differences (e.g.,
+  rounding mode in input quantization, scale normalization). The
+  systematic next step is to **dump s->x[0..3] after layer 0 from both
+  paths** — this isolates which sub-op diverges.
+
 ## Debugging plan for next session
 
 1. **Add intermediate-state dumps** to `tq_forward` and `tq_forward_batch`.
