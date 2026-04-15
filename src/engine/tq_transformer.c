@@ -2492,11 +2492,6 @@ float* tq_forward(tq_model_t* model, tq_state_t* s, int token, int pos) {
 
         /* Pre-attention/DeltaNet RMSNorm */
         tq_rmsnorm(s->xb, s->x, layer->attn_norm, dim, c->rms_norm_eps);
-        if ((l == 0 || l == 1 || l == 4 || l == 8 || l == 15) && pos <= 1 && getenv("TQ_DEBUG_PREFILL")) {
-            fprintf(stderr, "[fwd]   L%d pos=%d xb [0:8] = ", l, pos);
-            for (int i = 0; i < 8; i++) fprintf(stderr, "%.4f ", s->xb[i]);
-            fprintf(stderr, "\n");
-        }
 
         /* Begin layer-level GPU batch scope: all GGUF matmuls in this layer
          * (QKV, wo, gate, up, down) encode into shared command buffers.
@@ -3149,23 +3144,11 @@ int tq_forward_batch(tq_model_t* model, tq_state_t* s,
             free(OB); free(GB); free(UB);
             return -1;
         }
-        if (l == 0 && dbg) {
-            fprintf(stderr, "[batch] layer 0 q2 presence: wq=%p wk=%p wv=%p wo=%p g=%p u=%p d=%p\n",
-                (void*)layer->wq_q2, (void*)layer->wk_q2, (void*)layer->wv_q2,
-                (void*)layer->wo_q2, (void*)layer->w_gate_q2, (void*)layer->w_up_q2, (void*)layer->w_down_q2);
-        }
 
         /* 1. attn RMSNorm (per-row) */
         for (int n = 0; n < N; n++) {
             tq_rmsnorm(XBN + (size_t)n * dim, Xres + (size_t)n * dim,
                        layer->attn_norm, dim, c->rms_norm_eps);
-        }
-        if ((l == 0 || l == 1 || l == 4 || l == 8 || l == 15) && dbg) {
-            for (int tn = 0; tn < N && tn < 2; tn++) {
-                fprintf(stderr, "[batch] L%d XBN tok%d [0:8] = ", l, tn);
-                for (int i = 0; i < 8; i++) fprintf(stderr, "%.4f ", XBN[(size_t)tn * dim + i]);
-                fprintf(stderr, "\n");
-            }
         }
 
         /* 2. Q, K, V batched matmul (Q4 main weights) */
