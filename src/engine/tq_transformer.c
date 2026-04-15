@@ -2242,8 +2242,12 @@ static void self_attn_forward(tq_model_t* model, tq_state_t* s, int l, int pos) 
     if (has_gguf) tq_metal_batch_flush_if_available();
     TQ_PROF_STOP(_tp, matmul_ns);
 
-    if (l <= 3 && pos <= 1 && getenv("TQ_DEBUG_PREFILL")) {
-        fprintf(stderr, "[fwd]   L%d pos=%d xb2 (after wo) [0:8] = ", l, pos);
+    if (l == 3 && pos <= 1 && getenv("TQ_DEBUG_PREFILL")) {
+        double _sum=0, _sabs=0;
+        for (int i = 0; i < dim; i++) { _sum += s->xb[i]; _sabs += (s->xb[i]<0?-s->xb[i]:s->xb[i]); }
+        fprintf(stderr, "[fwd]   L3 pos=%d xb sum=%.6f sumabs=%.6f [0:4]=%.6f,%.6f,%.6f,%.6f [dim/2]=%.6f\n",
+            pos, _sum, _sabs, s->xb[0], s->xb[1], s->xb[2], s->xb[3], s->xb[dim/2]);
+        fprintf(stderr, "[fwd]   L3 pos=%d xb2 (after wo) [0:8] = ", pos);
         for (int i = 0; i < 8; i++) fprintf(stderr, "%.4f ", s->xb2[i]);
         fprintf(stderr, "\n");
     }
@@ -3389,10 +3393,15 @@ int tq_forward_batch(tq_model_t* model, tq_state_t* s,
             }
         }
 
-        if (l == 0 && dbg) {
-            fprintf(stderr, "[batch] L0 OB (post-attn) tok0 [0:8] = ");
-            for (int i = 0; i < 8; i++) fprintf(stderr, "%.4f ", OB[i]);
-            fprintf(stderr, "\n");
+        if (l == 3 && dbg) {
+            /* Compute hash over OB to detect drift anywhere in the vector */
+            for (int tn = 0; tn < N && tn < 2; tn++) {
+                float* obr = OB + (size_t)tn * dim;
+                double s=0, sabs=0;
+                for (int i = 0; i < dim; i++) { s += obr[i]; sabs += (obr[i]<0?-obr[i]:obr[i]); }
+                fprintf(stderr, "[batch] L3 OB tok%d sum=%.6f sumabs=%.6f [0:4]=%.6f,%.6f,%.6f,%.6f [dim/2]=%.6f\n",
+                    tn, s, sabs, obr[0], obr[1], obr[2], obr[3], obr[dim/2]);
+            }
         }
         /* 5. O matmul batched + Q2 residual */
         tq_batched_matmul_q4(X, layer->wo_q4, layer->wo_q4s, OB, dim, q_dim, N, NULL);
