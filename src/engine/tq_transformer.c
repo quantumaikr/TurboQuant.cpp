@@ -3298,9 +3298,6 @@ int tq_forward_batch(tq_model_t* model, tq_state_t* s,
                 memcpy(s->value_cache + (size_t)l * kv_layer_stride + (size_t)pos * kv_dim,
                        VB + (size_t)n * kv_dim, (size_t)kv_dim * sizeof(float));
             } else if (s->value_cache_fp16) {
-                /* Match tq_forward exactly: hardware FP16 conversion via NEON
-                 * vcvt_f16_f32. Inline manual conversion gave subtly different
-                 * rounding which propagated through attention and broke output. */
                 uint16_t* dst = s->value_cache_fp16
                               + (size_t)l * kv_layer_stride + (size_t)pos * kv_dim;
                 f32_to_fp16_vec(VB + (size_t)n * kv_dim, dst, kv_dim);
